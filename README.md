@@ -1,0 +1,5 @@
+- 👋 Hi, I’m @Aqua69420
+- 👀 I’m interested in Computers
+- 🌱 I’m currently learning C#
+- 💞️ I’m looking to collaborate on Nothing atm
+- 📫 How to reach me Email: Wyatthliin@gmail.com
