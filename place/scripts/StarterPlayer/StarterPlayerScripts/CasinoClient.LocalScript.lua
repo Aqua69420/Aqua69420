@@ -959,7 +959,35 @@ do
 				end
 			end)
 		end
+		local peel = button(frame, "PEEL", GOLD, { Position = UDim2.fromScale(0.62, 0.84), Size = UDim2.fromScale(0.35, 0.12), Visible = false, ZIndex = 5 })
+		peel.TextColor3 = Color3.new(0, 0, 0)
+		peel.MouseButton1Click:Connect(function()
+			request("Peel", id)
+		end)
+		local TweenService = game:GetService("TweenService")
+		-- a card that just turned over is uncovered from the bottom up (the squeeze)
+		local function peelReveal(box)
+			local cover = make("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0), Size = UDim2.fromScale(1, 1),
+				BackgroundColor3 = Color3.fromRGB(35, 57, 110), BorderSizePixel = 0, ZIndex = 4,
+			}, box)
+			make("UICorner", { CornerRadius = UDim.new(0, 5) }, cover)
+			TweenService:Create(cover, TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), { Size = UDim2.fromScale(1, 0) }):Play()
+		end
 		local lastKey
+		local shown = { Player = {}, Banker = {} }
+		local function drawSide(cards, x, side)
+			for i, card in ipairs(cards) do
+				local box = cardBox(board, card, { Position = UDim2.fromScale(x + (i - 1) * 0.15, 0.22), Size = UDim2.fromScale(0.13, 0.74) })
+				if card ~= "??" and shown[side][i] == "??" then
+					peelReveal(box)
+				end
+				shown[side][i] = card
+			end
+			for i = #cards + 1, 3 do
+				shown[side][i] = nil
+			end
+		end
 		local function render(st)
 			local key = table.concat(st.playerCards, ",") .. "|" .. table.concat(st.bankerCards, ",")
 			if key ~= lastKey then
@@ -967,9 +995,11 @@ do
 				board:ClearAllChildren()
 				label(board, "PLAYER" .. (st.playerTotal and ("  " .. st.playerTotal) or ""), { Position = UDim2.fromScale(0, 0), Size = UDim2.fromScale(0.48, 0.18), TextColor3 = Color3.fromRGB(120, 170, 255) })
 				label(board, "BANKER" .. (st.bankerTotal and ("  " .. st.bankerTotal) or ""), { Position = UDim2.fromScale(0.52, 0), Size = UDim2.fromScale(0.48, 0.18), TextColor3 = Color3.fromRGB(255, 120, 120) })
-				cardRow(board, st.playerCards, 0.02, 0.22, 0.13, 0.74, 0.02)
-				cardRow(board, st.bankerCards, 0.54, 0.22, 0.13, 0.74, 0.02)
+				drawSide(st.playerCards, 0.02, "Player")
+				drawSide(st.bankerCards, 0.54, "Banker")
 			end
+			peel.Visible = st.canPeel == true
+			peel.Text = st.squeezeSide and ("PEEL " .. st.squeezeSide:upper() .. " (" .. st.seconds .. "s)") or "PEEL"
 			local lines = {}
 			for _, b in ipairs(st.bets) do
 				table.insert(lines, ("%s%s %s on %s%s"):format(b.isYou and "▶ " or "", b.name, fmt(b.bet), b.side, (b.win and b.win > 0) and (" → " .. fmt(b.win)) or ""))
@@ -984,7 +1014,12 @@ do
 			elseif st.phase == "Betting" then
 				status.Text = (st.mySide and ("Your " .. fmt(st.myBet) .. " is on " .. st.mySide .. "  -  ") or "BETS OPEN  -  ") .. ("cards in %ds"):format(st.seconds)
 			elseif st.phase == "Dealing" then
-				status.Text = "Dealing..."
+				if st.squeezeSide then
+					status.Text = st.canPeel and ("You hold the biggest " .. st.squeezeSide .. " bet - PEEL the cards!")
+						or (("%s is peeling the %s cards..."):format(st.peelerName or "The dealer", st.squeezeSide))
+				else
+					status.Text = "Dealing..."
+				end
 			elseif st.phase == "Finished" then
 				status.Text = st.result .. (st.mySide and ((st.myWin or 0) > 0 and ("  -  you get " .. fmt(st.myWin)) or "  -  you lose") or "")
 			end

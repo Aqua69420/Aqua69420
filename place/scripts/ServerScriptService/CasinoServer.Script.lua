@@ -250,64 +250,39 @@ end
 
 -- The three Standard blackjack tables upstairs: one stays blackjack, one deals
 -- baccarat, one hosts no-limit hold'em (players choose the blinds).
-retitle("BlackJack2", "Baccarat", "Baccarat", TIERS.Standard)
+TIERS.Baccarat = { name = "Baccarat", min = 10, max = 10000000, color = Color3.fromRGB(200, 170, 70) }
+retitle("BlackJack2", "Baccarat", "Baccarat", TIERS.Baccarat)
 retitle("BlackJack3", "Holdem", "Texas Hold'em", TIERS.NoLimit, "NO LIMIT\nTEXAS HOLD'EM - you set the blinds")
 
--- Extra Ultra High Limit slot cabinets, cloned from an existing cabinet and
--- placed on clear floor next to the slot rows.
-local EXTRA_SLOTS = {
-	-- { position, kind, tier }
+-- Slot floor mix: fewer Standard machines, more High / Ultra High Limit, every
+-- game type (including the new Dragon Fortune) at more than one limit.
+-- Slots are numbered by position (see collect()): 1-10 are the two long rows,
+-- 11-15 the diagonal row.
+local SLOT_LAYOUT = {
+	{ "Cleopatra", "Standard" }, { "Slots", "Standard" }, { "DragonFortune", "Standard" }, { "NeonWild", "Standard" },
+	{ "LuckySevens", "High" }, { "GemRush", "High" }, { "Slots", "High" }, { "DragonFortune", "High" },
+	{ "Slots", "Ultra" }, { "DragonFortune", "Ultra" }, { "Cleopatra", "Ultra" }, { "NeonWild", "Ultra" },
+	{ "Slots", "Ultra" }, { "GemRush", "Ultra" }, { "LuckySevens", "Ultra" },
 }
-do
-	local template = machines["Slots5"] and machines["Slots5"].model
-	local slotsFolder = building:FindFirstChild("Slots")
-	local params = OverlapParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	for n, spec in EXTRA_SLOTS do
-		if not template or not slotsFolder then
-			break
-		end
-		local clone = template:Clone()
-		for _, d in clone:GetDescendants() do
-			if d.Name == "LimitSign" or d.Name == "PlayPrompt" then
-				d:Destroy()
-			end
-		end
-		local pivot = template:GetPivot()
-		local goal = CFrame.new(spec[1]) * pivot.Rotation * (spec[4] or CFrame.new())
-		local _, size = template:GetBoundingBox()
-		params.FilterDescendantsInstances = { template, clone }
-		local boxCf = CFrame.new(spec[1] + Vector3.new(0, size.Y / 2 + 0.6, 0)) * pivot.Rotation
-		local blocked = false
-		for _, part in workspace:GetPartBoundsInBox(boxCf, size * 0.9, params) do
-			if part.CanCollide and part.Transparency < 1 and part.Name ~= "Floor" then
-				blocked = true
-				break
-			end
-		end
-		if blocked then
-			clone:Destroy()
-			warn("[CasinoServer] extra slot cabinet " .. n .. " has no room at " .. tostring(spec[1]))
-		else
-			clone:PivotTo(goal * CFrame.new(0, pivot.Position.Y - template:GetBoundingBox().Position.Y + size.Y / 2 - (size.Y / 2), 0))
-			clone.Name = "Slots"
-			clone.Parent = slotsFolder
-			local id = "UltraSlots" .. n
-			local kind = spec[2]
-			local titles = { Slots = "Slots", DragonFortune = "Dragon Fortune" }
-			registerMachine(kind, id, clone, TIERS[spec[3]], titles[kind] or kind)
-		end
+local SLOT_TITLES = { Slots = "Slots", Cleopatra = "Cleopatra", DragonFortune = "Dragon Fortune", NeonWild = "NEON WILD", LuckySevens = "LUCKY SEVENS", GemRush = "GEM RUSH" }
+for i, spec in ipairs(SLOT_LAYOUT) do
+	if machines["Slots" .. i] then
+		retitle("Slots" .. i, spec[1], SLOT_TITLES[spec[1]] or spec[1], TIERS[spec[2]])
 	end
 end
--- One Standard and one High cabinet also switch to the new Dragon Fortune game.
-retitle("Slots3", "DragonFortune", "Dragon Fortune", machines["Slots3"] and machines["Slots3"].tier or TIERS.Standard)
-retitle("Slots12", "DragonFortune", "Dragon Fortune", machines["Slots12"] and machines["Slots12"].tier or TIERS.High)
 
 -- Roulette: built on clear casino floor.
 do
-	local ROULETTE_SPOT = CFrame.new(0, 0, 0) -- set below from the floor scan
+	-- Put a Part named "RouletteSpot" on the casino floor (anywhere in
+	-- BellagioBuilding) where the table should stand; its front faces the players.
+	local marker = building:FindFirstChild("RouletteSpot", true)
 	local id = "Roulette1"
-	local spot = CasinoTables.findClearSpot(ROULETTE_SPOT, Vector3.new(14, 5, 8), { building:FindFirstChild("Floor") })
+	local spot = nil
+	if marker and marker:IsA("BasePart") then
+		marker.Transparency = 1
+		marker.CanCollide = false
+		spot = CFrame.new(marker.Position - Vector3.new(0, marker.Size.Y / 2, 0)) * marker.CFrame.Rotation
+	end
 	if spot then
 		local machine = { id = id, kind = "Roulette", tier = TIERS.Roulette }
 		machines[id] = machine
@@ -322,7 +297,7 @@ do
 		end
 		print("[CasinoServer] roulette table built at " .. tostring(spot.Position))
 	else
-		warn("[CasinoServer] no clear floor for the roulette table")
+		print("[CasinoServer] roulette: add a Part named RouletteSpot to BellagioBuilding to place the table")
 	end
 end
 

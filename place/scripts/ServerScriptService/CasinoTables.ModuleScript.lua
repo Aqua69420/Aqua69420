@@ -118,7 +118,7 @@ end
 local function bacState(id: string): any
 	local s = baccarat[id]
 	if not s then
-		s = { id = id, phase = "Idle", deck = newDeck(8), player = {}, banker = {}, bets = {}, order = {}, round = 0, ends = 0, result = "", history = {} }
+		s = { id = id, phase = "Idle", deck = newDeck(8), player = {}, banker = {}, hiddenP = {}, hiddenB = {}, peeler = {}, bets = {}, order = {}, round = 0, ends = 0, result = "", history = {} }
 		baccarat[id] = s
 	end
 	return s
@@ -131,6 +131,24 @@ local function bacDraw(s: any): string
 	return table.remove(s.deck)
 end
 
+-- cards still face down show as "??" until peeled
+local function masked(cards: { string }, hidden: { boolean }?): { string }
+	local out = {}
+	for i, c in cards do
+		out[i] = if hidden and hidden[i] then "??" else c
+	end
+	return out
+end
+
+local function allShown(hidden: { boolean }?): boolean
+	for _, h in hidden or {} do
+		if h then
+			return false
+		end
+	end
+	return true
+end
+
 local function bacSnapshot(s: any, player: Player?): any
 	local mine = player and s.bets[player]
 	local list = {}
@@ -140,39 +158,79 @@ local function bacSnapshot(s: any, player: Player?): any
 			table.insert(list, { name = p.DisplayName, side = b.side, bet = b.bet, win = b.win, isYou = p == player })
 		end
 	end
+	local sq = s.squeeze
 	return {
 		ok = true,
 		phase = s.phase,
-		playerCards = table.clone(s.player),
-		bankerCards = table.clone(s.banker),
-		playerTotal = #s.player > 0 and bacTotal(s.player) or nil,
-		bankerTotal = #s.banker > 0 and bacTotal(s.banker) or nil,
+		playerCards = masked(s.player, s.hiddenP),
+		bankerCards = masked(s.banker, s.hiddenB),
+		playerTotal = #s.player > 0 and allShown(s.hiddenP) and bacTotal(s.player) or nil,
+		bankerTotal = #s.banker > 0 and allShown(s.hiddenB) and bacTotal(s.banker) or nil,
 		bets = list,
 		mySide = mine and mine.side or nil,
 		myBet = mine and mine.bet or 0,
 		myWin = mine and mine.win or 0,
 		result = s.result,
 		history = table.clone(s.history),
-		seconds = math.max(0, math.ceil(s.ends - now())),
+		seconds = if sq then math.max(0, math.ceil(sq.ends - now())) else math.max(0, math.ceil(s.ends - now())),
+		squeezeSide = sq and sq.side or nil,
+		canPeel = sq ~= nil and player ~= nil and s.peeler[sq.side] == player,
+		peelerName = sq and s.peeler[sq.side] and s.peeler[sq.side].DisplayName or nil,
 	}
+end
+
+-- The biggest bettor on each side peels that side's cards (squeeze), with a
+-- timer; with nobody on a side the dealer turns them over.
+local BAC_SQUEEZE = 7
+local function bacSqueeze(s: any, side: string, indices: { number })
+	local hidden = if side == "Player" then s.hiddenP else s.hiddenB
+	local peeler = s.peeler[side]
+	if peeler and peeler.Parent then
+		s.squeeze = { side = side, ends = now() + BAC_SQUEEZE, done = false }
+		while not s.squeeze.done and now() < s.squeeze.ends do
+			task.wait(0.1)
+		end
+	else
+		task.wait(0.8)
+	end
+	s.squeeze = nil
+	for _, i in indices do
+		hidden[i] = false
+	end
+	task.wait(1.1)
 end
 
 local function bacPlay(s: any, machine: any)
 	s.phase = "Dealing"
 	s.player, s.banker = {}, {}
-	local function give(hand: { string })
-		table.insert(hand, bacDraw(s))
-		task.wait(0.7)
+	s.hiddenP, s.hiddenB = {}, {}
+	s.squeeze = nil
+	-- biggest bettor on each side peels
+	s.peeler = {}
+	local biggest = { Player = 0, Banker = 0 }
+	for plr, bet in s.bets do
+		if (bet.side == "Player" or bet.side == "Banker") and bet.bet > biggest[bet.side] then
+			biggest[bet.side] = bet.bet
+			s.peeler[bet.side] = plr
+		end
 	end
-	give(s.player)
-	give(s.banker)
-	give(s.player)
-	give(s.banker)
+	local function give(hand: { string }, hidden: { boolean })
+		table.insert(hand, bacDraw(s))
+		table.insert(hidden, true)
+		task.wait(0.6)
+	end
+	give(s.player, s.hiddenP)
+	give(s.banker, s.hiddenB)
+	give(s.player, s.hiddenP)
+	give(s.banker, s.hiddenB)
+	bacSqueeze(s, "Player", { 1, 2 })
+	bacSqueeze(s, "Banker", { 1, 2 })
 	local p, b = bacTotal(s.player), bacTotal(s.banker)
 	if p < 8 and b < 8 then
 		local third: number? = nil
 		if p <= 5 then
-			give(s.player)
+			give(s.player, s.hiddenP)
+			bacSqueeze(s, "Player", { 3 })
 			third = bacValue(s.player[3])
 		end
 		b = bacTotal(s.banker)
@@ -193,7 +251,8 @@ local function bacPlay(s: any, machine: any)
 			bankerDraws = false
 		end
 		if bankerDraws then
-			give(s.banker)
+			give(s.banker, s.hiddenB)
+			bacSqueeze(s, "Banker", { 3 })
 		end
 	end
 	p, b = bacTotal(s.player), bacTotal(s.banker)
@@ -222,6 +281,7 @@ local function bacPlay(s: any, machine: any)
 		if s.round == token and s.phase == "Finished" then
 			s.phase = "Idle"
 			s.player, s.banker, s.bets, s.order = {}, {}, {}, {}
+			s.hiddenP, s.hiddenB = {}, {}
 		end
 	end)
 end
@@ -229,6 +289,12 @@ end
 local function baccaratAction(player: Player, machine: any, id: string, action: string, a: any, b: any): any
 	local s = bacState(id)
 	if action == "View" then
+		return bacSnapshot(s, player)
+	elseif action == "Peel" then
+		local sq = s.squeeze
+		if sq and s.peeler and s.peeler[sq.side] == player then
+			sq.done = true
+		end
 		return bacSnapshot(s, player)
 	elseif action == "Bet" then
 		local side = tostring(b)
@@ -1505,10 +1571,10 @@ local function renderLoop()
 				if s then
 					local groups = {}
 					if #s.player > 0 then
-						table.insert(groups, { key = "Player", anchor = machine.handAnchors[1], cards = s.player, label = "PLAYER " .. bacTotal(s.player) })
+						table.insert(groups, { key = "Player", anchor = machine.handAnchors[1], cards = masked(s.player, s.hiddenP), label = "PLAYER" .. (if allShown(s.hiddenP) then " " .. bacTotal(s.player) else "") })
 					end
 					if #s.banker > 0 then
-						table.insert(groups, { key = "Banker", anchor = machine.handAnchors[3], cards = s.banker, label = "BANKER " .. bacTotal(s.banker) })
+						table.insert(groups, { key = "Banker", anchor = machine.handAnchors[3], cards = masked(s.banker, s.hiddenB), label = "BANKER" .. (if allShown(s.hiddenB) then " " .. bacTotal(s.banker) else "") })
 					end
 					syncCards(machine, groups)
 				end
