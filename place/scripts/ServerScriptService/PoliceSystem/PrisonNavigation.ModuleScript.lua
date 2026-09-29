@@ -488,7 +488,15 @@ function Nav.refreshCellPairs(map: Instance)
         local obj=target(marker)
         if not obj or (used[obj] and (category=="IntakeCell" or category=="BookingCell")) then return false end
         if category=="IntakeCell" or category=="BookingCell" then used[obj]=true end
-        Nav.CellPairs[zone.Name]={category=category,door=marker.Name,pos=pos}
+        -- v201: capacity from the zone ("Low Security Cell 4 inmates") or a
+        -- Capacity attribute; a cell whose paired door is not on its own edge
+        -- (low security: the cellblock entrance) is an OPEN cell - no door.
+        local desc=tostring(zone:GetAttribute("ZoneType") or "")
+        local capacity=tonumber(zone:GetAttribute("Capacity")) or tonumber(string.match(string.lower(desc),"(%d+)%s*inmate")) or 1
+        local poly=footprint(zone)
+        local dp=Nav.doorFloor(marker)
+        local open=category=="LowSecurity" or (dp~=nil and #poly>=3 and edgeDist(dp.X,dp.Z,poly)>4)
+        Nav.CellPairs[zone.Name]={category=category,door=marker.Name,pos=pos,capacity=math.max(1,capacity),open=open}
         return true
     end
     for name,pair in verifiedCellPairs do
@@ -902,19 +910,28 @@ local function buildPortals()
 			end
 			local pA = ground(Vector3.new(inA.X, A.y, inA.Y))
 			local pB = ground(Vector3.new(inB.X, B.y, inB.Y))
-			-- v197: the border must be open along its length, not only at the
-			-- midpoint (a single gap/doorframe used to create a whole portal).
-			local open = rayClear(pA, pB)
-			if open and span >= 8 then
-				for _, f in { 0.25, 0.75 } do
-					local m2 = first:Lerp(last, f)
-					local a2, b2 = m2 + normal * 3, m2 - normal * 3
-					if not pointInPoly(a2.X, a2.Y, A.poly) then a2, b2 = b2, a2 end
-					if not rayClear(ground(Vector3.new(a2.X, A.y, a2.Y)), ground(Vector3.new(b2.X, B.y, b2.Y))) then
-						open = false
-						break
-					end
+			-- v201: scan the whole shared border 1 stud at a time and use the
+			-- longest OPEN run: an off-centre doorway (open low-security cells)
+			-- is found, and a wall with one gap no longer becomes a wide portal.
+			local steps = math.max(1, math.floor(span))
+			local bestStart, bestLen, runStart = nil, 0, nil
+			for s = 0, steps do
+				local m2 = first:Lerp(last, s / steps)
+				local a2, b2 = m2 + normal * 3, m2 - normal * 3
+				if not pointInPoly(a2.X, a2.Y, A.poly) then a2, b2 = b2, a2 end
+				local clear = rayClear(ground(Vector3.new(a2.X, A.y, a2.Y)), ground(Vector3.new(b2.X, B.y, b2.Y)))
+				if clear then
+					runStart = runStart or s
+					local len = s - runStart
+					if len > bestLen then bestStart, bestLen = runStart, len end
+				else
+					runStart = nil
 				end
+			end
+			local open = bestStart ~= nil and bestLen * (span / steps) >= CFG.PortalMinSpan
+			if open then
+				mid = first:Lerp(last, (bestStart + bestLen / 2) / steps)
+				midV = Vector3.new(mid.X, (A.y + B.y) / 2, mid.Y)
 			end
 			if open then
 				local id = addNode(ground(midV), "PORTAL", { name = A.name .. " | " .. B.name })
@@ -1909,10 +1926,21 @@ local function pathStep(s: any, root: BasePart, goal: Vector3, radius: number, a
 	return false
 end
 
+-- v201: is any graph node of this zone on the main connected network?
+function Nav.zoneConnected(zoneName: string): boolean
+	local z=zoneByName[zoneName]
+	if not z then return false end
+	for _,id in z.members do
+		if componentOf[id]==mainComponent then return true end
+	end
+	return false
+end
+
 function Nav.isInsideCell(room: any, pos: Vector3): boolean
 	local z=zoneByName[room.name]
 	if not z or not z.cell or math.abs(pos.Y-z.y)>6 then return false end
 	if not pointInPoly(pos.X,pos.Z,z.poly) or edgeDist(pos.X,pos.Z,z.poly)<1 then return false end
+	if room.open then return true end -- doorless cell: inside the footprint is inside
 	local dp=Nav.doorFloor(room.door)
 	if not dp then return false end
 	local toward=flat(room.pos-dp)
@@ -1921,6 +1949,7 @@ function Nav.isInsideCell(room: any, pos: Vector3): boolean
 end
 
 function Nav.cellStand(room: any, cop: any, character: Model): Vector3
+	if room.open then return room.pos end
 	local dp=Nav.doorFloor(room.door)
 	if not dp then return room.pos end
 	local center=room.door:FindFirstChild("Center")
