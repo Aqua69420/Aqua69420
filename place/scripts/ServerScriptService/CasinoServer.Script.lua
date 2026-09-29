@@ -116,22 +116,10 @@ local function sign(part, tier, label)
 	gui.Parent = part
 end
 
-local function register(kind, list)
-	local count = #list
-	for i, model in ipairs(list) do
-		local tierKey = "Standard"
-		if i > count - ULTRA_COUNT[kind] then
-			tierKey = "Ultra"
-		elseif i > count - ULTRA_COUNT[kind] - HIGH_COUNT[kind] then
-			tierKey = "High"
-		end
-		local tier = TIERS[tierKey]
-		local focus = model:FindFirstChild("Focus", true) or model:FindFirstChild("Focus1", true)
+local function registerMachine(kind, id, model, tier, label, focusPart)
+		local focus = focusPart or model:FindFirstChild("Focus", true) or model:FindFirstChild("Focus1", true)
 			or model:FindFirstChildWhichIsA("BasePart", true)
-		local id = kind .. i
 		machines[id] = { id = id, kind = kind, tier = tier, focus = focus, model = model }
-
-		local label = kind == "Slots" and "Slots" or (kind == "Keno" and "Keno" or "Blackjack")
 		sign(focus, tier, label)
 		local prompt = Instance.new("ProximityPrompt")
 		prompt.Name = "PlayPrompt"
@@ -147,6 +135,19 @@ local function register(kind, list)
 			local current = machines[id]
 			casinoEvent:FireClient(player, current.kind, id, current.tier.name, current.tier.min, current.tier.max, current.tableCamera)
 		end)
+end
+
+local function register(kind, list)
+	local count = #list
+	for i, model in ipairs(list) do
+		local tierKey = "Standard"
+		if i > count - ULTRA_COUNT[kind] then
+			tierKey = "Ultra"
+		elseif i > count - ULTRA_COUNT[kind] - HIGH_COUNT[kind] then
+			tierKey = "High"
+		end
+		local label = kind == "Slots" and "Slots" or (kind == "Keno" and "Keno" or "Blackjack")
+		registerMachine(kind, kind .. i, model, TIERS[tierKey], label)
 	end
 end
 
@@ -208,6 +209,122 @@ for i=2,16 do
 end
 register("Keno", collect("KenoMachines", "Keno"))
 register("BlackJack", collect("BlackJackTables", "BlackJack"))
+
+---------------------------------------------------------------------------
+-- v208: Baccarat, No-Limit Hold'em, Roulette, Dragon Fortune and extra
+-- Ultra High Limit slot cabinets (rules live in CasinoTables).
+---------------------------------------------------------------------------
+local CasinoTables = require(script.Parent:WaitForChild("CasinoTables"))
+TIERS.NoLimit = { name = "No Limit", min = 1, max = 1e12, color = Color3.fromRGB(230, 90, 60) }
+TIERS.Roulette = { name = "Roulette", min = 10, max = 10000000, color = Color3.fromRGB(200, 60, 60) }
+
+local function retitle(id, kind, label, tier, signText)
+	local machine = machines[id]
+	if not machine then
+		warn("[CasinoServer] no machine " .. id .. " to turn into " .. label)
+		return
+	end
+	machine.kind = kind
+	machine.tier = tier
+	if machine.focus then
+		local old = machine.focus:FindFirstChild("LimitSign")
+		if old then
+			old:Destroy()
+		end
+		sign(machine.focus, tier, label)
+		if signText then
+			local gui = machine.focus:FindFirstChild("LimitSign")
+			local text = gui and gui:FindFirstChildOfClass("TextLabel")
+			if text then
+				text.Text = signText
+			end
+		end
+		local prompt = machine.focus:FindFirstChild("PlayPrompt")
+		if prompt then
+			prompt.ActionText = "Play " .. label
+			prompt.ObjectText = tier.name
+		end
+	end
+	print(("[CasinoServer] %s is now %s"):format(id, label))
+end
+
+-- The three Standard blackjack tables upstairs: one stays blackjack, one deals
+-- baccarat, one hosts no-limit hold'em (players choose the blinds).
+retitle("BlackJack2", "Baccarat", "Baccarat", TIERS.Standard)
+retitle("BlackJack3", "Holdem", "Texas Hold'em", TIERS.NoLimit, "NO LIMIT\nTEXAS HOLD'EM - you set the blinds")
+
+-- Extra Ultra High Limit slot cabinets, cloned from an existing cabinet and
+-- placed on clear floor next to the slot rows.
+local EXTRA_SLOTS = {
+	-- { position, kind, tier }
+}
+do
+	local template = machines["Slots5"] and machines["Slots5"].model
+	local slotsFolder = building:FindFirstChild("Slots")
+	local params = OverlapParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	for n, spec in EXTRA_SLOTS do
+		if not template or not slotsFolder then
+			break
+		end
+		local clone = template:Clone()
+		for _, d in clone:GetDescendants() do
+			if d.Name == "LimitSign" or d.Name == "PlayPrompt" then
+				d:Destroy()
+			end
+		end
+		local pivot = template:GetPivot()
+		local goal = CFrame.new(spec[1]) * pivot.Rotation * (spec[4] or CFrame.new())
+		local _, size = template:GetBoundingBox()
+		params.FilterDescendantsInstances = { template, clone }
+		local boxCf = CFrame.new(spec[1] + Vector3.new(0, size.Y / 2 + 0.6, 0)) * pivot.Rotation
+		local blocked = false
+		for _, part in workspace:GetPartBoundsInBox(boxCf, size * 0.9, params) do
+			if part.CanCollide and part.Transparency < 1 and part.Name ~= "Floor" then
+				blocked = true
+				break
+			end
+		end
+		if blocked then
+			clone:Destroy()
+			warn("[CasinoServer] extra slot cabinet " .. n .. " has no room at " .. tostring(spec[1]))
+		else
+			clone:PivotTo(goal * CFrame.new(0, pivot.Position.Y - template:GetBoundingBox().Position.Y + size.Y / 2 - (size.Y / 2), 0))
+			clone.Name = "Slots"
+			clone.Parent = slotsFolder
+			local id = "UltraSlots" .. n
+			local kind = spec[2]
+			local titles = { Slots = "Slots", DragonFortune = "Dragon Fortune" }
+			registerMachine(kind, id, clone, TIERS[spec[3]], titles[kind] or kind)
+		end
+	end
+end
+-- One Standard and one High cabinet also switch to the new Dragon Fortune game.
+retitle("Slots3", "DragonFortune", "Dragon Fortune", machines["Slots3"] and machines["Slots3"].tier or TIERS.Standard)
+retitle("Slots12", "DragonFortune", "Dragon Fortune", machines["Slots12"] and machines["Slots12"].tier or TIERS.High)
+
+-- Roulette: built on clear casino floor.
+do
+	local ROULETTE_SPOT = CFrame.new(0, 0, 0) -- set below from the floor scan
+	local id = "Roulette1"
+	local spot = CasinoTables.findClearSpot(ROULETTE_SPOT, Vector3.new(14, 5, 8), { building:FindFirstChild("Floor") })
+	if spot then
+		local machine = { id = id, kind = "Roulette", tier = TIERS.Roulette }
+		machines[id] = machine
+		local focus = CasinoTables.buildRoulette(machine, spot, building)
+		machines[id] = nil
+		registerMachine("Roulette", id, machine.model, TIERS.Roulette, "Roulette", focus)
+		local registered = machines[id]
+		for k, v in machine do
+			if registered[k] == nil then
+				registered[k] = v
+			end
+		end
+		print("[CasinoServer] roulette table built at " .. tostring(spot.Position))
+	else
+		warn("[CasinoServer] no clear floor for the roulette table")
+	end
+end
 
 ---------------------------------------------------------------------------
 -- Helpers
@@ -716,7 +833,7 @@ local function physicalCard(machine,key,value,anchor,index,count)
  end
 end
 
-for _,machine in machines do if machine.kind=="BlackJack" then prepareTable(machine) end end
+for _,machine in machines do if machine.kind=="BlackJack" or machine.kind=="Baccarat" or machine.kind=="Holdem" then prepareTable(machine) end end
 task.spawn(function()
  while true do
   for id,state in blackjackTables do
@@ -757,6 +874,11 @@ task.spawn(function()
   task.wait(0.15)
  end
 end)
+
+CasinoTables.init({
+	economy = economy, validBet = validBet, pay = pay, holdWin = holdWin, machines = machines,
+	physicalCard = physicalCard, MAX_MULTIPLIER = MAX_MULTIPLIER,
+})
 
 local function settle(ps, result, multiplier)
 	if ps.settled then return end
@@ -996,12 +1118,19 @@ casinoFn.OnServerInvoke = function(player, action, id, a, b)
 	if machine.kind == "BlackJack" and action == "View" then
 		return blackjack(player, machine, id, "View", a)
 	end
+	if CasinoTables.isTable(machine.kind) and action == "View" then
+		return CasinoTables.handle(player, machine, "View", a, b)
+	end
 	local now = os.clock()
 	if lastAction[player] and now - lastAction[player] < 0.25 then
 		return { ok = false, message = "Slow down" }
 	end
 	lastAction[player] = now
 
+	local handled = CasinoTables.handle(player, machine, action, a, b)
+	if handled then
+		return handled
+	end
 	if SLOT_GAMES[machine.kind] and action=="Spin" then
         local stake,err=validBet(player,machine,a)
         if not stake then return {ok=false,message=err} end
@@ -1023,6 +1152,7 @@ casinoFn.OnServerInvoke = function(player, action, id, a, b)
 end
 
 Players.PlayerRemoving:Connect(function(player)
+	pcall(CasinoTables.playerRemoving, player)
 	for _, state in pairs(blackjackTables) do
 		local ps = state.players[player]
 		if ps then
