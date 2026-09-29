@@ -131,6 +131,8 @@ local function bacDraw(s: any): string
 	return table.remove(s.deck)
 end
 
+local bacPeelCards: (any) -> { any }
+
 -- cards still face down show as "??" until peeled
 local function masked(cards: { string }, hidden: { boolean }?): { string }
 	local out = {}
@@ -147,6 +149,17 @@ local function allShown(hidden: { boolean }?): boolean
 		end
 	end
 	return true
+end
+
+bacPeelCards = function(s: any): { any }
+	local sq = s.squeeze
+	local cards = if sq.side == "Player" then s.player else s.banker
+	local hidden = if sq.side == "Player" then s.hiddenP else s.hiddenB
+	local out = {}
+	for _, i in sq.indices do
+		table.insert(out, { index = i, card = cards[i], hidden = hidden[i] == true })
+	end
+	return out
 end
 
 local function bacSnapshot(s: any, player: Player?): any
@@ -176,18 +189,30 @@ local function bacSnapshot(s: any, player: Player?): any
 		squeezeSide = sq and sq.side or nil,
 		canPeel = sq ~= nil and player ~= nil and s.peeler[sq.side] == player,
 		peelerName = sq and s.peeler[sq.side] and s.peeler[sq.side].DisplayName or nil,
+		-- only the peeler receives the face-down card values (for the squeeze view)
+		peelCards = if sq and player and s.peeler[sq.side] == player then bacPeelCards(s) else nil,
 	}
 end
 
--- The biggest bettor on each side peels that side's cards (squeeze), with a
--- timer; with nobody on a side the dealer turns them over.
-local BAC_SQUEEZE = 7
+-- The biggest bettor on each side peels that side's cards (the squeeze). The
+-- coup waits for the peel; after BAC_SQUEEZE seconds the dealer turns them.
+-- With nobody on a side the dealer turns them over straight away.
+local BAC_SQUEEZE = 35
 local function bacSqueeze(s: any, side: string, indices: { number })
 	local hidden = if side == "Player" then s.hiddenP else s.hiddenB
 	local peeler = s.peeler[side]
 	if peeler and peeler.Parent then
-		s.squeeze = { side = side, ends = now() + BAC_SQUEEZE, done = false }
-		while not s.squeeze.done and now() < s.squeeze.ends do
+		s.squeeze = { side = side, indices = indices, ends = now() + BAC_SQUEEZE }
+		while now() < s.squeeze.ends and peeler.Parent do
+			local open = false
+			for _, i in indices do
+				if hidden[i] then
+					open = true
+				end
+			end
+			if not open then
+				break
+			end
 			task.wait(0.1)
 		end
 	else
@@ -291,9 +316,16 @@ local function baccaratAction(player: Player, machine: any, id: string, action: 
 	if action == "View" then
 		return bacSnapshot(s, player)
 	elseif action == "Peel" then
+		-- a = card index the peeler has fully peeled (nil = turn them all)
 		local sq = s.squeeze
 		if sq and s.peeler and s.peeler[sq.side] == player then
-			sq.done = true
+			local hidden = if sq.side == "Player" then s.hiddenP else s.hiddenB
+			local index = tonumber(a)
+			for _, i in sq.indices do
+				if index == nil or index == i then
+					hidden[i] = false
+				end
+			end
 		end
 		return bacSnapshot(s, player)
 	elseif action == "Bet" then
@@ -1288,6 +1320,7 @@ local function heSnapshot(s: any, player: Player?): any
 			table.insert(seats, {
 				seat = i,
 				name = seat.name,
+				userId = if seat.player then seat.player.UserId else 0,
 				bot = seat.bot == true,
 				isYou = i == mySeat,
 				stack = seat.stack,

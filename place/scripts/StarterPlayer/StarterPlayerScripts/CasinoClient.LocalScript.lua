@@ -9,6 +9,51 @@ local player = Players.LocalPlayer
 local casino = ReplicatedStorage:WaitForChild("Functions"):WaitForChild("Casino")
 local openEvent = ReplicatedStorage:WaitForChild("Events"):WaitForChild("CasinoOpen")
 
+local Cards = require(ReplicatedStorage:WaitForChild("CasinoCards"))
+local ART = require(ReplicatedStorage:WaitForChild("CasinoArt"))
+
+-- v209: symbol artwork from ReplicatedStorage.CasinoArt (0 = drawn symbol)
+local function showArt(lbl, game, sym)
+	local set = ART[game]
+	local id = set and tonumber(set[sym]) or 0
+	local img = lbl:FindFirstChild("Art")
+	if id and id > 0 then
+		if not img then
+			img = Instance.new("ImageLabel")
+			img.Name = "Art"
+			img.BackgroundTransparency = 1
+			img.Size = UDim2.fromScale(0.9, 0.9)
+			img.AnchorPoint = Vector2.new(0.5, 0.5)
+			img.Position = UDim2.fromScale(0.5, 0.5)
+			img.ScaleType = Enum.ScaleType.Fit
+			img.Parent = lbl
+		end
+		img.Image = ("rbxthumb://type=Asset&id=%d&w=150&h=150"):format(id)
+		img.Visible = true
+		lbl.TextTransparency = 1
+	else
+		if img then
+			img.Visible = false
+		end
+		lbl.TextTransparency = 0
+	end
+end
+
+local function artBackground(frame, game)
+	local id = ART[game] and tonumber(ART[game].Background) or 0
+	if id and id > 0 then
+		local bg = Instance.new("ImageLabel")
+		bg.Name = "ArtBackground"
+		bg.BackgroundTransparency = 1
+		bg.Size = UDim2.fromScale(1, 1)
+		bg.ZIndex = 0
+		bg.ScaleType = Enum.ScaleType.Crop
+		bg.ImageTransparency = 0.25
+		bg.Image = ("rbxthumb://type=Asset&id=%d&w=768&h=432"):format(id)
+		bg.Parent = frame
+	end
+end
+
 local FELT = Color3.fromRGB(18, 70, 40)
 local DARK = Color3.fromRGB(25, 25, 30)
 local GOLD = Color3.fromRGB(235, 185, 40)
@@ -38,6 +83,7 @@ local screen = Instance.new("ScreenGui")
 screen.Name = "CasinoGui"
 screen.ResetOnSpawn = false
 screen.DisplayOrder = 18
+screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling -- children draw over their parents (card widgets, overlays)
 screen.Parent = player:WaitForChild("PlayerGui")
 
 local function make(className, props, parent)
@@ -168,6 +214,7 @@ end
 ---------------------------------------------------------------------------
 local function openSlots(id, tierName, minBet, maxBet)
 	local frame, getBet, status = window("SLOTS", tierName, minBet, maxBet, 0.5)
+	artBackground(frame, "Slots")
 	local reels = {}
 	for i = 1, 3 do
 		local box = make("Frame", { Position = UDim2.new(0.08 + (i - 1) * 0.29, 0, 0.18, 0), Size = UDim2.new(0.26, 0, 0.5, 0), BackgroundColor3 = WHITE, BorderSizePixel = 0 }, frame)
@@ -196,9 +243,12 @@ local function openSlots(id, tierName, minBet, maxBet)
 						stopped[i] = true
 						if result.ok then
 							reels[i].Text = ICONS[result.reels[i]]
+							showArt(reels[i], "Slots", result.reels[i])
 						end
 					else
-						reels[i].Text = ICONS[ICON_LIST[math.random(1, #ICON_LIST)]]
+						local sym = ICON_LIST[math.random(1, #ICON_LIST)]
+						reels[i].Text = ICONS[sym]
+						showArt(reels[i], "Slots", sym)
 					end
 				end
 			end
@@ -232,6 +282,7 @@ end
 ---------------------------------------------------------------------------
 local function openCleopatra(id, tierName, minBet, maxBet)
 	local frame, getBet, status = window("CLEOPATRA  -  20 paylines, wilds & scatters", tierName, minBet, maxBet, 0.66)
+	artBackground(frame, "Cleopatra")
 	local cells = {} -- cells[col][row]
 	for col = 1, 5 do
 		cells[col] = {}
@@ -262,6 +313,7 @@ local function openCleopatra(id, tierName, minBet, maxBet)
 				local sym = flat[i]
 				cells[col][row].Text = CLEO_ICONS[sym]
 				cells[col][row].TextColor3 = CLEO_COLORS[sym]
+				showArt(cells[col][row], "Cleopatra", sym)
 				i += 1
 			end
 		end
@@ -272,6 +324,7 @@ local function openCleopatra(id, tierName, minBet, maxBet)
 			local sym = flat[(col - 1) * 3 + row]
 			cells[col][row].Text = CLEO_ICONS[sym]
 			cells[col][row].TextColor3 = CLEO_COLORS[sym]
+			showArt(cells[col][row], "Cleopatra", sym)
 		end
 	end
 
@@ -302,6 +355,7 @@ local function openCleopatra(id, tierName, minBet, maxBet)
 							local sym = CLEO_ICON_LIST[math.random(1, #CLEO_ICON_LIST)]
 							cells[col][row].Text = CLEO_ICONS[sym]
 							cells[col][row].TextColor3 = CLEO_COLORS[sym]
+							showArt(cells[col][row], "Cleopatra", sym)
 						end
 					end
 				end
@@ -839,6 +893,7 @@ do
 	function NEW.DragonFortune(id, tierName, minBet, maxBet)
 		local frame, getBet, status = window("DRAGON FORTUNE  -  243 ways", tierName, minBet, maxBet, 0.7)
 		frame.BackgroundColor3 = Color3.fromRGB(90, 16, 18)
+		artBackground(frame, "DragonFortune")
 		local cells = {}
 		for col = 1, 5 do
 			cells[col] = {}
@@ -855,6 +910,7 @@ do
 		local function show(sym, cell)
 			cell.Text = DRAGON_ICONS[sym] or sym
 			cell.TextColor3 = DRAGON_COLORS[sym] or WHITE
+			showArt(cell, "DragonFortune", sym)
 		end
 		local banner = label(frame, "", { Position = UDim2.fromScale(0.03, 0.635), Size = UDim2.fromScale(0.94, 0.045), TextColor3 = GOLD })
 		label(frame, "Any 3+ matching on adjacent reels from the left, any row. WILD (reels 2-4) substitutes. 3+ ⚪ Pearls anywhere: 8-20 free spins at 2x.", {
@@ -942,81 +998,141 @@ do
 	-- Baccarat
 	-------------------------------------------------------------------------
 	function NEW.Baccarat(id, tierName, minBet, maxBet, tableCamera)
-		local frame, getBet, status = window("BACCARAT  -  Player 1:1  •  Banker 0.95:1  •  Tie 8:1", tierName, minBet, maxBet, 0.74)
-		frame.Size = UDim2.fromScale(0.8, 0.74)
-		local board = make("Frame", { Position = UDim2.fromScale(0.02, 0.15), Size = UDim2.fromScale(0.96, 0.4), BackgroundTransparency = 1 }, frame)
-		local info = label(frame, "", { Position = UDim2.fromScale(0.02, 0.56), Size = UDim2.fromScale(0.96, 0.08), TextWrapped = true, Font = Enum.Font.SourceSans })
-		local road = label(frame, "", { Position = UDim2.fromScale(0.02, 0.64), Size = UDim2.fromScale(0.96, 0.06), TextColor3 = GOLD, Font = Enum.Font.Code })
-		local sides = {}
-		local colors = { Player = Color3.fromRGB(40, 90, 190), Banker = RED, Tie = GREEN }
-		for i, side in ipairs({ "Player", "Banker", "Tie" }) do
-			local b = button(frame, side:upper(), colors[side], { Position = UDim2.fromScale(0.62 + (i - 1) * 0.12, 0.84), Size = UDim2.fromScale(0.11, 0.12) })
-			sides[side] = b
-			b.MouseButton1Click:Connect(function()
-				local r = request("Bet", id, getBet(), side)
+		local frame, getBet, status = window("BACCARAT", tierName, minBet, maxBet, 0.9)
+		frame.Size = UDim2.fromScale(0.9, 0.9)
+		status.Position = UDim2.fromScale(0.02, 0.77)
+		status.Size = UDim2.fromScale(0.96, 0.06)
+		-- the table
+		local rail = make("Frame", { Position = UDim2.fromScale(0.03, 0.13), Size = UDim2.fromScale(0.94, 0.63), BackgroundColor3 = Color3.fromRGB(70, 38, 20), BorderSizePixel = 0 }, frame)
+		make("UICorner", { CornerRadius = UDim.new(0.25, 0) }, rail)
+		local felt = make("Frame", { Position = UDim2.fromScale(0.015, 0.03), Size = UDim2.fromScale(0.97, 0.94), BackgroundColor3 = Color3.fromRGB(18, 92, 52), BorderSizePixel = 0 }, rail)
+		make("UICorner", { CornerRadius = UDim.new(0.25, 0) }, felt)
+		make("UIGradient", { Color = ColorSequence.new(Color3.fromRGB(30, 120, 70), Color3.fromRGB(10, 60, 34)), Rotation = 90 }, felt)
+		label(felt, "BACCARAT  •  BANKER PAYS 19 TO 20  •  TIE PAYS 8 TO 1", { Position = UDim2.fromScale(0.1, 0.02), Size = UDim2.fromScale(0.8, 0.06), TextColor3 = Color3.fromRGB(230, 200, 120), Font = Enum.Font.Garamond })
+		local hands = {
+			Player = make("Frame", { Position = UDim2.fromScale(0.05, 0.1), Size = UDim2.fromScale(0.42, 0.42), BackgroundTransparency = 1 }, felt),
+			Banker = make("Frame", { Position = UDim2.fromScale(0.53, 0.1), Size = UDim2.fromScale(0.42, 0.42), BackgroundTransparency = 1 }, felt),
+		}
+		-- betting zones on the felt
+		local zones = {}
+		local zoneSpec = { { "Player", "PLAYER  1:1", Color3.fromRGB(40, 90, 190), 0.05 }, { "Tie", "TIE  8:1", Color3.fromRGB(30, 150, 70), 0.37 }, { "Banker", "BANKER  0.95:1", Color3.fromRGB(190, 40, 45), 0.66 } }
+		for _, z in ipairs(zoneSpec) do
+			local zone = make("TextButton", {
+				Position = UDim2.fromScale(z[4], 0.6), Size = UDim2.fromScale(z[1] == "Tie" and 0.26 or 0.29, 0.3),
+				BackgroundColor3 = z[3], BackgroundTransparency = 0.35, Text = "", AutoButtonColor = true, BorderSizePixel = 0,
+			}, felt)
+			make("UICorner", { CornerRadius = UDim.new(0.2, 0) }, zone)
+			make("UIStroke", { Color = Color3.fromRGB(240, 220, 150), Thickness = 2 }, zone)
+			label(zone, z[2], { Size = UDim2.fromScale(1, 0.45), Font = Enum.Font.GothamBlack })
+			local chips = label(zone, "", { Position = UDim2.fromScale(0, 0.45), Size = UDim2.fromScale(1, 0.5), Font = Enum.Font.Gotham, TextColor3 = Color3.fromRGB(255, 230, 140) })
+			zones[z[1]] = { button = zone, chips = chips }
+			zone.MouseButton1Click:Connect(function()
+				local r = request("Bet", id, getBet(), z[1])
 				if not r.ok then
 					status.Text = r.message
 				end
 			end)
 		end
-		local peel = button(frame, "PEEL", GOLD, { Position = UDim2.fromScale(0.62, 0.84), Size = UDim2.fromScale(0.35, 0.12), Visible = false, ZIndex = 5 })
-		peel.TextColor3 = Color3.new(0, 0, 0)
-		peel.MouseButton1Click:Connect(function()
-			request("Peel", id)
-		end)
-		local TweenService = game:GetService("TweenService")
-		-- a card that just turned over is uncovered from the bottom up (the squeeze)
-		local function peelReveal(box)
-			local cover = make("Frame", {
-				AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0), Size = UDim2.fromScale(1, 1),
-				BackgroundColor3 = Color3.fromRGB(35, 57, 110), BorderSizePixel = 0, ZIndex = 4,
-			}, box)
-			make("UICorner", { CornerRadius = UDim.new(0, 5) }, cover)
-			TweenService:Create(cover, TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), { Size = UDim2.fromScale(1, 0) }):Play()
+		local road = make("Frame", { Position = UDim2.fromScale(0.62, 0.84), Size = UDim2.fromScale(0.35, 0.12), BackgroundColor3 = Color3.fromRGB(245, 245, 240), BorderSizePixel = 0 }, frame)
+		make("UICorner", { CornerRadius = UDim.new(0, 6) }, road)
+		make("UIGridLayout", { CellSize = UDim2.fromScale(0.065, 0.42), CellPadding = UDim2.fromScale(0.005, 0.06), SortOrder = Enum.SortOrder.LayoutOrder }, road)
+
+		-- squeeze overlay (only for whoever holds the biggest bet on that side)
+		local overlay = nil
+		local overlayKey = nil
+		local function closeOverlay()
+			if overlay then
+				overlay:Destroy()
+				overlay = nil
+				overlayKey = nil
+			end
 		end
-		local lastKey
-		local shown = { Player = {}, Banker = {} }
-		local function drawSide(cards, x, side)
-			for i, card in ipairs(cards) do
-				local box = cardBox(board, card, { Position = UDim2.fromScale(x + (i - 1) * 0.15, 0.22), Size = UDim2.fromScale(0.13, 0.74) })
-				if card ~= "??" and shown[side][i] == "??" then
-					peelReveal(box)
+		local function openOverlay(st)
+			local key = st.squeezeSide
+			for _, pc in ipairs(st.peelCards) do
+				key ..= pc.index
+			end
+			if key == overlayKey then
+				return
+			end
+			closeOverlay()
+			overlayKey = key
+			overlay = make("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.fromRGB(6, 30, 18), BackgroundTransparency = 0.08, ZIndex = 10 }, frame)
+			make("UICorner", { CornerRadius = UDim.new(0, 10) }, overlay)
+			label(overlay, "SQUEEZE THE " .. st.squeezeSide:upper() .. " CARDS", { Position = UDim2.fromScale(0.1, 0.03), Size = UDim2.fromScale(0.8, 0.08), TextColor3 = GOLD, ZIndex = 11 })
+			label(overlay, "Press on a card and drag an edge to bend it up. You'll see the pips - peel all the way to turn it.", { Position = UDim2.fromScale(0.1, 0.11), Size = UDim2.fromScale(0.8, 0.05), Font = Enum.Font.Gotham, ZIndex = 11 })
+			local count = 0
+			for _, pc in ipairs(st.peelCards) do
+				if pc.hidden then
+					count += 1
 				end
-				shown[side][i] = card
 			end
-			for i = #cards + 1, 3 do
-				shown[side][i] = nil
+			local n = 0
+			for _, pc in ipairs(st.peelCards) do
+				if pc.hidden then
+					n += 1
+					local x = 0.5 + (n - (count + 1) / 2) * 0.3
+					local widget = Cards.squeeze(overlay, pc.card, {
+						AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(x, 0.55), Size = UDim2.fromScale(0.26, 0.62), ZIndex = 12,
+					}, function()
+						request("Peel", id, pc.index)
+					end)
+				end
 			end
+			local all = button(overlay, "TURN THEM OVER", DARK, { Position = UDim2.fromScale(0.35, 0.9), Size = UDim2.fromScale(0.3, 0.07), ZIndex = 13 })
+			all.MouseButton1Click:Connect(function()
+				request("Peel", id)
+			end)
 		end
+
+		local lastKey
 		local function render(st)
 			local key = table.concat(st.playerCards, ",") .. "|" .. table.concat(st.bankerCards, ",")
 			if key ~= lastKey then
 				lastKey = key
-				board:ClearAllChildren()
-				label(board, "PLAYER" .. (st.playerTotal and ("  " .. st.playerTotal) or ""), { Position = UDim2.fromScale(0, 0), Size = UDim2.fromScale(0.48, 0.18), TextColor3 = Color3.fromRGB(120, 170, 255) })
-				label(board, "BANKER" .. (st.bankerTotal and ("  " .. st.bankerTotal) or ""), { Position = UDim2.fromScale(0.52, 0), Size = UDim2.fromScale(0.48, 0.18), TextColor3 = Color3.fromRGB(255, 120, 120) })
-				drawSide(st.playerCards, 0.02, "Player")
-				drawSide(st.bankerCards, 0.54, "Banker")
+				for side, holder in pairs(hands) do
+					holder:ClearAllChildren()
+					local cards = side == "Player" and st.playerCards or st.bankerCards
+					local total = side == "Player" and st.playerTotal or st.bankerTotal
+					label(holder, side:upper() .. (total and ("   " .. total) or ""), { Size = UDim2.fromScale(1, 0.2), TextColor3 = side == "Player" and Color3.fromRGB(150, 190, 255) or Color3.fromRGB(255, 150, 150), Font = Enum.Font.GothamBlack })
+					for i, card in ipairs(cards) do
+						local c = Cards.card(holder, card, { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.2 + (i - 1) * 0.3, 0.24), Size = UDim2.fromScale(0.28, 0.74) })
+						if i == 3 then
+							c.Rotation = 90 -- third card is dealt sideways, as at a real table
+						end
+					end
+				end
 			end
-			peel.Visible = st.canPeel == true
-			peel.Text = st.squeezeSide and ("PEEL " .. st.squeezeSide:upper() .. " (" .. st.seconds .. "s)") or "PEEL"
-			local lines = {}
+			local totals = { Player = 0, Banker = 0, Tie = 0 }
 			for _, b in ipairs(st.bets) do
-				table.insert(lines, ("%s%s %s on %s%s"):format(b.isYou and "▶ " or "", b.name, fmt(b.bet), b.side, (b.win and b.win > 0) and (" → " .. fmt(b.win)) or ""))
+				totals[b.side] += b.bet
 			end
-			info.Text = #lines > 0 and table.concat(lines, "   •   ") or "No bets yet"
-			road.Text = "Last coups: " .. (#st.history > 0 and table.concat(st.history, " ") or "-")
-			for _, b in pairs(sides) do
-				b.Visible = st.phase == "Idle" or st.phase == "Finished" or (st.phase == "Betting" and not st.mySide)
+			for side, z in pairs(zones) do
+				local mineHere = st.mySide == side and st.myBet or 0
+				z.chips.Text = (mineHere > 0 and ("YOU " .. fmt(mineHere) .. "\n") or "") .. (totals[side] > 0 and ("table " .. fmt(totals[side])) or "")
+				z.button.Active = st.phase == "Idle" or st.phase == "Finished" or (st.phase == "Betting" and not st.mySide)
+			end
+			road:ClearAllChildren()
+			make("UIGridLayout", { CellSize = UDim2.fromScale(0.065, 0.42), CellPadding = UDim2.fromScale(0.005, 0.06), SortOrder = Enum.SortOrder.LayoutOrder }, road)
+			for i = #st.history, 1, -1 do
+				local h = st.history[i]
+				local dot = make("Frame", { BackgroundColor3 = h == "P" and Color3.fromRGB(40, 90, 190) or (h == "B" and RED or GREEN), BorderSizePixel = 0, LayoutOrder = #st.history - i }, road)
+				make("UICorner", { CornerRadius = UDim.new(1, 0) }, dot)
+				label(dot, h, { Size = UDim2.fromScale(1, 1) })
+			end
+			if st.canPeel and st.peelCards then
+				openOverlay(st)
+			else
+				closeOverlay()
 			end
 			if st.phase == "Idle" then
-				status.Text = "Choose your bet and press PLAYER, BANKER or TIE to open the coup"
+				status.Text = "Set your bet, then tap PLAYER, BANKER or TIE on the felt"
 			elseif st.phase == "Betting" then
 				status.Text = (st.mySide and ("Your " .. fmt(st.myBet) .. " is on " .. st.mySide .. "  -  ") or "BETS OPEN  -  ") .. ("cards in %ds"):format(st.seconds)
 			elseif st.phase == "Dealing" then
 				if st.squeezeSide then
-					status.Text = st.canPeel and ("You hold the biggest " .. st.squeezeSide .. " bet - PEEL the cards!")
-						or (("%s is peeling the %s cards..."):format(st.peelerName or "The dealer", st.squeezeSide))
+					status.Text = st.canPeel and ("Peel the " .. st.squeezeSide .. " cards (" .. st.seconds .. "s)")
+						or (("%s is squeezing the %s cards... %ds"):format(st.peelerName or "The dealer", st.squeezeSide, st.seconds))
 				else
 					status.Text = "Dealing..."
 				end
@@ -1119,39 +1235,78 @@ do
 	-------------------------------------------------------------------------
 	-- No-Limit Texas Hold'em
 	-------------------------------------------------------------------------
+	local avatarCache = {}
+	local function avatar(userId)
+		if not userId or userId <= 0 then
+			return ""
+		end
+		if avatarCache[userId] == nil then
+			avatarCache[userId] = ""
+			task.spawn(function()
+				local ok, img = pcall(function()
+					return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+				end)
+				avatarCache[userId] = ok and img or ""
+			end)
+		end
+		return avatarCache[userId]
+	end
+
 	function NEW.Holdem(id, tierName, minBet, maxBet, tableCamera)
-		local frame, getBet, status = window("TEXAS HOLD'EM  -  NO LIMIT", tierName, minBet, maxBet, 0.92)
-		frame.Size = UDim2.fromScale(0.94, 0.92)
-		status.Size = UDim2.fromScale(0.62, 0.09)
-		local header = label(frame, "", { Position = UDim2.fromScale(0.02, 0.09), Size = UDim2.fromScale(0.6, 0.05), TextXAlignment = Enum.TextXAlignment.Left, Font = Enum.Font.SourceSans })
-		local boardFrame = make("Frame", { Position = UDim2.fromScale(0.02, 0.15), Size = UDim2.fromScale(0.5, 0.17), BackgroundTransparency = 1 }, frame)
-		local potLabel = label(frame, "", { Position = UDim2.fromScale(0.54, 0.15), Size = UDim2.fromScale(0.2, 0.08), TextColor3 = GOLD })
-		local handFrame = make("Frame", { Position = UDim2.fromScale(0.76, 0.15), Size = UDim2.fromScale(0.22, 0.17), BackgroundTransparency = 1 }, frame)
-		local seatsPanel = make("Frame", { Position = UDim2.fromScale(0.02, 0.34), Size = UDim2.fromScale(0.62, 0.37), BackgroundColor3 = Color3.fromRGB(13, 50, 29), BorderSizePixel = 0 }, frame)
-		make("UICorner", { CornerRadius = UDim.new(0, 6) }, seatsPanel)
-		local logLabel = label(frame, "", { Position = UDim2.fromScale(0.66, 0.34), Size = UDim2.fromScale(0.32, 0.37), Font = Enum.Font.SourceSans, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, TextXAlignment = Enum.TextXAlignment.Left, TextScaled = false, TextSize = 14 })
+		local frame, getBet, status = window("TEXAS HOLD'EM  -  NO LIMIT", tierName, minBet, maxBet, 0.95)
+		frame.Size = UDim2.fromScale(0.96, 0.95)
+		frame.BackgroundColor3 = Color3.fromRGB(14, 16, 22)
+		status.Position = UDim2.fromScale(0.02, 0.78)
+		status.Size = UDim2.fromScale(0.58, 0.05)
+		-- the virtual table
+		local rail = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.44), Size = UDim2.fromScale(0.72, 0.52), BackgroundColor3 = Color3.fromRGB(58, 32, 18), BorderSizePixel = 0 }, frame)
+		make("UICorner", { CornerRadius = UDim.new(1, 0) }, rail)
+		make("UIGradient", { Color = ColorSequence.new(Color3.fromRGB(96, 56, 30), Color3.fromRGB(40, 20, 10)), Rotation = 90 }, rail)
+		local felt = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(0.93, 0.86), BackgroundColor3 = Color3.fromRGB(22, 110, 60), BorderSizePixel = 0 }, rail)
+		make("UICorner", { CornerRadius = UDim.new(1, 0) }, felt)
+		make("UIGradient", { Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.fromRGB(16, 80, 44)), ColorSequenceKeypoint.new(0.5, Color3.fromRGB(34, 140, 78)), ColorSequenceKeypoint.new(1, Color3.fromRGB(16, 80, 44)) }), Rotation = 90 }, felt)
+		make("UIStroke", { Color = Color3.fromRGB(230, 200, 120), Transparency = 0.6, Thickness = 2 }, felt)
+		local header = label(felt, "", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.12), Size = UDim2.fromScale(0.6, 0.08), TextColor3 = Color3.fromRGB(200, 230, 200), Font = Enum.Font.Gotham })
+		local potLabel = label(felt, "", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.22), Size = UDim2.fromScale(0.3, 0.1), TextColor3 = GOLD, Font = Enum.Font.GothamBlack })
+		local boardFrame = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.55), Size = UDim2.fromScale(0.5, 0.34), BackgroundTransparency = 1 }, felt)
+		local layer = make("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 3 }, frame)
+		local logLabel = label(frame, "", { Position = UDim2.fromScale(0.01, 0.09), Size = UDim2.fromScale(0.2, 0.2), Font = Enum.Font.Gotham, TextScaled = false, TextSize = 12, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, TextColor3 = Color3.fromRGB(170, 175, 185) })
 
-		-- setup row (blinds) - reuses the bet box as buy-in / raise amount
-		local sbBox = make("TextBox", { Position = UDim2.fromScale(0.08, 0.5), Size = UDim2.fromScale(0.2, 0.07), BackgroundColor3 = DARK, TextColor3 = WHITE, Font = Enum.Font.SourceSansBold, TextScaled = true, Text = "5", PlaceholderText = "Small blind", ClearTextOnFocus = false, Visible = false, ZIndex = 3 }, frame)
-		local bbBox = make("TextBox", { Position = UDim2.fromScale(0.34, 0.5), Size = UDim2.fromScale(0.2, 0.07), BackgroundColor3 = DARK, TextColor3 = WHITE, Font = Enum.Font.SourceSansBold, TextScaled = true, Text = "10", PlaceholderText = "Big blind", ClearTextOnFocus = false, Visible = false, ZIndex = 3 }, frame)
-		local setupHint = label(frame, "Small blind / big blind (e.g. 5/10 or 50k/100k) - the box below is your buy-in", { Position = UDim2.fromScale(0.04, 0.42), Size = UDim2.fromScale(0.56, 0.06), Font = Enum.Font.SourceSans, TextWrapped = true, Visible = false, ZIndex = 3 })
+		-- seat positions around the table (0 = you, bottom centre)
+		local SPOTS = { { 0.5, 0.8 }, { 0.12, 0.6 }, { 0.12, 0.24 }, { 0.5, 0.1 }, { 0.88, 0.24 }, { 0.88, 0.6 } }
 
-		local buttons = {}
-		local function actionButton(name, text, color, x, y, w)
-			local b = button(frame, text, color, { Position = UDim2.fromScale(x, y), Size = UDim2.fromScale(w or 0.1, 0.055), Visible = false })
-			buttons[name] = b
+		-- setup panel (not seated)
+		local setup = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.45), Size = UDim2.fromScale(0.42, 0.34), BackgroundColor3 = Color3.fromRGB(20, 24, 32), BorderSizePixel = 0, ZIndex = 8, Visible = false }, frame)
+		make("UICorner", { CornerRadius = UDim.new(0, 10) }, setup)
+		make("UIStroke", { Color = GOLD, Thickness = 2 }, setup)
+		local setupTitle = label(setup, "", { Position = UDim2.fromScale(0.05, 0.04), Size = UDim2.fromScale(0.9, 0.16), TextColor3 = GOLD, ZIndex = 9 })
+		local setupHint = label(setup, "", { Position = UDim2.fromScale(0.05, 0.22), Size = UDim2.fromScale(0.9, 0.14), Font = Enum.Font.Gotham, TextWrapped = true, ZIndex = 9 })
+		local function box(text, place, x)
+			label(setup, place, { Position = UDim2.fromScale(x, 0.38), Size = UDim2.fromScale(0.4, 0.1), Font = Enum.Font.Gotham, ZIndex = 9 })
+			local b = make("TextBox", { Position = UDim2.fromScale(x, 0.49), Size = UDim2.fromScale(0.4, 0.17), BackgroundColor3 = DARK, TextColor3 = WHITE, Font = Enum.Font.GothamBold, TextScaled = true, Text = text, ClearTextOnFocus = false, ZIndex = 9 }, setup)
+			make("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
 			return b
 		end
-		local sit = actionButton("Sit", "SIT DOWN", GREEN, 0.62, 0.84, 0.35)
-		sit.Size = UDim2.fromScale(0.35, 0.12)
-		actionButton("Fold", "FOLD", RED, 0.66, 0.74)
-		actionButton("Call", "CHECK", DARK, 0.77, 0.74)
-		actionButton("Raise", "RAISE", Color3.fromRGB(40, 90, 190), 0.88, 0.74)
-		actionButton("AllIn", "ALL IN", Color3.fromRGB(150, 40, 150), 0.88, 0.8)
-		actionButton("AddBot", "+ BOT", DARK, 0.66, 0.8)
-		actionButton("RemoveBot", "- BOT", DARK, 0.77, 0.8)
-		actionButton("TopUp", "ADD CHIPS", DARK, 0.66, 0.86, 0.15)
-		actionButton("Leave", "CASH OUT", RED, 0.82, 0.86, 0.16)
+		local sbBox = box("5", "Small blind", 0.07)
+		local bbBox = box("10", "Big blind", 0.53)
+		local sitButton = button(setup, "OPEN TABLE", GREEN, { Position = UDim2.fromScale(0.2, 0.74), Size = UDim2.fromScale(0.6, 0.18), ZIndex = 9 })
+
+		-- side controls (seated)
+		local controls = {}
+		for i, spec in ipairs({ { "AddBot", "+ BOT" }, { "RemoveBot", "- BOT" }, { "TopUp", "ADD CHIPS" }, { "Leave", "CASH OUT" } }) do
+			local b = button(frame, spec[2], spec[1] == "Leave" and RED or DARK, { Position = UDim2.fromScale(0.86, 0.09 + (i - 1) * 0.055), Size = UDim2.fromScale(0.12, 0.048), Visible = false })
+			controls[spec[1]] = b
+		end
+		-- action bar
+		local actions = {}
+		for i, spec in ipairs({ { "Fold", "FOLD", RED }, { "Call", "CHECK", Color3.fromRGB(40, 110, 60) }, { "Raise", "RAISE", Color3.fromRGB(40, 90, 190) }, { "AllIn", "ALL IN", Color3.fromRGB(150, 40, 150) } }) do
+			actions[spec[1]] = button(frame, spec[2], spec[3], { Position = UDim2.fromScale(0.62 + (i - 1) * 0.0885, 0.84), Size = UDim2.fromScale(0.083, 0.12), Visible = false })
+		end
+		local potButtons = {}
+		for i, spec in ipairs({ { 0.5, "½ POT" }, { 0.75, "¾ POT" }, { 1, "POT" } }) do
+			potButtons[i] = button(frame, spec[2], DARK, { Position = UDim2.fromScale(0.62 + (i - 1) * 0.118, 0.785), Size = UDim2.fromScale(0.11, 0.045), Visible = false })
+			potButtons[i]:SetAttribute("Fraction", spec[1])
+		end
 
 		local state = nil
 		local function send(action, a, b)
@@ -1160,98 +1315,170 @@ do
 				status.Text = r.message or "?"
 			end
 		end
-		buttons.Sit.MouseButton1Click:Connect(function()
-			local sb, bb = parseBet(sbBox.Text), parseBet(bbBox.Text)
-			send("Sit", getBet(), { sb = sb, bb = bb })
+		sitButton.MouseButton1Click:Connect(function()
+			send("Sit", getBet(), { sb = parseBet(sbBox.Text), bb = parseBet(bbBox.Text) })
 		end)
-		buttons.Fold.MouseButton1Click:Connect(function()
+		for name, b in pairs(controls) do
+			b.MouseButton1Click:Connect(function()
+				send(name, name == "TopUp" and getBet() or nil)
+			end)
+		end
+		actions.Fold.MouseButton1Click:Connect(function()
 			send("Fold")
 		end)
-		buttons.Call.MouseButton1Click:Connect(function()
+		actions.Call.MouseButton1Click:Connect(function()
 			send(state and state.toCall > 0 and "Call" or "Check")
 		end)
-		buttons.Raise.MouseButton1Click:Connect(function()
+		actions.Raise.MouseButton1Click:Connect(function()
 			send("Raise", getBet())
 		end)
-		buttons.AllIn.MouseButton1Click:Connect(function()
+		actions.AllIn.MouseButton1Click:Connect(function()
 			send("AllIn")
 		end)
-		buttons.AddBot.MouseButton1Click:Connect(function()
-			send("AddBot")
-		end)
-		buttons.RemoveBot.MouseButton1Click:Connect(function()
-			send("RemoveBot")
-		end)
-		buttons.TopUp.MouseButton1Click:Connect(function()
-			send("TopUp", getBet())
-		end)
-		buttons.Leave.MouseButton1Click:Connect(function()
-			send("Leave")
-		end)
+		local betBox
+		for _, child in frame:GetChildren() do
+			if child:IsA("TextBox") then
+				betBox = child
+			end
+		end
+		for _, b in ipairs(potButtons) do
+			b.MouseButton1Click:Connect(function()
+				if state and betBox then
+					local target = state.currentBet + math.floor((state.pot + state.toCall) * b:GetAttribute("Fraction"))
+					betBox.Text = tostring(math.clamp(math.max(target, state.minRaiseTo), 1, math.max(1, state.maxRaiseTo)))
+				end
+			end)
+		end
 
-		local lastBoard, lastHand
+		local function chip(parent, amount, pos)
+			local c = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = pos, Size = UDim2.fromScale(0.09, 0.04), BackgroundColor3 = Color3.fromRGB(10, 10, 12), BackgroundTransparency = 0.3, BorderSizePixel = 0, ZIndex = 4 }, parent)
+			make("UICorner", { CornerRadius = UDim.new(1, 0) }, c)
+			local dot = make("Frame", { Position = UDim2.fromScale(0.03, 0.1), Size = UDim2.fromScale(0.22, 0.8), BackgroundColor3 = RED, BorderSizePixel = 0, ZIndex = 5 }, c)
+			make("UICorner", { CornerRadius = UDim.new(1, 0) }, dot)
+			make("UIStroke", { Color = WHITE, Thickness = 2, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, dot)
+			label(c, fmt(amount), { Position = UDim2.fromScale(0.27, 0), Size = UDim2.fromScale(0.7, 1), ZIndex = 5, Font = Enum.Font.GothamBold })
+		end
+
+		local lastKey
 		local function render(st)
 			state = st
-			header.Text = st.configured and ("Blinds %s / %s   •   buy-in from %s   •   %d seat(s) free"):format(fmt(st.sb), fmt(st.bb), fmt(st.minBuyIn), st.freeSeats) or "Empty table - you set the stakes"
-			local boardKey = table.concat(st.board, ",")
-			if boardKey ~= lastBoard then
-				lastBoard = boardKey
-				boardFrame:ClearAllChildren()
-				cardRow(boardFrame, st.board, 0, 0, 0.18, 1, 0.02)
-			end
-			potLabel.Text = st.pot > 0 and ("POT " .. fmt(st.pot)) or ""
-			local me
-			seatsPanel:ClearAllChildren()
-			for i, seat in ipairs(st.seats) do
+			local key = game:GetService("HttpService"):JSONEncode({ st.seats, st.board, st.pot, st.phase, st.seconds })
+			local mySeat = nil
+			for _, seat in ipairs(st.seats) do
 				if seat.isYou then
-					me = seat
-				end
-				local row = make("Frame", {
-					Position = UDim2.new(0, 4, (i - 1) / 6, 2), Size = UDim2.new(1, -8, 1 / 6, -4),
-					BackgroundColor3 = seat.turn and Color3.fromRGB(120, 95, 20) or (seat.isYou and Color3.fromRGB(34, 92, 55) or DARK), BorderSizePixel = 0,
-				}, seatsPanel)
-				make("UICorner", { CornerRadius = UDim.new(0, 4) }, row)
-				local name = (seat.dealer and "Ⓓ " or "") .. seat.name .. (seat.bot and " (bot)" or "") .. (seat.isYou and "  (YOU)" or "")
-				label(row, name, { Position = UDim2.fromScale(0.01, 0), Size = UDim2.fromScale(0.34, 1), TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = seat.folded and Color3.fromRGB(140, 140, 140) or WHITE })
-				label(row, fmt(seat.stack), { Position = UDim2.fromScale(0.35, 0), Size = UDim2.fromScale(0.17, 1), Font = Enum.Font.SourceSans })
-				label(row, seat.bet > 0 and ("bet " .. fmt(seat.bet)) or "", { Position = UDim2.fromScale(0.52, 0), Size = UDim2.fromScale(0.15, 1), Font = Enum.Font.SourceSans, TextColor3 = GOLD })
-				local act = seat.handName and (seat.handName .. ((seat.won or 0) > 0 and (" +" .. fmt(seat.won)) or "")) or (seat.folded and "Folded" or seat.action)
-				label(row, act, { Position = UDim2.fromScale(0.67, 0), Size = UDim2.fromScale(0.2, 1), Font = Enum.Font.SourceSans, TextWrapped = true })
-				if not seat.isYou and #seat.cards > 0 and not seat.folded then
-					cardRow(row, seat.cards, 0.88, 0.05, 0.055, 0.9, 0.005)
+					mySeat = seat.seat
 				end
 			end
-			local handKey = me and table.concat(me.cards, ",") or ""
-			if handKey ~= lastHand then
-				lastHand = handKey
-				handFrame:ClearAllChildren()
-				if me and #me.cards > 0 then
-					cardRow(handFrame, me.cards, 0, 0, 0.46, 1, 0.04)
+			if key ~= lastKey then
+				lastKey = key
+				header.Text = st.configured and ("Blinds %s / %s"):format(fmt(st.sb), fmt(st.bb)) or ""
+				potLabel.Text = st.pot > 0 and ("POT  " .. fmt(st.pot)) or ""
+				boardFrame:ClearAllChildren()
+				for i = 1, 5 do
+					local card = st.board[i]
+					if card then
+						Cards.card(boardFrame, card, { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.1 + (i - 1) * 0.2, 0.5), Size = UDim2.fromScale(0.18, 1) })
+					else
+						local slot = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.1 + (i - 1) * 0.2, 0.5), Size = UDim2.fromScale(0.18, 1), BackgroundTransparency = 1 }, boardFrame)
+						make("UIAspectRatioConstraint", { AspectRatio = 0.7 }, slot)
+						make("UIStroke", { Color = Color3.fromRGB(230, 220, 170), Transparency = 0.7, Thickness = 1.5 }, slot)
+						make("UICorner", { CornerRadius = UDim.new(0.08, 0) }, slot)
+					end
+				end
+				layer:ClearAllChildren()
+				for _, seat in ipairs(st.seats) do
+					local d = mySeat and ((seat.seat - mySeat) % 6) or (seat.seat - 1)
+					local spot = SPOTS[d + 1]
+					local panel = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(spot[1], spot[2]), Size = UDim2.fromScale(0.15, 0.1), BackgroundColor3 = seat.turn and Color3.fromRGB(70, 60, 20) or Color3.fromRGB(24, 26, 34), BorderSizePixel = 0, ZIndex = 5 }, layer)
+					make("UICorner", { CornerRadius = UDim.new(0, 10) }, panel)
+					make("UIStroke", { Color = seat.turn and GOLD or Color3.fromRGB(80, 85, 100), Thickness = seat.turn and 3 or 1 }, panel)
+					if seat.folded then
+						panel.BackgroundTransparency = 0.5
+					end
+					local pic = make("ImageLabel", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.fromScale(-0.12, 0.5), Size = UDim2.fromScale(0.36, 1.25), BackgroundColor3 = Color3.fromRGB(50, 55, 70), Image = seat.bot and "" or avatar(seat.userId), ZIndex = 6 }, panel)
+					make("UIAspectRatioConstraint", { AspectRatio = 1 }, pic)
+					make("UICorner", { CornerRadius = UDim.new(1, 0) }, pic)
+					make("UIStroke", { Color = seat.turn and GOLD or WHITE, Thickness = 2 }, pic)
+					if seat.bot then
+						label(pic, "🤖", { Size = UDim2.fromScale(1, 1), ZIndex = 7 })
+					end
+					label(panel, seat.name .. (seat.isYou and " (you)" or ""), { Position = UDim2.fromScale(0.28, 0.04), Size = UDim2.fromScale(0.7, 0.44), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 6, Font = Enum.Font.GothamBold })
+					label(panel, fmt(seat.stack), { Position = UDim2.fromScale(0.28, 0.5), Size = UDim2.fromScale(0.7, 0.44), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 6, TextColor3 = GOLD, Font = Enum.Font.Gotham })
+					-- action bubble
+					local act = seat.handName and (seat.handName .. ((seat.won or 0) > 0 and ("  +" .. fmt(seat.won)) or "")) or (seat.folded and "FOLD" or seat.action)
+					if act and act ~= "" then
+						local bubble = make("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 0, -2), Size = UDim2.fromScale(1.05, 0.42), BackgroundColor3 = (seat.won or 0) > 0 and Color3.fromRGB(150, 110, 20) or Color3.fromRGB(245, 245, 240), BorderSizePixel = 0, ZIndex = 7 }, panel)
+						make("UICorner", { CornerRadius = UDim.new(1, 0) }, bubble)
+						label(bubble, act, { Size = UDim2.fromScale(1, 1), TextColor3 = (seat.won or 0) > 0 and WHITE or Color3.fromRGB(20, 20, 25), ZIndex = 8, Font = Enum.Font.GothamBold })
+					end
+					-- hole cards (bigger for you)
+					if #seat.cards > 0 and not seat.folded then
+						local big = seat.isYou
+						local w = big and 0.075 or 0.045
+						local cx, cy = spot[1] + (big and 0.13 or 0), spot[2] + (big and -0.02 or 0.085)
+						for i, card in ipairs(seat.cards) do
+							Cards.card(layer, card, { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(cx + (i - 1.5) * (w * 0.75), cy), Size = UDim2.fromScale(w, big and 0.16 or 0.09), Rotation = (i - 1.5) * 8, ZIndex = 6 })
+						end
+					end
+					-- chips in front of the seat
+					if seat.bet > 0 then
+						chip(layer, seat.bet, UDim2.fromScale(spot[1] + (0.5 - spot[1]) * 0.38, spot[2] + (0.45 - spot[2]) * 0.38))
+					end
+					if seat.dealer then
+						local btn = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(spot[1] + (0.5 - spot[1]) * 0.22 + 0.04, spot[2] + (0.45 - spot[2]) * 0.22), Size = UDim2.fromScale(0.03, 0.03), BackgroundColor3 = WHITE, ZIndex = 5 }, layer)
+						make("UIAspectRatioConstraint", { AspectRatio = 1 }, btn)
+						make("UICorner", { CornerRadius = UDim.new(1, 0) }, btn)
+						label(btn, "D", { Size = UDim2.fromScale(1, 1), TextColor3 = Color3.new(0, 0, 0), ZIndex = 6 })
+					end
+				end
+				for i = 0, 5 do
+					local used = false
+					for _, seat in ipairs(st.seats) do
+						local d = mySeat and ((seat.seat - mySeat) % 6) or (seat.seat - 1)
+						if d == i then
+							used = true
+						end
+					end
+					if not used then
+						local spot = SPOTS[i + 1]
+						local empty = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(spot[1], spot[2]), Size = UDim2.fromScale(0.1, 0.07), BackgroundColor3 = Color3.fromRGB(24, 26, 34), BackgroundTransparency = 0.5, ZIndex = 5 }, layer)
+						make("UICorner", { CornerRadius = UDim.new(1, 0) }, empty)
+						label(empty, "empty seat", { Size = UDim2.fromScale(1, 0.6), Position = UDim2.fromScale(0, 0.2), TextColor3 = Color3.fromRGB(140, 145, 160), Font = Enum.Font.Gotham, ZIndex = 6 })
+					end
 				end
 			end
 			logLabel.Text = table.concat(st.log, "\n")
 			local seated = st.seated
-			buttons.Sit.Visible = not seated
-			buttons.Sit.Text = st.configured and "SIT DOWN (buy-in)" or "OPEN TABLE"
-			sbBox.Visible = not seated and not st.configured
-			bbBox.Visible = sbBox.Visible
-			setupHint.Visible = sbBox.Visible
-			buttons.Fold.Visible = st.myTurn
-			buttons.Call.Visible = st.myTurn
-			buttons.Call.Text = st.toCall > 0 and ("CALL " .. fmt(math.min(st.toCall, st.myStack))) or "CHECK"
-			buttons.Raise.Visible = st.myTurn and st.maxRaiseTo > st.currentBet
-			buttons.Raise.Text = st.currentBet > 0 and "RAISE TO" or "BET"
-			buttons.AllIn.Visible = st.myTurn
-			buttons.AddBot.Visible = seated and st.freeSeats > 0
-			buttons.RemoveBot.Visible = seated
-			buttons.TopUp.Visible = seated and st.phase ~= "Playing"
-			buttons.Leave.Visible = seated
+			setup.Visible = not seated
+			sbBox.Visible = not st.configured
+			bbBox.Visible = not st.configured
+			for _, c in setup:GetChildren() do
+				if c:IsA("TextLabel") and (c.Text == "Small blind" or c.Text == "Big blind") then
+					c.Visible = not st.configured
+				end
+			end
+			setupTitle.Text = st.configured and ("SIT DOWN  -  blinds %s / %s"):format(fmt(st.sb), fmt(st.bb)) or "OPEN A TABLE"
+			setupHint.Text = st.configured and ("Type your buy-in in the bet box (at least %s), then sit."):format(fmt(st.minBuyIn))
+				or "You set the stakes: small / big blind (5/10, 50k/100k, anything). Your buy-in goes in the bet box below - at least 20 big blinds."
+			sitButton.Text = st.configured and "SIT DOWN" or "OPEN TABLE"
+			for name, b in pairs(controls) do
+				b.Visible = seated and (name ~= "AddBot" or st.freeSeats > 0) and (name ~= "TopUp" or st.phase ~= "Playing")
+			end
+			for name, b in pairs(actions) do
+				b.Visible = st.myTurn
+			end
+			actions.Call.Text = st.toCall > 0 and ("CALL\n" .. fmt(math.min(st.toCall, st.myStack))) or "CHECK"
+			actions.Raise.Visible = st.myTurn and st.maxRaiseTo > st.currentBet
+			actions.Raise.Text = st.currentBet > 0 and "RAISE TO" or "BET"
+			for _, b in ipairs(potButtons) do
+				b.Visible = st.myTurn and st.maxRaiseTo > st.currentBet
+			end
 			if not seated then
-				status.Text = st.configured and ("Enter a buy-in (at least %s) and sit down"):format(fmt(st.minBuyIn)) or "Set the blinds and your buy-in, then OPEN TABLE"
+				status.Text = ""
 			elseif st.phase == "Waiting" then
-				status.Text = "Waiting for another player - press + BOT to play against bots"
+				status.Text = "Waiting for another player - add a bot to play now"
 			elseif st.myTurn then
-				status.Text = ("YOUR ACTION (%ds)  -  to call %s  •  raise to at least %s  (type the amount in the box)"):format(st.seconds, fmt(st.toCall), fmt(st.minRaiseTo))
+				status.Text = ("YOUR TURN (%ds)  -  min raise to %s"):format(st.seconds, fmt(st.minRaiseTo))
 			elseif st.phase == "Playing" then
 				status.Text = "Waiting for the other players..."
 			elseif st.phase == "Finished" then
