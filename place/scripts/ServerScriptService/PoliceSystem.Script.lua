@@ -9827,13 +9827,17 @@ local function waitMedicalArrival(ambulance,player,fac,goal,threshold,seconds,la
  return false
 end
 
-local function ambulanceMedicalTransport(player: Player,fac: any,medicalPos: Vector3): boolean
+local function ambulanceMedicalTransport(player: Player,fac: any,medicalPos: Vector3,attempt: number?): boolean
 	local char,hum,root=Util.charInfo(player);if not char or not hum or not root then return false end
 	local function alive(): boolean return player.Parent~=nil and criticalCustody[player]==true and player.Character==char end
 	local ambulance:any=nil;local arrived=false;local failed=false
-	local start=RoadGraph.randomPoint(root.Position,90,220) or (root.Position+Vector3.new(100,0,0))
+	-- v195: retries look farther for a road start (a patient off the road network
+	-- used to get a start point with no road route, and EMS never came).
+	local reach=({220,450,800})[math.clamp(attempt or 1,1,3)]
+	local start=RoadGraph.randomPoint(root.Position,90,reach) or RoadGraph.randomPoint(root.Position,0,reach*2) or (root.Position+Vector3.new(100,0,0))
+	print(("[PoliceSystem] EMS DISPATCH %s attempt=%d start=%s"):format(player.Name,attempt or 1,tostring(start)))
 	tell(player,"Custody","Critical condition - EMS dispatched")
-	local spawned=Van.spawn("Ambulance",CFrame.new(start),function() return root.Position end,function(v) ambulance=v;arrived=true end,function() failed=true end)
+	local spawned=Van.spawn("Ambulance",CFrame.new(start),function() return root.Position end,function(v) ambulance=v;arrived=true end,function(reason) failed=true;warn(("[PoliceSystem] EMS SPAWN/ROUTE FAILED %s: %s"):format(player.Name,tostring(reason))) end)
 	if spawned then spawned.transporting=true end
 	local deadline=os.clock()+90
 	while alive() and not arrived and not failed and os.clock()<deadline do task.wait(0.25) end
@@ -9982,8 +9986,14 @@ local function ambulanceMedicalTransport(player: Player,fac: any,medicalPos: Vec
 end
 
 function Justice.medicalCustody(player: Player,reason: string)
-	if criticalCustody[player] or custody[player] or inPrison(player) or not player.Parent then return end
-	local char,hum,root=Util.charInfo(player);if not char or not hum or not root then return end
+	if criticalCustody[player] or custody[player] or inPrison(player) or not player.Parent then
+		warn(("[PoliceSystem] CRITICAL IGNORED %s: critical=%s custody=%s inPrison=%s"):format(player.Name,tostring(criticalCustody[player]),tostring(custody[player]),tostring(inPrison(player))))
+		-- Not taken into medical custody: don't leave the 1-HP "critical" flag on,
+		-- or police would ignore the player forever.
+		if not criticalCustody[player] then player:SetAttribute("PoliceCritical",nil) end
+		return
+	end
+	local char,hum,root=Util.charInfo(player);if not char or not hum or not root then player:SetAttribute("PoliceCritical",nil);return end
 	criticalCustody[player]=true;custody[player]=true
 	player:SetAttribute("PoliceCritical",true);player:SetAttribute("CustodyPhase","CriticalMedical");player:SetAttribute("BookingState","MedicalEMS")
 	hum.Health=math.max(1,hum.Health);hum.PlatformStand=true;hum.AutoRotate=false
@@ -9992,13 +10002,47 @@ function Justice.medicalCustody(player: Player,reason: string)
 	if player.Team and player.Team.Name~=JCFG.PrisonerTeam then previousTeam[player]=player.Team end
 	charges[player]=nil;crimeKeys[player]=nil;player:SetAttribute("CustodyStars",stars);mirror(player,0);if pursuit then Heat.clear(player,"Busted") end
 	takeGuns(player);cuff(player)
+	-- v195: a critical arrest is an arrest: intake team immediately (Justice.jail does the same).
+	PrisonFlow.team(player,"Intake Prisoners")
 	radio(string.format("%s critically injured in police incident - EMS requested",player.Name),root.Position,stars)
 	print(("[PoliceSystem] CRITICAL CUSTODY: %s reason=%s"):format(player.Name,reason))
 	task.spawn(function()
 		local medicalPos=prisonMedicalPoint() or (fac and fac.intake) or root.Position
-		local ok=false;if fac and medicalPos then ok=ambulanceMedicalTransport(player,fac,medicalPos) end
+		local ok=false
+		for attempt=1,3 do
+			if not player.Parent or not criticalCustody[player] then return end
+			if fac and medicalPos then ok=ambulanceMedicalTransport(player,fac,medicalPos,attempt) end
+			if ok then break end
+			warn(("[PoliceSystem] MEDICAL TRANSPORT ATTEMPT %d FAILED: %s"):format(attempt,player.Name))
+			tell(player,"Custody","EMS transport delayed - another unit is being dispatched")
+			-- release anything a failed attempt left attached before retrying
+			local c,h,r=Util.charInfo(player)
+			if r then
+				for _,w in Workspace:GetDescendants() do
+					if w:IsA("WeldConstraint") and w.Name=="MedicalTransportWeld" and (w.Part1==r or w.Part0==r) then w:Destroy() end
+				end
+				if c then pcall(custodyTransportGhost,c,false) end
+				r.Anchored=false
+			end
+			task.wait(4)
+		end
 		if not ok then
-			warn("[PoliceSystem] MEDICAL TRANSPORT HELD: "..player.Name);tell(player,"Custody","EMS transport delayed - remaining in medical custody");return
+			-- LAST RESORT: EMS could not physically deliver after three units.
+			-- Admit the patient directly so recovery/booking never hang.
+			local c,h,r=Util.charInfo(player)
+			if not c or not h or not r or not medicalPos or not criticalCustody[player] then
+				warn("[PoliceSystem] MEDICAL TRANSPORT HELD: "..player.Name);tell(player,"Custody","EMS transport delayed - remaining in medical custody");return
+			end
+			for _,w in Workspace:GetDescendants() do
+				if w:IsA("WeldConstraint") and w.Name=="MedicalTransportWeld" and (w.Part1==r or w.Part0==r) then w:Destroy() end
+			end
+			pcall(custodyTransportGhost,c,false)
+			r.Anchored=false;r.AssemblyLinearVelocity=Vector3.zero
+			c:PivotTo(CFrame.new(medicalPos+Vector3.new(0,3,0)))
+			player:SetAttribute("CustodyOwner","MEDICAL");player:SetAttribute("MedicalTransportStage","ADMITTED")
+			h:MoveTo(r.Position);h.WalkSpeed=0;r.Anchored=true
+			warn(("[PoliceSystem] MEDICAL TRANSPORT FALLBACK: %s admitted directly after 3 EMS attempts"):format(player.Name))
+			ok=true
 		end
 		player:SetAttribute("BookingState","MedicalRecovery");player:SetAttribute("CustodyPhase","Medical")
 		tell(player,"Custody","Admitted to correctional medical - recovering for one day")

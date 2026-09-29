@@ -160,7 +160,23 @@ local ServerStorage=game:GetService("ServerStorage")
 local Debris=game:GetService("Debris")
 local doorCache,doorScan={},-math.huge
 
+-- v195 perf: PathfindingService per officer slot per plan is expensive;
+-- remember answers for 8s on a 4-stud grid (start and end).
+local reachCache={}
+local function reachKey(a,b)
+ return math.floor(a.X/4)..","..math.floor(a.Z/4)..">"..math.floor(b.X/4)..","..math.floor(b.Z/4)
+end
 function Tactics.reachable(cop,point)
+ local key=reachKey(cop.root.Position,point)
+ local hit=reachCache[key]
+ local now=os.clock()
+ if hit and now-hit.at<8 then return hit.ok end
+ local ok=Tactics.reachableUncached(cop,point)
+ reachCache[key]={ok=ok,at=now}
+ if math.random()<0.02 then for k,v in reachCache do if now-v.at>8 then reachCache[k]=nil end end end
+ return ok
+end
+function Tactics.reachableUncached(cop,point)
  local path=Pathfinding:CreatePath({AgentRadius=1.7,AgentHeight=5,AgentCanJump=true,AgentCanClimb=true,WaypointSpacing=4})
  local ok=pcall(function() path:ComputeAsync(cop.root.Position,point) end)
  local valid=ok and path.Status==Enum.PathStatus.Success

@@ -303,7 +303,12 @@ task.spawn(function()
 	while true do
 		local now=os.clock()
 		local list={}
-		for _,obj in ipairs(workspace:GetDescendants()) do
+		-- v195 perf: every priority vehicle is a PoliceSystem van under
+		-- Workspace.PoliceAI.Vehicles. Walking all ~90k workspace instances every
+		-- 0.8s here was a major server stutter source.
+		local policeRoot=workspace:FindFirstChild("PoliceAI")
+		local vehicles=policeRoot and policeRoot:FindFirstChild("Vehicles")
+		for _,obj in ipairs(if vehicles then vehicles:GetChildren() else {}) do
 			if obj:IsA("Model") then
 				local emergency=obj:GetAttribute("Emergency")
 				if emergency==true or obj:GetAttribute("CustodyTransport") or obj:GetAttribute("MedicalTransport") or obj:GetAttribute("IncidentResponse") then
@@ -721,8 +726,15 @@ local function updateTraffic(state,now,dt)
         for _=1,count do RoadDriving.step(driver,car,dt/count,desired) end
         driver.deferPivot=nil
         local pose=CFrame.lookAt(driver.pos,driver.pos+driver.heading)
-        if not state.lastPose or (pose.Position-state.lastPose.Position).Magnitude>0.015 or pose.LookVector:Dot(state.lastPose.LookVector)<0.99999 then
+        -- v195 perf: cars far from every player (LOD tick >= 1/4s) still simulate
+        -- but only move their model every ~2s; PivotTo on an anchored car moves
+        -- and replicates every part. The next near tick snaps them into place.
+        local farAway=(state.simStep or SIM_STEP)>=0.25
+        if farAway and now<(state.nextFarPivotAt or 0) then
+            -- skip the visual update this tick
+        elseif not state.lastPose or (pose.Position-state.lastPose.Position).Magnitude>0.015 or pose.LookVector:Dot(state.lastPose.LookVector)<0.99999 then
             car:PivotTo(pose);car:SetAttribute("TrafficPose",pose);state.lastPose=pose
+            if farAway then state.nextFarPivotAt=now+2 end
         end
         spinWheels(state,(driver.speed or 0)>0.5,driver.speed or 0)
 		state.position=driver.pos or car:GetPivot().Position

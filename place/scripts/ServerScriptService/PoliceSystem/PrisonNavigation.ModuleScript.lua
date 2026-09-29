@@ -1718,10 +1718,15 @@ Nav.doorFrame=doorFrame
 -- straight walk through the opening is clear. Collision stays on; only the
 -- sweep box can narrow to a real torso width (2.4) when the corridor box (3)
 -- does not fit the 4.2-stud opening. Returns point, bodyWidth, or nil.
-local ALIGN_DEPTHS={0,2.5,3.5,1.8,4.5}
+-- v195 perf: 3 depths x 5 offsets x 2 widths (was 5x5x2 = up to 100 sweeps).
+local ALIGN_DEPTHS={0,3.5,2.2}
 local ALIGN_LATERAL={0,0.3,-0.3,0.6,-0.6}
 local function doorAlignment(s: any, a: Vector3, goal: Vector3, allowed: any, maxShift: number?): (Vector3?, number?)
 	if not s.directDoor then return nil,nil end
+	-- v195 perf: at most one full alignment search per actor every 0.5s.
+	local now=os.clock()
+	if s.nextAlignSearch and now<s.nextAlignSearch then return nil,nil end
+	s.nextAlignSearch=now+0.5
 	local dp,axis,lateral=doorFrame(s.directDoor)
 	if not dp then return nil,nil end
 	local da=axis:Dot(flat(a-dp))
@@ -1785,8 +1790,19 @@ local function pathStep(s: any, root: BasePart, goal: Vector3, radius: number, a
 	end
 	-- Moving formation targets use body/floor-verified steering, not a new
 	-- path and a stop command for every small change of target.
-	if s.following and clearDoorSegment(s,root.Position,goal,allowed) then
-		clearPath(s); s.goal=goal; move(goal); return false
+	if s.following then
+		-- v195 perf: the follow target moves every tick; reuse a clear verdict for
+		-- 0.25s while target and body moved < 1 stud (was a full body sweep +
+		-- floor raycasts every 0.05s).
+		local c=s.followCache
+		local clear
+		if c and now-c.at<0.25 and (c.a-root.Position).Magnitude<1 and (c.b-goal).Magnitude<1 then
+			clear=c.clear
+		else
+			clear=clearDoorSegment(s,root.Position,goal,allowed)
+			s.followCache={at=now,a=root.Position,b=goal,clear=clear}
+		end
+		if clear then clearPath(s); s.goal=goal; move(goal); return false end
 	end
 	if not s.points then
 		if s.nextCompute and now < s.nextCompute then return false end
