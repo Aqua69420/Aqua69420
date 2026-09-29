@@ -111,8 +111,8 @@ Config.Crimes = {
 	Burglary = { Heat = 25, MinStars = 1, Hostile = false, Witness = false, Charge = "Burglary" },
 	Drugs = { Heat = 12, MinStars = 1, Hostile = false, Witness = true, Charge = "Drug dealing" },
 	ShotsFired = { Heat = 15, MinStars = 2, Hostile = true, Witness = true, Deadly = true, Charge = "Unlawful discharge of a firearm" },
-	AssaultOfficer = { Heat = 20, MinStars = 2, Hostile = true, Witness = false, Deadly = "armed", Charge = "Assault on a police officer" },
-	CopKilled = { Heat = 25, MinStars = 2, Hostile = true, Witness = false, Deadly = true, Charge = "Murder of a police officer" },
+	AssaultOfficer = { Heat = 20, MinStars = 3, Hostile = true, Witness = false, Deadly = "armed", Charge = "Assault on a police officer" },
+	CopKilled = { Heat = 25, MinStars = 3, Hostile = true, Witness = false, Deadly = true, Charge = "Murder of a police officer" },
 	Murder = { Heat = 35, MinStars = 2, Hostile = true, Witness = false, Deadly = true, Charge = "Murder" },
 	Robbery = { Heat = 45, MinStars = 2, Hostile = true, Witness = false, Deadly = "armed", Charge = "Armed robbery" },
 	PrisonEscape = { Heat = 150, MinStars = 3, Hostile = true, Witness = false, Deadly = "armed", Charge = "Escape from custody" },
@@ -344,6 +344,17 @@ Config.Waves = {
 	SpawnGap = 0.35, -- stagger when a squad pours out
 	TopTierGrowth = 2, -- every repeat of the 5-star wave adds this many units
 	PerExtraPlayer = 0.25, -- +25% units per other wanted player near the fight
+
+	-- v191: the moment a suspect is violent toward ANY officer, the take-alive
+	-- plan changes: SWAT in an armored truck plus air support, sent immediately
+	-- (not only after wiping earlier waves). Merged into the current wave.
+	OfficerAssault = {
+		Name = "Officer Assault Response",
+		Announce = "Officer assaulted - SWAT and air support responding. Units: contain the suspect",
+		Units = { { "SWAT", 3 }, { "Riot", 1 } },
+		Vehicle = "Armored",
+		Helicopters = 1,
+	},
 
 	Tiers = {
 		[2] = {
@@ -2939,7 +2950,7 @@ function Heat.authorizeLethal(player: Player, why: string?)
 	p.lastHud = nil
 	State.announce(player, "LETHAL FORCE AUTHORIZED", "wave")
 	State.log(player.Name, "lethal force authorized:", why or "five-star pursuit")
-	print(("[PoliceAI] LETHAL FORCE AUTHORIZED #%d %s reason=%s stars=%d"):format(p.id,player.Name,tostring(why or "five-star pursuit"),p.stars))
+	print(("[PoliceAI] LETHAL FORCE AUTHORIZED #%s %s reason=%s stars=%s"):format(tostring(p.id),player.Name,tostring(why or "five-star pursuit"),tostring(p.stars)))
 	for _, fn in postureListeners do
 		task.spawn(fn, player, p)
 	end
@@ -3077,6 +3088,14 @@ function Heat.addCrime(player: Player, crimeName: string, pos: Vector3?, extraHe
 	p.evade = 0
 	if Heat.sightingHook then
 		Heat.sightingHook(player, p, where, "REPORT", nil) -- a crime report tells dispatch where
+	end
+	if crimeName == "AssaultOfficer" or crimeName == "CopKilled" or crimeName == "HelicopterDown" then
+		p.officerAssaultAt = os.clock()
+		if not p.swatRequested then
+			p.swatRequested = true
+			State.announce(player, "Officer assaulted! SWAT and air support requested", "danger")
+			print(("[PoliceAI] OFFICER ASSAULT ESCALATION %s crime=%s -> SWAT + air support, containment"):format(player.Name, crimeName))
+		end
 	end
 	local target = math.max(starsForHeat(p.heat), crime.MinStars or 1)
 	if target > p.stars then
@@ -12045,6 +12064,13 @@ local function dispatchCruisers(p: any, want: number)
 	table.sort(free, function(a, b)
 		return (a.body.Position - target).Magnitude < (b.body.Position - target).Magnitude
 	end)
+	local spotter = p.spottedBy
+	if spotter and p.spottedAt and os.clock() - p.spottedAt < 12 and spotter.available and spotter:available()
+		and table.find(patrolCars, spotter) and not table.find(free, spotter) then
+		table.insert(free, 1, spotter)
+	elseif spotter and table.find(free, spotter) then
+		table.remove(free, table.find(free, spotter)); table.insert(free, 1, spotter)
+	end
 	for _, car in free do
 		if already >= want then
 			break
@@ -12219,8 +12245,8 @@ local function footOrigin(p: any): () -> CFrame?
 	end
 end
 
-local function dispatchWave(p: any, tier: number, reinforce: boolean?)
-	local tcfg = Config.Waves.Tiers[tier]
+local function dispatchWave(p: any, tier: number, reinforce: boolean?, override: any?)
+	local tcfg = override or Config.Waves.Tiers[tier]
 	local target = p.lastSeenPos
 	if not tcfg or not target then
 		return
@@ -12260,10 +12286,10 @@ local function dispatchWave(p: any, tier: number, reinforce: boolean?)
 	end
 
 	local wave = existingWave
-	if reinforce and wave then
+	if (reinforce or override) and wave and not wave.cleared then
 		wave.planned += #roster
 		wave.reinforced += 1
-		State.announce(p.player, "Police reinforcements en route", "warn")
+		State.announce(p.player, if override then tcfg.Announce else "Police reinforcements en route", if override then "danger" else "warn")
 	else
 		waveIds += 1
 		wave = {
@@ -12500,6 +12526,25 @@ local function pursuitStep(p: any, now: number)
 		d.nextCruiserRefresh=now+3
 		local carWant=math.max(Config.PatrolCars.Responders[math.min(p.stars,#Config.PatrolCars.Responders)] or 1,math.min(3,math.max(1,p.stars)))
 		task.spawn(dispatchCruisers,p,carWant)
+	end
+
+	-- v191: marked cruisers answer on-foot suspects too (the tactical AI only
+	-- claimed cars for vehicle chases, so a wanted player on foot never drew a
+	-- single car). A patrol car that SAW the suspect is sent first.
+	if not vehiclePursuit and p.lastSeenPos then
+		local spottedNew = p.spottedAt ~= nil and p.spottedAt > (d.spotHandledAt or 0)
+		if spottedNew or now >= (d.nextFootCruiserAt or 0) then
+			d.nextFootCruiserAt = now + 4
+			if spottedNew then d.spotHandledAt = p.spottedAt end
+			local carWant = (Config.PatrolCars.Responders[math.min(p.stars, #Config.PatrolCars.Responders)] or 1) + (if p.swatRequested then 1 else 0)
+			task.spawn(dispatchCruisers, p, carWant)
+		end
+	end
+	-- v191: violence toward any officer -> SWAT + air support now.
+	if p.swatRequested and not d.swatSent and p.lastSeenPos and Units.isReady() then
+		d.swatSent = true
+		d.heliWant = math.max(d.heliWant or 0, Config.Waves.OfficerAssault.Helicopters or 1)
+		dispatchWave(p, math.clamp(p.stars, 4, 5), false, Config.Waves.OfficerAssault)
 	end
 
 	-- nobody near enough to respond: send a unit from off-screen (on-foot suspects only)

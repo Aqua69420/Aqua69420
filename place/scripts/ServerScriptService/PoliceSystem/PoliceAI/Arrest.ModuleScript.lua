@@ -214,9 +214,14 @@ function Arrest.updateOwner(inc: any, now: number)
 		return
 	end
 
+	-- v191: the current owner stays a candidate unless he is stuck. Before, a
+	-- replacement could be picked from any distance while the owner was dropped
+	-- for being >OwnerMaxDistance away, so two far officers swapped ownership
+	-- every tick ("ARREST OWNER TRANSFER" 170 / 306 / 170 ...).
+	local ownerStuck = owner ~= nil and inc.ownerTrack ~= nil and inc.ownerTrack.owner == owner and now - inc.ownerTrack.at > A.OwnerStuckTime
 	local best, bestD = nil, math.huge
 	for cop in inc.units do
-		if cop ~= owner and canOwn(cop, inc) and not cop.marksman then
+		if (cop ~= owner or not ownerStuck) and canOwn(cop, inc) and not cop.marksman then
 			local d = flat(cop.root.Position - target).Magnitude
 			-- prefer an officer who can actually see the suspect
 			if Ctx.Perception.sawRecently(cop, inc, now, 1.5) then
@@ -229,6 +234,9 @@ function Arrest.updateOwner(inc: any, now: number)
 				best, bestD = cop, d
 			end
 		end
+	end
+	if best ~= nil and best == owner then
+		return -- still the best placed officer: keep him, keep his progress track
 	end
 	if owner and owner.model and owner.model.Parent then
 		owner.model:SetAttribute("ArrestOwner", nil)

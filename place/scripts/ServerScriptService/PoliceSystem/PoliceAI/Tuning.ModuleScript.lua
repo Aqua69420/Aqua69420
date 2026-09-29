@@ -102,6 +102,27 @@ Tuning.LessLethal = {
 }
 
 ---------------------------------------------------------------------------
+-- USE OF FORCE BY DISTANCE (v191)
+-- Take-alive calls never use live fire (unchanged). Once lethal force is
+-- authorized: officers engage with firearms from range, and inside CloseRange
+-- they go to taser / pepper / beanbag / rubber first. Live fire inside
+-- CloseRange only in self-defence (suspect aiming at THIS officer, or fired
+-- within SelfDefenseWindow seconds).
+---------------------------------------------------------------------------
+Tuning.Force = {
+	CloseRange = 18,
+	SelfDefenseWindow = 1.5,
+}
+
+-- Containment ring: PERIMETER officers are spread evenly AROUND the suspect
+-- (not stacked behind the contact officer), leaving a gap in the contact sector.
+Tuning.Containment = {
+	Radius = 42, -- unarmed / take-alive
+	RadiusDangerous = 58, -- armed or lethal
+	ContactGap = math.rad(50), -- keep the contact/cover sector clear
+}
+
+---------------------------------------------------------------------------
 -- FOOT TACTICS
 ---------------------------------------------------------------------------
 Tuning.Tactics = {

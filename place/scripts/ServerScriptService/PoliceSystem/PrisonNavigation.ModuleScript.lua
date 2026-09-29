@@ -1336,9 +1336,18 @@ function Nav.nearestNode(pos: Vector3, allowed: ((any) -> boolean)?, mainOnly: b
 	for _, n in nodes do
 		if (not allowed or allowed(n)) and (not mainOnly or componentOf[n.id] == mainComponent) and n.kind ~= "DOOR" then
 			local d = (n.pos - pos).Magnitude
-			if d < 160 and math.abs(n.pos.Y - pos.Y) < 14 then
+			-- v191: same floor only. The old 14-stud window let a ground-floor
+			-- point (e.g. outside High_Security_2, y~0.4 / root y~3.4) snap to the
+			-- second-floor Maximum_Security_Cell_4 directly above it (y~12.9),
+			-- which has no stairs mapped -> "no connected route" to the cell.
+			-- Points here are either floor points or root points (floor+~3).
+			local dy = n.pos.Y - pos.Y
+			if d < 160 and dy < CFG.FloorTolerance and dy > -(CFG.FloorTolerance + 3) then
 				local sameZone = z ~= nil and table.find(n.zones, z) ~= nil
-				table.insert(cands, { id = n.id, d = if sameZone then d * 0.6 else d })
+				local score = if sameZone then d * 0.6 else d
+				-- Prefer the connected network; an island node is only a last resort.
+				if componentOf[n.id] ~= mainComponent then score += 120 end
+				table.insert(cands, { id = n.id, d = score })
 			end
 		end
 	end
@@ -1492,6 +1501,10 @@ function Nav.getRoute(from: Vector3, dest: any, o: any?): (any?, string?)
 	end
 	local path = Nav.findPath(startId, goalIds[1], o)
 	if not path then
+		local sn, gn = nodes[startId], nodes[goalIds[1]]
+		warn(("[PrisonNavDiag] NO ROUTE start=%s(%s comp=%s) goal=%s(%s comp=%s) main=%s"):format(
+			tostring(sn and sn.name or startId), tostring(sn and sn.pos), tostring(componentOf[startId]),
+			tostring(gn and gn.name or goalIds[1]), tostring(gn and gn.pos), tostring(componentOf[goalIds[1]]), tostring(mainComponent)))
 		return nil, "no connected route"
 	end
 	local doors = {}
@@ -1538,6 +1551,7 @@ local function clearPath(s: any)
 	s.points = nil
 	s.direct = nil
 	s.bodyWidth = nil
+	s.alignTarget = nil
 end
 
 local function permittedSegment(a: Vector3, b: Vector3, allowed: any): boolean
@@ -1779,7 +1793,10 @@ local function pathStep(s: any, root: BasePart, goal: Vector3, radius: number, a
 				end
 			elseif aligned then
 				-- Walk to the centre line first, then straight through the opening.
-				points={{Position=aligned},{Position=goal}}; s.direct=true
+				-- The aligned point is often under a stud away; the normal waypoint
+				-- advance (1.2) would skip it and re-test the same clipped diagonal
+				-- forever, so it is reached by precise steering (alignTarget).
+				points={{Position=goal}}; s.direct=true; s.alignTarget=aligned
 				s.bodyWidth=if width and width<3 then width else nil
 				s.alignments=(s.alignments or 0)+1
 				print(("[PrisonNav] DOOR THRESHOLD RESYNC actor=%s door=%s via=%s width=%.1f (was: %s)"):format(s.actor or "?",s.directDoor.Name,tostring(aligned),width or 3,tostring(rejection)))
@@ -1807,6 +1824,14 @@ local function pathStep(s: any, root: BasePart, goal: Vector3, radius: number, a
 			end)
 		end
 		s.lastPos, s.progressAt = root.Position, os.clock()
+	end
+	if s.alignTarget then
+		if flat(s.alignTarget-root.Position).Magnitude > 0.3 then
+			move(s.alignTarget, true)
+			return false
+		end
+		s.alignTarget = nil
+		s.lastPos, s.progressAt = root.Position, now
 	end
 	-- Never skip a corner or select a later waypoint just because it is closer.
 	local wp = s.points[s.index]

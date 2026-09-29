@@ -318,6 +318,20 @@ function Tactics.planFoot(inc,free,now)
    else roles[cop]="PERIMETER" end
   end
  end
+ -- v191 containment: PERIMETER officers take evenly spaced positions on a
+ -- ring around the suspect (escape routes), skipping the contact sector.
+ local perimeterList={}
+ for _,cop in free do if roles[cop]=="PERIMETER" then table.insert(perimeterList,cop) end end
+ local C=Tuning.Containment
+ local ringRadius=if dangerous then C.RadiusDangerous else C.Radius
+ local baseAngle=math.atan2(direction.Z,direction.X)
+ local ringSlot={}
+ for k,cop in perimeterList do
+  local span=math.pi*2-C.ContactGap*2
+  local a=baseAngle+C.ContactGap+span*(k-0.5)/#perimeterList
+  ringSlot[cop]=center+dirOf(a)*ringRadius
+ end
+ local containing=#perimeterList>=2 or inc.pursuit.swatRequested==true
  local claimed={};local sniperAssigned=false
  for index,cop in free do
   local role=roles[cop]
@@ -325,7 +339,7 @@ function Tactics.planFoot(inc,free,now)
   local flank=if index%2==0 then 1 else -1
   local depth=if role=="CONTACT" then 18 elseif role=="LESSLETHAL" then 23 elseif role=="SUPPORT" then 32 elseif role=="RESERVE" then 85 elseif role=="PERIMETER" then 65 elseif role=="SNIPER" then 75 else 35
   if not dangerous then depth=math.max(10,depth-8) end
-  local desired=center+direction*depth+side*(if role=="CONTACT" then 0 else flank*(8+math.floor(index/2)*6))
+  local desired=ringSlot[cop] or (center+direction*depth+side*(if role=="CONTACT" then 0 else flank*(8+math.floor(index/2)*6)))
   local old=inc.units[cop]
   local cover=Tactics.coverNear(desired,center+Vector3.new(0,2,0))
   local candidate=cover or snap(desired)
@@ -342,7 +356,7 @@ function Tactics.planFoot(inc,free,now)
   table.insert(claimed,candidate);setRole(inc,cop,role,candidate,now)
   inc.units[cop].covered=cover~=nil
  end
- phase(inc,if Tactics.coverReady(inc,contact,now) then "COVER_AND_CONTROL" else "ESTABLISH_COVER",now)
+ phase(inc,if Tactics.coverReady(inc,contact,now) then (if containing then "CONTAIN_AND_CONTROL" else "COVER_AND_CONTROL") else (if containing then "CONTAIN" else "ESTABLISH_COVER"),now)
  -- A roof and a nearby designated entry identify a structure; staging still
  -- requires physical paths and recent reported/seen information.
  if not inc.knowledge.inVehicle and (inc.pursuit.stars or 0)>=3 and not inc.breach then

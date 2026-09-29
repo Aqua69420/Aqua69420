@@ -1499,6 +1499,14 @@ function Pursuit.scanPatrols(now: number)
 				if look.Magnitude > 0.1 and look.Unit:Dot(rel.Unit) > -0.2 and Perception.cruiser(van, inc, now, range) then
 					if inc.mode == "VEHICLE" and Pursuit.total() < Tuning.Vehicles.MaxPursuitCars and claimable(van, inc) then
 						Pursuit.claim(inc, van, "spotted the suspect")
+					elseif inc.mode ~= "VEHICLE" and inc.mode ~= "CRITICAL" and inc.mode ~= "CUSTODY" then
+						-- v191: a cruiser driving past a wanted suspect on foot stops
+						-- and deploys (Dispatcher sends this car first).
+						local pr = inc.pursuit
+						if pr and (not pr.spottedAt or now - pr.spottedAt > 6 or pr.spottedBy ~= van) then
+							pr.spottedBy, pr.spottedAt = van, now
+							Log.event("PATROL CAR SPOTTED", "#%d suspect on foot %.0f studs away", inc.id, rel.Magnitude)
+						end
 					end
 					break
 				end

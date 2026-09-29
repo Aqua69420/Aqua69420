@@ -100,8 +100,20 @@ local function mayShoot(cop: any, inc: any, visible: boolean, targetPos: Vector3
 	return Tactics.clearShot(cop, inc, cop.head.Position, targetPos)
 end
 
-local function shoot(cop: any, inc: any, visible: boolean, targetPos: Vector3, now: number)
-	if mayShoot(cop, inc, visible, targetPos) and (inc.mode~="FOOT" or cop.aiFixedRole or Tactics.fireWindow(cop,inc,now)) then
+-- Suspect is aiming at this officer, or fired within the self-defence window.
+local function selfDefense(cop: any, inc: any, now: number): boolean
+	if inc.threat.aimAt == cop then
+		return true
+	end
+	local State = Ctx.State
+	local last = State and State.lastFire and State.lastFire[inc.player]
+	return last ~= nil and now - last < Tuning.Force.SelfDefenseWindow
+end
+
+local function shoot(cop: any, inc: any, visible: boolean, targetPos: Vector3, now: number, moving: boolean?)
+	-- The alternating fire window only covers officers holding a slot; one on
+	-- the move fires whenever he has a clear lane (still hold-fire aware).
+	if mayShoot(cop, inc, visible, targetPos) and (moving or inc.mode~="FOOT" or cop.aiFixedRole or Tactics.fireWindow(cop,inc,now)) then
 		cop:face(targetPos)
 		cop:tryShoot(inc.player, now)
 	end
@@ -446,9 +458,13 @@ local function behaveFoot(cop,inc,now,role,slot,visible,char,hum,root)
  end
  Tactics.sniperLaser(cop,target,false)
  if role=="CONTACT" then command(cop,inc,visible,distance) end
+ local F=Tuning.Force
+ local lethalPosture=inc.pursuit.lethal==true and inc.threat.level=="LETHAL"
+ local close=distance<=F.CloseRange
  -- Only assigned support throws. Close self-defence is available to everyone,
- -- but reserve/perimeter officers do not all rush into taser range.
- if visible and (role=="LESSLETHAL" or (role=="CONTACT" and Tactics.coverReady(inc,cop,now)) or distance<=10) then
+ -- but reserve/perimeter officers do not all rush into taser range. v191: under
+ -- lethal authorization anyone inside CloseRange goes less-lethal first.
+ if visible and (role=="LESSLETHAL" or (role=="CONTACT" and Tactics.coverReady(inc,cop,now)) or distance<=10 or (lethalPosture and close)) then
   if tryLessLethal(cop,inc,now,visible,char,hum,root) then return end
  end
  if role=="SUPPORT" and visible and inPosition and ((inc.pursuit.stars or 0)>=2 or inc.threat.fired) then
@@ -465,7 +481,13 @@ local function behaveFoot(cop,inc,now,role,slot,visible,char,hum,root)
    if result=="failed" and now>=(cop.planFailureAt or 0) then cop.planFailureAt=now+4;inc.footPlan=nil end
   else holdAt(cop,target) end
  else holdAt(cop,target) end
- if visible and inPosition and (role=="COVER" or role=="SHIELD" or role=="CONTACT") then shoot(cop,inc,visible,target,now) end
+ -- v191 fire and manoeuvre: with lethal force authorized every non-reserve
+ -- officer with a clear shot engages from range, also while moving to his
+ -- slot. Inside CloseRange live fire is self-defence only.
+ if visible then
+  local canFire=(inPosition and (role=="COVER" or role=="SHIELD" or role=="CONTACT")) or (lethalPosture and role~="RESERVE")
+  if canFire and (not close or selfDefense(cop,inc,now)) then shoot(cop,inc,visible,target,now,lethalPosture and not inPosition) end
+ end
 end
 
 ---------------------------------------------------------------------------
