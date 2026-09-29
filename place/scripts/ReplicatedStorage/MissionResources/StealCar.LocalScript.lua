@@ -117,7 +117,7 @@ end
   noPlayers = function()
   
   for _,v in pairs(game.Players:GetPlayers()) do
-    if v.Character and v.Character:FindFirstChild("Torso") and v.Character.Torso.Position - (returnTab[1].Garage.Position + returnTab[1].Garage.Position) / 2.magnitude < 14 then
+    if v.Character and v.Character:FindFirstChild("HumanoidRootPart") and (v.Character.HumanoidRootPart.Position - (returnTab[1].Garage.Position + returnTab[1].Garage.Position) / 2).Magnitude < 14 then
       return false
     end
   end

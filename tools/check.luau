@@ -5,8 +5,13 @@ local luau = require("@lune/luau")
 local process = require("@lune/process")
 local bad = 0
 local function check(path)
-	local ok, err = pcall(luau.compile, fs.readFile(path))
-	if not ok then bad += 1; print("FAIL " .. path .. "\n  " .. tostring(err)) end
+	local ok, result = pcall(luau.compile, fs.readFile(path))
+	-- luau.compile does not always throw: a failed compile returns bytecode whose
+	-- first byte is 0 followed by the error (e.g. "Out of local registers").
+	if ok and type(result) == "string" and string.byte(result, 1) == 0 then
+		ok, result = false, string.sub(result, 2)
+	end
+	if not ok then bad += 1; print("FAIL " .. path .. "\n  " .. tostring(result)) end
 end
 local function walk(dir)
 	for _, name in fs.readDir(dir) do

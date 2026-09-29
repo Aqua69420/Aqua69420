@@ -9013,8 +9013,8 @@ end
 -- Physical cuff-walk attempts before the last-resort placement, and the overall
 -- window for one delivery. Normal escorts finish in the first attempt; leg-level
 -- resync / micro-reposition and graph repaths run inside each attempt.
-local DELIVER_MAX_ATTEMPTS=3
-local DELIVER_TIMEOUT=300
+PrisonFlow.DELIVER_MAX_ATTEMPTS=3
+PrisonFlow.DELIVER_TIMEOUT=300
 
 -- LAST RESORT ONLY. Places the prisoner inside the assigned mapped cell and
 -- finalizes custody exactly as a completed walk would, so the case can never
@@ -9082,7 +9082,7 @@ function PrisonFlow.deliver(player: Player, role: string, room: any, owner: stri
 		attempts+=1
 		if PrisonFlow.transfer(player,role,room,owner) then return true end
 		if not (processingAlive(player) and player.Character==character) then break end
-		if attempts>=DELIVER_MAX_ATTEMPTS or os.clock()-started>DELIVER_TIMEOUT then
+		if attempts>=PrisonFlow.DELIVER_MAX_ATTEMPTS or os.clock()-started>PrisonFlow.DELIVER_TIMEOUT then
 			warn(("[CustodyDiag] CUFF WALK EXHAUSTED %s role=%s attempts=%d elapsed=%.0fs; using destination fallback"):format(player.Name,role,attempts,os.clock()-started))
 			if PrisonFlow.jobs[player] then task.wait(0.5) end
 			if PrisonFlow.fallbackDeliver(player,role,room,owner) then return true end
@@ -11281,7 +11281,13 @@ end
 --     walk to a cell door of their class and go in (no cell is reserved,
 --     so player capacity is untouched); morning = they come back out.
 ---------------------------------------------------------------------------
-local PRISON_LIFE = {
+-- Everything below lives in one do-block: the Justice module is close to
+-- Luau's 200-local limit per function, and locals inside a block release
+-- their registers when it ends. Only startPrisonLife is visible outside.
+local startPrisonLife: () -> ()
+do
+local PL: any = {} -- all prison-life state and helpers (one local slot)
+PL.PRISON_LIFE = {
 	Posts = { "MAXIMUM_SECURITY", "MEDIUM_SECURITY", "LOW_SECURITY", "INTAKE", "BOOKING" },
 	GuardRespawn = 30,
 	Inmates = {
@@ -11293,15 +11299,15 @@ local PRISON_LIFE = {
 	InCellBlocks = { Lockdown = true, Count = true },
 }
 
-local function prisonLifeInCells(): boolean
+function PL.prisonLifeInCells(): boolean
 	local hour=game:GetService("Lighting").ClockTime
 	for _,b in Config.PrisonSchedule.Blocks do
-		if hour>=b.Start and hour<b.Finish then return PRISON_LIFE.InCellBlocks[b.Name]==true end
+		if hour>=b.Start and hour<b.Finish then return PL.PRISON_LIFE.InCellBlocks[b.Name]==true end
 	end
 	return true
 end
 
-local function classRooms(category: string): { any }
+function PL.classRooms(category: string): { any }
 	local list={}
 	local map=PrisonNav and PrisonNav.mapRoot
 	local doors=map and map:FindFirstChild("DoorMarkers")
@@ -11317,8 +11323,8 @@ local function classRooms(category: string): { any }
 	return list
 end
 
-local function startStationedGuards()
-	for _,area in PRISON_LIFE.Posts do
+function PL.startStationedGuards()
+	for _,area in PL.PRISON_LIFE.Posts do
 		task.spawn(function()
 			local post=PrisonNav.patrolStart(area)
 			if not post then warn("[PrisonLife] no post position for "..area);return end
@@ -11343,13 +11349,13 @@ local function startStationedGuards()
 					end
 					prisonGuardPatrols[cop]=nil
 				end
-				task.wait(PRISON_LIFE.GuardRespawn)
+				task.wait(PL.PRISON_LIFE.GuardRespawn)
 			end
 		end)
 	end
 end
 
-local function makeInmateNpc(class: string): (Model?, Humanoid?, BasePart?)
+function PL.makeInmateNpc(class: string): (Model?, Humanoid?, BasePart?)
 	local templates=ServerStorage:FindFirstChild("CivilianTemplates")
 	local pool=templates and templates:GetChildren() or {}
 	if #pool==0 then return nil end
@@ -11376,7 +11382,7 @@ local function makeInmateNpc(class: string): (Model?, Humanoid?, BasePart?)
 end
 
 -- One NPC inmate's day: common area by day, their cell at Lockdown/Count.
-local function inmateLife(npc: Model, hum: Humanoid, root: BasePart, group: any, room: any, folder: Instance)
+function PL.inmateLife(npc: Model, hum: Humanoid, root: BasePart, group: any, room: any, folder: Instance)
 	local door=PrisonFlow.approach(room)
 	local function dayPoint(): Vector3
 		if group.area then return PrisonNav.patrolStart(group.area) or door end
@@ -11385,7 +11391,7 @@ local function inmateLife(npc: Model, hum: Humanoid, root: BasePart, group: any,
 	npc:SetAttribute("PrisonNPCInmate",group.class)
 	local inCell=false
 	while hum.Health>0 and (npc.Parent or inCell) and prison and prison.Parent do
-		if prisonLifeInCells() then
+		if PL.prisonLifeInCells() then
 			if not inCell then
 				-- lights out: walk to the cell and go in
 				if not room.open then openPrisonDoorsNear(door,10,6) end
@@ -11412,35 +11418,35 @@ local function inmateLife(npc: Model, hum: Humanoid, root: BasePart, group: any,
 	if npc.Parent then task.wait(10);npc:Destroy() end
 end
 
-local function prisonNpcFolder(): Instance
+function PL.prisonNpcFolder(): Instance
 	local folder=Workspace:FindFirstChild("PrisonNPCs") or Instance.new("Folder")
 	folder.Name="PrisonNPCs";folder.Parent=Workspace
 	return folder
 end
 
-local function inmateGroup(class: string): any?
-	for _,group in PRISON_LIFE.Inmates do if group.class==class then return group end end
+function PL.inmateGroup(class: string): any?
+	for _,group in PL.PRISON_LIFE.Inmates do if group.class==class then return group end end
 	return nil
 end
 
-local function startNpcInmates()
-	local folder=prisonNpcFolder()
-	for _,group in PRISON_LIFE.Inmates do
-		local rooms=classRooms(group.cells)
+function PL.startNpcInmates()
+	local folder=PL.prisonNpcFolder()
+	for _,group in PL.PRISON_LIFE.Inmates do
+		local rooms=PL.classRooms(group.cells)
 		if #rooms==0 then warn("[PrisonLife] no "..group.cells.." cells for "..group.class.." inmates");continue end
 		for index=1,group.count do
 			task.spawn(function()
 				task.wait(index*0.7)
 				local room=rooms[(index-1)%#rooms+1]
 				while prison and prison.Parent do
-					local npc,hum,root=makeInmateNpc(group.class)
+					local npc,hum,root=PL.makeInmateNpc(group.class)
 					if not npc then warn("[PrisonLife] no CivilianTemplates to build inmates");return end
 					local door=PrisonFlow.approach(room)
-					local start=if prisonLifeInCells() then door else (if group.area then PrisonNav.patrolStart(group.area) or door else door)
+					local start=if PL.prisonLifeInCells() then door else (if group.area then PrisonNav.patrolStart(group.area) or door else door)
 					npc:PivotTo(CFrame.new(start+Vector3.new(0,3,0)))
 					npc.Parent=folder
 					pcall(function() root:SetNetworkOwner(nil) end)
-					inmateLife(npc,hum,root,group,room,folder)
+					PL.inmateLife(npc,hum,root,group,room,folder)
 					task.wait(40) -- a new inmate is processed in later
 				end
 			end)
@@ -11456,7 +11462,7 @@ end
 -- NPC inmate population. NPCs wait OUTSIDE intake/booking cells so player
 -- cell capacity is never used.
 ---------------------------------------------------------------------------
-local NPC_ARRESTS = {
+PL.NPC_ARRESTS = {
 	Enabled = true,
 	Interval = { 150, 300 }, -- seconds between arrests
 	MaxHoused = 8, -- arrested NPCs kept in the prison at once
@@ -11464,17 +11470,17 @@ local NPC_ARRESTS = {
 	BookingHold = 15,
 	Classes = { { "Low", 40 }, { "Medium", 35 }, { "High", 20 }, { "Death Row", 5 } },
 }
-local npcArrestHoused = 0
+PL.npcArrestHoused = 0
 
-local function rollClass(): string
+function PL.rollClass(): string
 	local total=0
-	for _,c in NPC_ARRESTS.Classes do total+=c[2] end
+	for _,c in PL.NPC_ARRESTS.Classes do total+=c[2] end
 	local roll=math.random()*total
-	for _,c in NPC_ARRESTS.Classes do roll-=c[2];if roll<=0 then return c[1] end end
+	for _,c in PL.NPC_ARRESTS.Classes do roll-=c[2];if roll<=0 then return c[1] end end
 	return "Medium"
 end
 
-local function makeCivilianNpc(): (Model?, Humanoid?, BasePart?)
+function PL.makeCivilianNpc(): (Model?, Humanoid?, BasePart?)
 	local templates=ServerStorage:FindFirstChild("CivilianTemplates")
 	local pool=templates and templates:GetChildren() or {}
 	if #pool==0 then return nil end
@@ -11489,7 +11495,7 @@ local function makeCivilianNpc(): (Model?, Humanoid?, BasePart?)
 	return npc,hum,root
 end
 
-local function npcLabel(npc: Model, text: string)
+function PL.npcLabel(npc: Model, text: string)
 	local head=npc:FindFirstChild("Head")
 	if not head then return end
 	local gui=head:FindFirstChild("NpcCustodyLabel")
@@ -11502,7 +11508,7 @@ end
 
 -- Walk the NPC (cuffed) with `cop` to `goal` through the prison graph. The
 -- navigation only reads `.Character` from the escortee, so a stand-in works.
-local function npcEscortTo(cop: any, npc: Model, goal: Vector3, label: string): boolean
+function PL.npcEscortTo(cop: any, npc: Model, goal: Vector3, label: string): boolean
 	local stand={Character=npc,Name=npc.Name,Parent=npc.Parent}
 	openPrisonDoorsNear(cop.root.Position,24,8);openPrisonDoorsNear(goal,24,8)
 	local ok,res=pcall(function()
@@ -11515,8 +11521,8 @@ local function npcEscortTo(cop: any, npc: Model, goal: Vector3, label: string): 
 	return false
 end
 
-local function npcArrestOnce()
-	if not PrisonNav or not PrisonNav.ready or npcArrestHoused>=NPC_ARRESTS.MaxHoused then return end
+function PL.npcArrestOnce()
+	if not PrisonNav or not PrisonNav.ready or PL.npcArrestHoused>=PL.NPC_ARRESTS.MaxHoused then return end
 	local fac=facilities[#facilities]
 	if not fac then return end
 	local players=Players:GetPlayers()
@@ -11528,13 +11534,13 @@ local function npcArrestOnce()
 	anchor=anchor or dropOffPoint(fac)
 	local spot=RoadGraph.randomPoint(anchor,150,600)
 	if not spot then return end
-	local class=rollClass()
-	local npc,hum,root=makeCivilianNpc()
+	local class=PL.rollClass()
+	local npc,hum,root=PL.makeCivilianNpc()
 	if not npc then return end
 	npc.Name="Suspect";npc:SetAttribute("NPCSuspect",true)
-	npc:PivotTo(CFrame.new(spot+Vector3.new(0,3,0)));npc.Parent=prisonNpcFolder()
+	npc:PivotTo(CFrame.new(spot+Vector3.new(0,3,0)));npc.Parent=PL.prisonNpcFolder()
 	pcall(function() root:SetNetworkOwner(nil) end)
-	npcLabel(npc,"WANTED")
+	PL.npcLabel(npc,"WANTED")
 	print(("[NPCArrest] suspect at %s (will be %s)"):format(tostring(spot),class))
 	-- 1) a cruiser comes for them
 	local arrived,failed,van=false,false,nil
@@ -11543,7 +11549,7 @@ local function npcArrestOnce()
 	local deadline=os.clock()+90
 	while not arrived and not failed and os.clock()<deadline and npc.Parent do task.wait(0.5) end
 	if not arrived or not van or van.dead then npc:Destroy();return end
-	npcLabel(npc,"UNDER ARREST")
+	PL.npcLabel(npc,"UNDER ARREST")
 	hum.WalkSpeed=0
 	task.wait(2)
 	-- 2) cuffed and loaded
@@ -11571,16 +11577,16 @@ local function npcArrestOnce()
 	local cop=nameEscort(escortCop(post,unload-post),"INTAKE OFFICER")
 	if not cop then npc:Destroy();return end
 	moveEscortOnly(cop,unload,40)
-	npcLabel(npc,"INTAKE")
-	local intake=classRooms("IntakeCell");local booking=classRooms("BookingCell")
-	if intake[1] then npcEscortTo(cop,npc,PrisonFlow.approach(intake[math.random(1,#intake)]),"NPC INTAKE") end
-	cop:stop();task.wait(NPC_ARRESTS.IntakeHold)
-	npcLabel(npc,"BOOKING")
-	if booking[1] then npcEscortTo(cop,npc,PrisonFlow.approach(booking[math.random(1,#booking)]),"NPC BOOKING") end
-	cop:stop();task.wait(NPC_ARRESTS.BookingHold)
+	PL.npcLabel(npc,"INTAKE")
+	local intake=PL.classRooms("IntakeCell");local booking=PL.classRooms("BookingCell")
+	if intake[1] then PL.npcEscortTo(cop,npc,PrisonFlow.approach(intake[math.random(1,#intake)]),"NPC INTAKE") end
+	cop:stop();task.wait(PL.NPC_ARRESTS.IntakeHold)
+	PL.npcLabel(npc,"BOOKING")
+	if booking[1] then PL.npcEscortTo(cop,npc,PrisonFlow.approach(booking[math.random(1,#booking)]),"NPC BOOKING") end
+	cop:stop();task.wait(PL.NPC_ARRESTS.BookingHold)
 	-- 4) dress-out: uniform of the class
 	local dress=PrisonFlow.findDressOutRoom()
-	if dress then npcEscortTo(cop,npc,PrisonFlow.approach(dress),"NPC DRESS OUT") end
+	if dress then PL.npcEscortTo(cop,npc,PrisonFlow.approach(dress),"NPC DRESS OUT") end
 	for _,d in npc:GetChildren() do if d:IsA("Shirt") or d:IsA("Pants") or d:IsA("Accessory") then d:Destroy() end end
 	local outfit=inmateClothes[class]
 	if outfit then
@@ -11589,42 +11595,43 @@ local function npcArrestOnce()
 	end
 	task.wait(3)
 	-- 5) housing: their class's cellblock, then normal inmate life
-	local group=inmateGroup(class)
-	local rooms=group and classRooms(group.cells) or {}
+	local group=PL.inmateGroup(class)
+	local rooms=group and PL.classRooms(group.cells) or {}
 	if not group or #rooms==0 then warn("[NPCArrest] no housing for "..class);cop:despawn("npc housing unavailable");npc:Destroy();return end
 	local room=rooms[math.random(1,#rooms)]
-	npcLabel(npc,"HOUSING")
-	npcEscortTo(cop,npc,if group.area then (PrisonNav.patrolStart(group.area) or PrisonFlow.approach(room)) else PrisonFlow.approach(room),"NPC HOUSING")
+	PL.npcLabel(npc,"HOUSING")
+	PL.npcEscortTo(cop,npc,if group.area then (PrisonNav.patrolStart(group.area) or PrisonFlow.approach(room)) else PrisonFlow.approach(room),"NPC HOUSING")
 	cop:despawn("npc housed")
 	local gui=npc:FindFirstChild("Head") and npc.Head:FindFirstChild("NpcCustodyLabel");if gui then gui:Destroy() end
 	npc.Name=class.." Inmate";hum.DisplayName=class.." Inmate"
 	print(("[NPCArrest] %s inmate housed via full intake"):format(class))
-	npcArrestHoused+=1
-	inmateLife(npc,hum,root,group,room,prisonNpcFolder())
-	npcArrestHoused-=1
+	PL.npcArrestHoused+=1
+	PL.inmateLife(npc,hum,root,group,room,PL.prisonNpcFolder())
+	PL.npcArrestHoused-=1
 end
 
-local function startNpcArrests()
-	if not NPC_ARRESTS.Enabled then return end
+function PL.startNpcArrests()
+	if not PL.NPC_ARRESTS.Enabled then return end
 	task.spawn(function()
 		task.wait(60)
 		while prison and prison.Parent do
-			local ok,err=pcall(npcArrestOnce)
+			local ok,err=pcall(PL.npcArrestOnce)
 			if not ok then warn("[NPCArrest] "..tostring(err)) end
-			task.wait(math.random(NPC_ARRESTS.Interval[1],NPC_ARRESTS.Interval[2]))
+			task.wait(math.random(PL.NPC_ARRESTS.Interval[1],PL.NPC_ARRESTS.Interval[2]))
 		end
 	end)
 end
 
-local function startPrisonLife()
+startPrisonLife = function()
 	if not prison or not PrisonNav then return end
 	local t0=os.clock()
 	while not PrisonNav.ready and os.clock()-t0<60 do task.wait(1) end
 	if not PrisonNav.ready then warn("[PrisonLife] prison navigation not ready; prison life disabled");return end
-	startStationedGuards()
-	startNpcInmates()
-	startNpcArrests()
+	PL.startStationedGuards()
+	PL.startNpcInmates()
+	PL.startNpcArrests()
 end
+end -- prison life block
 
 function Justice.init()
 	findPrison()
