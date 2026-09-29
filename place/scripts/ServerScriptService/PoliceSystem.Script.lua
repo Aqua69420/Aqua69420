@@ -7394,6 +7394,11 @@ end
 
 local function bailPrice(player: Player): number
 	local done = sentenceEnd[player]
+	-- v205: no bail for death row or supermax/solitary inmates
+	local class = tostring(player:GetAttribute("SecurityClass") or "")
+	if class == "Death Row" or class == "Supermax" or player:GetAttribute("Solitary") == true then
+		return 0
+	end
 	if not done or JCFG.BailPerSecond <= 0 then
 		return 0
 	end
@@ -7403,7 +7408,7 @@ end
 local function sendJailState(player: Player)
 	local done = sentenceEnd[player]
 	if done then
-		tell(player, "Jailed", math.max(0, done - os.time()), player:GetAttribute("Charges") or "", JCFG.BailPerSecond)
+		tell(player, "Jailed", math.max(0, done - os.time()), player:GetAttribute("Charges") or "", if bailPrice(player) > 0 then JCFG.BailPerSecond else 0)
 	end
 end
 
@@ -7604,9 +7609,11 @@ end
 
 local function nameEscort(cop: any?, title: string)
 	if not cop or not cop.model then return cop end
+	local copHum=cop.model:FindFirstChildOfClass("Humanoid")
+	if copHum then copHum.NameDisplayDistance=40;copHum.HealthDisplayDistance=25 end
 	local head=cop.model:FindFirstChild("Head",true) or cop.root
 	if head and head:IsA("BasePart") and not head:FindFirstChild("PrisonRoleLabel") then
-		local gui=Instance.new("BillboardGui");gui.Name="PrisonRoleLabel";gui.Size=UDim2.fromOffset(180,34);gui.StudsOffset=Vector3.new(0,3.2,0);gui.AlwaysOnTop=true;gui.Parent=head
+		local gui=Instance.new("BillboardGui");gui.Name="PrisonRoleLabel";gui.Size=UDim2.new(5.5,0,1,0);gui.StudsOffset=Vector3.new(0,3.2,0);gui.AlwaysOnTop=false;gui.MaxDistance=60;gui.LightInfluence=0;gui.Parent=head -- v205: sized in studs, so it shrinks with distance and is gone past 60 studs
 		local label=Instance.new("TextLabel");label.Size=UDim2.fromScale(1,1);label.BackgroundColor3=Color3.fromRGB(15,20,30);label.BackgroundTransparency=0.18;label.TextColor3=Color3.new(1,1,1);label.Font=Enum.Font.GothamBold;label.TextScaled=true;label.Text=title;label.Parent=gui
 	end
 	return cop
@@ -10313,6 +10320,59 @@ local function prisonExit(): (Vector3,Vector3,Instance?)
 	return pos-dir*5,pos+dir*18,nil
 end
 
+-- v205: where a released inmate is driven: a spawn of the team they return to,
+-- else a neutral spawn, else any enabled spawn outside the prison.
+function PrisonFlow.releaseSpawn(team: Team?): Vector3?
+	local best: Vector3?,fallback: Vector3?=nil,nil
+	for _,d in Workspace:GetDescendants() do
+		if d:IsA("SpawnLocation") and d.Enabled and outsidePrison(d.Position,nil) then
+			if team and d.TeamColor==team.TeamColor and not d.Neutral then return d.Position end
+			if d.Neutral then best=best or d.Position else fallback=fallback or d.Position end
+		end
+	end
+	return best or fallback
+end
+
+function PrisonFlow.releaseRide(player: Player, team: Team?)
+	local char,hum,root=Util.charInfo(player)
+	local dest=PrisonFlow.releaseSpawn(team)
+	if not char or not hum or not root or not dest then return end
+	local van=Van.spawnPatrol(root.Position+root.CFrame.RightVector*8,1,true,root.CFrame.LookVector)
+	local function drop()
+		if root.Parent then
+			local ground=Util.groundAt(dest,20,60) or dest
+			root.CFrame=CFrame.new(Vector3.new(dest.X,ground.Y+3,dest.Z)+Vector3.new(math.random(-4,4),0,math.random(-4,4)))
+		end
+	end
+	if not van then warn("[CustodyDiag] RELEASE RIDE: no cruiser; placing "..player.Name.." at spawn");drop();return end
+	van.driveToken+=1;van.mode="respond";van.crewTotal=1;van.crewOut=0;van.transporting=true;van.parked=false
+	van.parts.ap.Enabled=true;van.parts.ao.Enabled=true
+	for _,part in van.model:GetDescendants() do
+		if part:IsA("BasePart") then part.Anchored=false;part.CanCollide=false;part.CanTouch=false end
+	end
+	pcall(function() van.body:SetNetworkOwner(nil) end)
+	van.parts.ap.Position=van.body.Position;van.parts.ao.CFrame=van.body.CFrame.Rotation
+	local body=van.body
+	tell(player,"Custody","Released - an officer is driving you back to the city")
+	task.wait(1.5)
+	root.CFrame=body.CFrame*CFrame.new(-1.3,body.Size.Y/2+1.1,2.4);hum.Sit=true
+	custodyTransportGhost(char,true)
+	local weld=Instance.new("WeldConstraint");weld.Name="ReleaseSeat";weld.Part0=body;weld.Part1=root;weld.Parent=body;root.Anchored=false
+	print(("[CustodyDiag] RELEASE RIDE %s -> %s"):format(player.Name,tostring(dest)))
+	local done=false
+	local started=van:driveTo(dest,false,function() done=true end)
+	local deadline=os.clock()+240
+	while started and not done and os.clock()<deadline and player.Parent and player.Character==char and not van.dead do
+		if Util.flat(body.Position-dest).Magnitude<30 then break end
+		task.wait(0.5)
+	end
+	weld:Destroy()
+	if player.Character==char then custodyTransportGhost(char,false);hum.Sit=false end
+	if not started or os.clock()>=deadline or van.dead then warn("[CustodyDiag] RELEASE RIDE incomplete; placing "..player.Name.." at spawn") end
+	drop()
+	task.delay(6,function() van.transporting=false;pcall(function() van:destroy() end) end)
+end
+
 release = function(player: Player, how: string)
 	if releaseBusy[player] or not player.Parent then return end
 	releaseBusy[player]=true
@@ -10366,7 +10426,14 @@ release = function(player: Player, how: string)
 			local _,_,root=Util.charInfo(player)
 			local close=root~=nil and (root.Position-goal).Magnitude<9
 			local outsideFacility=root~=nil and outsidePrison(root.Position,nil)
-			if moved and close and (not needsOutside or outsideFacility) then
+			-- v205: standing on the goal counts even if the walk itself timed out
+			-- (the officer can't settle on the exact point); never loop forever.
+			local onGoal=root~=nil and Util.flat(root.Position-goal).Magnitude<4
+			if attempt>=4 and root and not (close or onGoal) then
+				warn(("[CustodyDiag] RELEASE STAGE FALLBACK %s stage=%s -> placed at %s"):format(player.Name,label,tostring(goal)))
+				root.CFrame=CFrame.new(goal+Vector3.new(0,3,0));close,onGoal=true,true
+			end
+			if (moved or onGoal or attempt>=4) and close and (not needsOutside or outsideFacility or attempt>=4) then
 				print(("[CustodyDiag] RELEASE STAGE COMPLETE %s stage=%s position=%s attempt=%d"):format(player.Name,label,tostring(root.Position),attempt))
 				return true
 			end
@@ -10417,6 +10484,9 @@ release = function(player: Player, how: string)
 	if not player.Parent then releaseBusy[player]=nil return end
 
 	local target=releaseTargetTeam(player)
+	-- v205: a cruiser picks the released inmate up and drives them to their spawn.
+	pcall(PrisonFlow.releaseRide,player,target)
+	if not player.Parent then releaseBusy[player]=nil return end
 	clearJusticeState(player);previousTeam[player]=nil
 	for _,name in {"PrisonDressOutComplete","ReleaseDressOutComplete","PrisonClothesIssued","InmateShirtAssetId","InmatePantsAssetId"} do player:SetAttribute(name,nil) end
 	if target then player.Neutral=false;player.Team=target end
@@ -11069,6 +11139,7 @@ local function onRequest(player: Player, action: any, arg: any)
 		end
 		local price = bailPrice(player)
 		if price <= 0 then
+			if sentenceEnd[player] then tell(player, "Notice", "No bail for death row or solitary inmates") end
 			return
 		end
 		if charge(player, price) then
@@ -11376,9 +11447,61 @@ function PL.startStationedGuards()
 	end
 end
 
--- v203: CivilianServer moves Workspace.AIHolder into ServerStorage.CivilianTemplates
--- when it starts, which can be after this script. Wait for it, then fall back to
--- the AIHolder models, then to a plain generated R15 rig so NPCs always spawn.
+-- v205: the city pedestrian templates are old R6 bodies with no
+-- HumanoidRootPart, which the prison navigation and escorts need. Every prison
+-- NPC is a generated R15 rig wearing a pedestrian's clothes instead.
+function PL.buildRig(look: Model?): Model?
+	local ok,rig=pcall(function()
+		return Players:CreateHumanoidModelFromDescription(Instance.new("HumanoidDescription"),Enum.HumanoidRigType.R15)
+	end)
+	if not ok or not rig then warn("[PrisonLife] couldn't generate an R15 rig: "..tostring(rig));return nil end
+	if look then
+		for _,c in look:GetChildren() do
+			if c:IsA("Shirt") or c:IsA("Pants") or c:IsA("BodyColors") or c:IsA("ShirtGraphic") then
+				if c:IsA("BodyColors") then local old=rig:FindFirstChildOfClass("BodyColors");if old then old:Destroy() end end
+				local okc,copy=pcall(function() local a=c.Archivable;c.Archivable=true;local k=c:Clone();c.Archivable=a;return k end)
+				if okc and copy then copy.Parent=rig end
+			end
+		end
+	end
+	PL.animate(rig)
+	return rig
+end
+
+-- v205: server-side walk/idle for prison NPC rigs (the rig's Animate script
+-- is a LocalScript and never runs on a server-owned NPC).
+function PL.animate(rig: Model)
+	local hum=rig:FindFirstChildOfClass("Humanoid")
+	if not hum then return end
+	-- animations only load once the rig is in the workspace
+	task.spawn(function()
+	local t0=os.clock()
+	while not rig:IsDescendantOf(Workspace) do
+		if os.clock()-t0>60 then return end
+		task.wait(0.5)
+	end
+	local animator=hum:FindFirstChildOfClass("Animator") or Instance.new("Animator",hum)
+	local function load(id: string): AnimationTrack?
+		local a=Instance.new("Animation");a.AnimationId=id
+		local ok,t=pcall(function() return animator:LoadAnimation(a) end)
+		return if ok then t else nil
+	end
+	local walk,idle=load("rbxassetid://507777826"),load("rbxassetid://507766388")
+	if idle then idle.Looped=true;idle:Play() end
+	if walk then walk.Looped=true end
+	hum.Running:Connect(function(speed: number)
+		if not walk then return end
+		if speed>0.5 then
+			if not walk.IsPlaying then walk:Play(0.2) end
+			walk:AdjustSpeed(math.clamp(speed/8,0.5,1.6))
+		elseif walk.IsPlaying then walk:Stop(0.2) end
+	end)
+	end)
+end
+
+-- CivilianServer moves Workspace.AIHolder into ServerStorage.CivilianTemplates
+-- when it starts, which can be after this script: wait for it, then fall back to
+-- the AIHolder models, then to an undressed rig.
 function PL.cloneTemplate(): Model?
 	local templates=ServerStorage:FindFirstChild("CivilianTemplates") or ServerStorage:WaitForChild("CivilianTemplates",30)
 	local pool={}
@@ -11391,20 +11514,7 @@ function PL.cloneTemplate(): Model?
 			if m:IsA("Model") and m:FindFirstChildOfClass("Humanoid") then table.insert(pool,m) end
 		end
 	end
-	if #pool>0 then
-		local src=pool[math.random(1,#pool)]
-		local archivable=src.Archivable
-		src.Archivable=true
-		local npc=src:Clone()
-		src.Archivable=archivable
-		if npc then return npc end
-	end
-	local ok,rig=pcall(function()
-		return Players:CreateHumanoidModelFromDescription(Instance.new("HumanoidDescription"),Enum.HumanoidRigType.R15)
-	end)
-	if ok and rig then return rig end
-	warn("[PrisonLife] couldn't build an NPC: no templates and no R15 rig ("..tostring(rig)..")")
-	return nil
+	return PL.buildRig(if #pool>0 then pool[math.random(1,#pool)] else nil)
 end
 
 function PL.makeInmateNpc(class: string): (Model?, Humanoid?, BasePart?)
@@ -11537,7 +11647,7 @@ function PL.pickCitySuspect(): (Model?, Humanoid?, BasePart?)
 	local pool,total={},0
 	for _,m in Workspace:GetChildren() do
 		if m:IsA("Model") and m:GetAttribute("CityCivilian") and not m:GetAttribute("PoliceArrested") and not Players:GetPlayerFromCharacter(m) then
-			local h=m:FindFirstChildOfClass("Humanoid");local r=m:FindFirstChild("HumanoidRootPart")
+			local h=m:FindFirstChildOfClass("Humanoid");local r=m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Torso") or m.PrimaryPart
 			if h and r and h.Health>0 then
 				local w=if m:GetAttribute("Dealer") then 4 else 1
 				total+=w;table.insert(pool,{m=m,h=h,r=r,w=w})
@@ -11621,9 +11731,16 @@ function PL.npcArrestOnce()
 	if npc and root then
 		spot=root.Position
 		npc:SetAttribute("PoliceArrested",true) -- CivilianServer stops its wander and spawns a replacement
-		for _,d in npc:GetDescendants() do if d:IsA("ProximityPrompt") then d:Destroy() end end
-		hum:MoveTo(root.Position)
-		print(("[NPCArrest] city %s %s picked up at %s (will be %s)"):format(if npc:GetAttribute("Dealer") then "dealer" else "pedestrian",npc.Name,tostring(spot),class))
+		print(("[NPCArrest] city %s picked up at %s (will be %s)"):format(if npc:GetAttribute("Dealer") then "dealer" else "pedestrian",tostring(spot),class))
+		-- swap the R6 pedestrian for an escort-ready rig wearing their clothes
+		local rig=PL.buildRig(npc)
+		npc:Destroy()
+		if not rig then return end
+		npc=rig;hum=rig:FindFirstChildOfClass("Humanoid");root=rig:FindFirstChild("HumanoidRootPart")
+		if not hum or not root then rig:Destroy();return end
+		for _,d in rig:GetDescendants() do if d:IsA("BasePart") then d.Anchored=false end end
+		hum.WalkSpeed=8
+		rig:PivotTo(CFrame.new(spot+Vector3.new(0,1,0)))
 	else
 		spot=RoadGraph.randomPoint(anchor,150,600) or RoadGraph.randomPoint(anchor,50,1500)
 		if not spot then warn("[NPCArrest] no road point near "..tostring(anchor));return end

@@ -1559,6 +1559,14 @@ function Nav.getRoute(from: Vector3, dest: any, o: any?): (any?, string?)
 	local path = Nav.findPath(startId, goalIds[1], o)
 	if not path then
 		local sn, gn = nodes[startId], nodes[goalIds[1]]
+		-- v205: once per start/goal pair per minute
+		local key = tostring(startId) .. ">" .. tostring(goalIds[1])
+		local now = os.clock()
+		Nav._noRouteLog = Nav._noRouteLog or {}
+		if (Nav._noRouteLog[key] or -math.huge) > now - 60 then
+			return nil, "no connected route"
+		end
+		Nav._noRouteLog[key] = now
 		warn(("[PrisonNavDiag] NO ROUTE start=%s(%s comp=%s) goal=%s(%s comp=%s) main=%s"):format(
 			tostring(sn and sn.name or startId), tostring(sn and sn.pos), tostring(componentOf[startId]),
 			tostring(gn and gn.name or goalIds[1]), tostring(gn and gn.pos), tostring(componentOf[goalIds[1]]), tostring(mainComponent)))
@@ -2026,6 +2034,16 @@ local function escortIgnore(cop: any, char: Model?, o: any): {Instance}
 	if map then table.insert(ignore,map) end
 	-- v204: prison NPC inmates/suspects never block a cuff-walk sweep
 	local npcs=workspace:FindFirstChild("PrisonNPCs");if npcs then table.insert(ignore,npcs) end
+	-- v205: humanoid props placed in the facility (e.g. a decorative "Inmate"
+	-- in a death row cell) are people, not walls
+	if not Nav._humanoidProps or os.clock()-Nav._humanoidPropsAt>30 then
+		Nav._humanoidProps={};Nav._humanoidPropsAt=os.clock()
+		local fac=workspace:FindFirstChild("CorrectionalFacility")
+		for _,m in (fac and fac:GetDescendants() or {}) do
+			if m:IsA("Humanoid") and m.Parent and m.Parent:IsA("Model") then table.insert(Nav._humanoidProps,m.Parent) end
+		end
+	end
+	for _,m in Nav._humanoidProps do if m.Parent then table.insert(ignore,m) end end
 	if char then table.insert(ignore,char) end
 	if o.ignoreCharacter then table.insert(ignore,o.ignoreCharacter) end
 	for _,part in o.ignoreParts or {} do if part then table.insert(ignore,part) end end
@@ -2353,6 +2371,7 @@ function Nav.patrol(cop: any, zoneKey: string, alive: () -> boolean)
 		allowedAreas[a] = true
 	end
 	local recent = {}
+	local unreachable = {} -- v205: points this guard failed to route to (skip them)
 	log("guard patrolling %s (%d patrol points)", zoneKey, #cands)
 	while alive() and cop.alive do
 		-- a far-ish point nobody else is heading to, not visited lately
@@ -2360,7 +2379,7 @@ function Nav.patrol(cop: any, zoneKey: string, alive: () -> boolean)
 		local best, bestScore = nil, -math.huge
 		for _, id in cands do
 			local claim = patrolClaims[id]
-			if not recent[id] and (not claim or claim == cop or not claim.alive) then
+			if not recent[id] and (unreachable[id] or 0) < 2 and (not claim or claim == cop or not claim.alive) then
 				local d = (nodes[id].pos - here).Magnitude
 				local score = math.min(d, 120) - (if d < 12 then 200 else 0) + math.random() * 40
 				if score > bestScore then
@@ -2369,6 +2388,11 @@ function Nav.patrol(cop: any, zoneKey: string, alive: () -> boolean)
 			end
 		end
 		if not best then
+			if next(recent) == nil then
+				-- every point failed from here: forget and rest before trying again
+				table.clear(unreachable)
+				task.wait(15)
+			end
 			table.clear(recent)
 			task.wait(1)
 			continue
@@ -2400,6 +2424,9 @@ function Nav.patrol(cop: any, zoneKey: string, alive: () -> boolean)
 		})
 		if patrolClaims[best] == cop then
 			patrolClaims[best] = nil
+		end
+		if not ok then
+			unreachable[best] = (unreachable[best] or 0) + 1
 		end
 		cop:stop()
 		cop:updateAnim()
