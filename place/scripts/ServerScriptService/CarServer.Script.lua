@@ -15,6 +15,16 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local RunService = game:GetService("RunService")
 local Debris = game:GetService("Debris")
+local PhysicsService = game:GetService("PhysicsService")
+
+-- v200: seated characters (R6 and R15) are welded to the car. R15 legs hang
+-- below the floor and used to scrape/push the road, and the avatar's mass
+-- sat high on the chassis: cars bucked, clipped into the ground and flipped.
+-- Seated bodies join a group that ignores the world and are massless.
+local PASSENGER_GROUP = "CarPassengers"
+pcall(function() PhysicsService:RegisterCollisionGroup(PASSENGER_GROUP) end)
+pcall(function() PhysicsService:CollisionGroupSetCollidable(PASSENGER_GROUP, "Default", false) end)
+pcall(function() PhysicsService:CollisionGroupSetCollidable(PASSENGER_GROUP, PASSENGER_GROUP, false) end)
 
 ---------------------------------------------------------------------------
 -- Settings
@@ -412,7 +422,9 @@ local function prepareCar(car, seat)
 		hinge.Attachment0 = a0
 		hinge.Attachment1 = a1
 		hinge.ActuatorType = motorised and Enum.ActuatorType.Motor or Enum.ActuatorType.None
-		hinge.MotorMaxAcceleration = math.huge
+		-- v200: finite spin-up. Instant (math.huge) wheel acceleration made cars
+		-- twitch and hop when network ownership changed in live servers.
+		hinge.MotorMaxAcceleration = 400
 		hinge.Parent = wheel
 		return hinge
 	end
@@ -685,14 +697,67 @@ local function removeDoorGui(player, car)
 	end
 end
 
-local function exitPosition(car, rootSeat, seat)
+local function exitPosition(car, rootSeat, seat, character)
 	local boxCF, boxSize = car:GetBoundingBox()
 	local seatCF = rootSeat.CFrame
 	local centerLocal = seatCF:PointToObjectSpace(boxCF.Position)
 	local seatLocal = seatCF:PointToObjectSpace(seat.Position)
 	local side = seatLocal.X < centerLocal.X and -1 or 1
 	local exitLocal = Vector3.new(centerLocal.X + side * (boxSize.X / 2 + 3), seatLocal.Y + 2, seatLocal.Z)
-	return seatCF:PointToWorldSpace(exitLocal)
+	local pos = seatCF:PointToWorldSpace(exitLocal)
+	-- v200: stand the character ON the ground (R15 hip height differs from R6;
+	-- the old "seat + 2" put R15 legs into the road).
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { car, character }
+	local hit = workspace:Raycast(pos + Vector3.new(0, 6, 0), Vector3.new(0, -30, 0), params)
+	if hit and character then
+		local hum = character:FindFirstChildOfClass("Humanoid")
+		local root = character:FindFirstChild("HumanoidRootPart")
+		local lift = if hum and hum.RigType == Enum.HumanoidRigType.R15 then hum.HipHeight + (root and root.Size.Y / 2 or 1) else 3
+		pos = Vector3.new(pos.X, hit.Position.Y + lift + 0.15, pos.Z)
+	end
+	return pos
+end
+
+-- Seated-body physics: store originals so they're restored exactly on exit.
+local passengerSaved = setmetatable({}, { __mode = "k" })
+local function setPassenger(character, seated)
+	if not character then return end
+	if seated then
+		if passengerSaved[character] then return end
+		local saved = {}
+		for _, part in ipairs(character:GetDescendants()) do
+			if part:IsA("BasePart") then
+				saved[part] = { group = part.CollisionGroup, massless = part.Massless }
+				part.CollisionGroup = PASSENGER_GROUP
+				part.Massless = true
+			end
+		end
+		passengerSaved[character] = saved
+	else
+		local saved = passengerSaved[character]
+		if not saved then return end
+		passengerSaved[character] = nil
+		for part, s in pairs(saved) do
+			if part.Parent then
+				part.CollisionGroup = s.group
+				part.Massless = s.massless
+			end
+		end
+	end
+end
+
+-- The driver owns the WHOLE car. Wheels/knuckles are separate assemblies
+-- joined by hinges; owning only the seat's assembly left them server-owned
+-- and the two fought over the network in live servers (jitter / snapping).
+local function setCarOwner(car, player)
+	for _, part in ipairs(car:GetDescendants()) do
+		if part:IsA("BasePart") and not part.Anchored then
+			if player then pcall(part.SetNetworkOwner, part, player)
+			else pcall(part.SetNetworkOwnershipAuto, part) end
+		end
+	end
 end
 
 -- Walking into the seat sits you (Roblox's normal Seat/VehicleSeat
@@ -701,33 +766,49 @@ local function setupSeat(car, rootSeat, seat, isDriver)
 	-- v41: leave seats enabled so touching the actual seat automatically sits
 	-- the character. No E/F proximity prompt is required.
 	seat.Disabled = false
-	local lastPlayer, lastRoot = nil, nil
+	local lastPlayer, lastRoot, lastCharacter = nil, nil, nil
 
 	seat:GetPropertyChangedSignal("Occupant"):Connect(function()
 		local occupant = seat.Occupant
 		if occupant then
-			local player = Players:GetPlayerFromCharacter(occupant.Parent)
-			lastPlayer, lastRoot = player, occupant.Parent:FindFirstChild("HumanoidRootPart")
+			local character = occupant.Parent
+			local player = Players:GetPlayerFromCharacter(character)
+			lastPlayer, lastRoot, lastCharacter = player, character:FindFirstChild("HumanoidRootPart"), character
+			setPassenger(character, true)
+			-- no tripping / ragdolling while buckled in
+			pcall(function()
+				occupant:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+				occupant:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+			end)
 			if player then
 				giveDoorGui(player,car)
-				local pr=occupant.Parent:FindFirstChild("HumanoidRootPart")
+				local pr=character:FindFirstChild("HumanoidRootPart")
 				if pr then pr.Anchored=false end
-				if isDriver then pcall(seat.SetNetworkOwner,seat,player) end
+				if isDriver then setCarOwner(car, player) end
 			end
 		else
 			if isDriver then
-				pcall(seat.SetNetworkOwnershipAuto, seat)
+				setCarOwner(car, nil)
 			end
-			local exitingRoot = lastRoot
+			local exitingRoot, exitingCharacter = lastRoot, lastCharacter
+			setPassenger(exitingCharacter, false)
+			local hum = exitingCharacter and exitingCharacter:FindFirstChildOfClass("Humanoid")
+			if hum then
+				pcall(function()
+					hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+					hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+				end)
+			end
 			if exitingRoot and exitingRoot.Parent and car.Parent then
-				local pos = exitPosition(car, rootSeat, seat)
+				local pos = exitPosition(car, rootSeat, seat, exitingCharacter)
 				task.defer(function()
 					if exitingRoot.Parent then
+						exitingRoot.AssemblyLinearVelocity = Vector3.zero
 						exitingRoot.CFrame = CFrame.new(pos) * exitingRoot.CFrame.Rotation
 					end
 				end)
 			end
-			lastPlayer, lastRoot = nil, nil
+			lastPlayer, lastRoot, lastCharacter = nil, nil, nil
 		end
 	end)
 end

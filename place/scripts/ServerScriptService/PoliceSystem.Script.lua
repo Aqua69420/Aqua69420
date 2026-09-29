@@ -7592,6 +7592,8 @@ local function escortCop(at: Vector3, facing: Vector3): any?
 	local g = Util.groundAt(at, 1, 6) or at
 	local cop = CopAI.new("Patrol", CFrame.lookAt(g, g + Util.safeUnit(Util.flat(facing), Vector3.zAxis)), { role = "Patrol", dormant = true })
 	if cop then
+		cop.prisonStaff=true
+		if cop.model then cop.model:SetAttribute("PrisonStaff",true) end
 		cop.cfg=table.clone(cop.cfg) -- escort speeds must not mutate shared police tuning
 		pcall(function()
 			cop.root:SetNetworkOwner(nil)
@@ -10378,6 +10380,7 @@ release = function(player: Player, how: string)
 	if target then player.Neutral=false;player.Team=target end
 	returnGuns(player);uncuff(player);releaseBusy[player]=nil
 	tell(player,"Released",how)
+	if PrisonSave then task.spawn(PrisonSave.clear,player) end
 	print(("[PoliceSystem] RELEASE COMPLETE: %s reached public road -> %s"):format(player.Name,target and target.Name or "release team"))
 end
 
@@ -10557,6 +10560,7 @@ local deathRowExecutionActive=setmetatable({}, {__mode="k"})
 -- vehicles, home, weapons, custody history and inmate status all return to
 -- the same state as a new visitor. Persist the zeroed EconomyServer schema so
 -- a later load does not restore the old profile.
+local PrisonSave: any = nil -- v200 prison persistence (set up in Justice init)
 local function resetExecutedPlayer(player: Player)
 	clearJusticeState(player)
 	local function zeroValue(name: string, value: number)
@@ -10578,10 +10582,20 @@ local function resetExecutedPlayer(player: Player)
 	crimeKeys[player]=nil;recentCrime[player]=nil;previousTeam[player]=nil
 	local visitors=teamNamed(JCFG.ReleaseTeam)
 	if visitors then player.Neutral=false;player.Team=visitors end
+	-- v200: a wipe returns to the player's starting balance (PlayerDefaults),
+	-- e.g. aquagaming22 always restarts with $50,000,000 in the bank.
+	local startCash,startBank=0,0
+	local defaultsModule=game:GetService("ServerScriptService"):FindFirstChild("PlayerDefaults")
+	if defaultsModule then
+		local okDefaults,defaults=pcall(require,defaultsModule)
+		if okDefaults then startCash,startBank=defaults.start(player) end
+	end
+	zeroValue("Cash",startCash);zeroValue("Money",startBank)
+	if PrisonSave then PrisonSave.clear(player) end
 	local persisted=false
 	local ok,err=pcall(function()
 		local store=game:GetService("DataStoreService"):GetDataStore("LasVegas_PlayerData_v1")
-		store:SetAsync("player_"..player.UserId,{cash=0,bank=0,cars={},house=nil})
+		store:SetAsync("player_"..player.UserId,{cash=startCash,bank=startBank,cars={},house=nil})
 		persisted=true
 	end)
 	if not ok or not persisted then warn("[DeathRow] new-player progress reset is session-only; DataStore write failed: "..tostring(err)) end
@@ -11176,26 +11190,43 @@ local function startPrisonGuardPrototype()
 		if PrisonNav.ready then
 			local spawned=0
 			for _,zoneKey in PrisonNav.Config.PatrolZones do
+				-- v200: a permanent, armed patrol post. If the officer is killed or
+				-- removed, a replacement reports for duty after a short delay.
 				local start=PrisonNav.patrolStart(zoneKey)
 				if start then
-					local cop=nameEscort(escortCop(start,Vector3.new(0,0,-1)),"CORRECTIONAL OFFICER")
-					if cop and cop.model then
-						cop.model.Name="PrisonGuard_"..zoneKey
-						cop.model:SetAttribute("PrisonGuardPrototype",true)
-						cop.model:SetAttribute("PatrolZone",zoneKey)
-						cop.cfg.WalkSpeed=math.max(8,math.min(cop.cfg.WalkSpeed,11))
-						prisonGuardPatrols[cop]=true
-						spawned+=1
-						task.spawn(function()
-							local ok,err=pcall(PrisonNav.patrol,cop,zoneKey,function()
-								return cop.alive and cop.model~=nil and cop.model.Parent~=nil and prison~=nil and prison.Parent~=nil
-							end)
-							if not ok then warn("[PrisonNav] guard patrol error: "..tostring(err)) end
-							prisonGuardPatrols[cop]=nil
-						end)
-					end
+					spawned+=1
+					task.spawn(function()
+						while prison and prison.Parent do
+							local from=PrisonNav.patrolStart(zoneKey) or start
+							local cop=nameEscort(escortCop(from,Vector3.new(0,0,-1)),"CORRECTIONAL OFFICER")
+							if cop and cop.model then
+								cop.model.Name="PrisonGuard_"..zoneKey
+								cop.model:SetAttribute("PrisonGuardPrototype",true)
+								cop.model:SetAttribute("PatrolZone",zoneKey)
+								cop.cfg.WalkSpeed=math.max(8,math.min(cop.cfg.WalkSpeed,11))
+								prisonGuardPatrols[cop]=true
+								pcall(function() cop:setGunOut(true) end)
+								local ok,err=pcall(PrisonNav.patrol,cop,zoneKey,function()
+									return cop.alive and cop.model~=nil and cop.model.Parent~=nil and prison~=nil and prison.Parent~=nil
+								end)
+								if not ok then warn("[PrisonNav] guard patrol error: "..tostring(err)) end
+								prisonGuardPatrols[cop]=nil
+								if cop.alive then pcall(function() cop:despawn("patrol ended") end) end
+							end
+							task.wait(30)
+						end
+					end)
 				end
 			end
+			-- patrol loops holster between moves; keep every CO visibly armed
+			task.spawn(function()
+				while prison and prison.Parent do
+					for cop in prisonGuardPatrols do
+						if cop.alive then pcall(function() cop:setGunOut(true) end) end
+					end
+					task.wait(2)
+				end
+			end)
 			if spawned>0 then
 				print(("[PoliceSystem] PRISON GUARDS: %d graph patrol guard(s) (%s)"):format(spawned,table.concat(PrisonNav.Config.PatrolZones,", ")))
 				return
@@ -11217,6 +11248,171 @@ local function startPrisonGuardPrototype()
 		spawnPrisonPatrol(i,start,points)
 	end
 	print(("[PoliceSystem] PRISON GUARDS: %d patrol guard(s), %d mapped patrol zones"):format(#starts,#points))
+end
+
+---------------------------------------------------------------------------
+-- v200 PRISON LIFE
+--   * stationed armed COs at fixed posts in each cellblock (+ intake/booking),
+--     replaced if killed, never recycled by the city dispatcher
+--   * NPC inmates of each class in that class's uniform
+--   * daily schedule from Config.PrisonSchedule + Lighting.ClockTime:
+--     day = inmates in their cellblock common area; Lockdown/Count = they
+--     walk to a cell door of their class and go in (no cell is reserved,
+--     so player capacity is untouched); morning = they come back out.
+---------------------------------------------------------------------------
+local PRISON_LIFE = {
+	Posts = { "MAXIMUM_SECURITY", "MEDIUM_SECURITY", "LOW_SECURITY", "INTAKE", "BOOKING" },
+	GuardRespawn = 30,
+	Inmates = {
+		{ class = "Low", count = 4, area = "LOW_SECURITY", cells = "LowSecurity" },
+		{ class = "Medium", count = 5, area = "MEDIUM_SECURITY", cells = "MediumSecurity" },
+		{ class = "High", count = 3, area = "MAXIMUM_SECURITY", cells = "HighSecurity" },
+		{ class = "Death Row", count = 1, area = nil, cells = "DeathRow" }, -- walkway outside the cells
+	},
+	InCellBlocks = { Lockdown = true, Count = true },
+}
+
+local function prisonLifeInCells(): boolean
+	local hour=game:GetService("Lighting").ClockTime
+	for _,b in Config.PrisonSchedule.Blocks do
+		if hour>=b.Start and hour<b.Finish then return PRISON_LIFE.InCellBlocks[b.Name]==true end
+	end
+	return true
+end
+
+local function classRooms(category: string): { any }
+	local list={}
+	local map=PrisonNav and PrisonNav.mapRoot
+	local doors=map and map:FindFirstChild("DoorMarkers")
+	if not doors then return list end
+	for name,pair in PrisonNav.CellPairs do
+		if pair.category==category then
+			local door=doors:FindFirstChild(pair.door)
+			if door then table.insert(list,{door=door,pos=pair.pos,name=name,category=category}) end
+		end
+	end
+	return list
+end
+
+local function startStationedGuards()
+	for _,area in PRISON_LIFE.Posts do
+		task.spawn(function()
+			local post=PrisonNav.patrolStart(area)
+			if not post then warn("[PrisonLife] no post position for "..area);return end
+			while prison and prison.Parent do
+				local cop=nameEscort(escortCop(post,Vector3.new(0,0,-1)),"CORRECTIONAL OFFICER")
+				if cop and cop.model then
+					cop.model.Name="PrisonPost_"..area
+					cop.model:SetAttribute("PrisonGuardPost",area)
+					prisonGuardPatrols[cop]=true
+					pcall(function() cop:setGunOut(true) end)
+					local lookAt=post+Vector3.new(math.random(-10,10),0,math.random(-10,10))
+					while cop.alive and cop.model and cop.model.Parent do
+						if Util.flat(cop.root.Position-post).Magnitude>5 then
+							cop:moveTo(post,false)
+						else
+							cop:stop()
+							if math.random()<0.25 then lookAt=post+Vector3.new(math.random(-12,12),0,math.random(-12,12)) end
+							pcall(function() cop:face(lookAt) end)
+						end
+						pcall(function() cop:updateAnim() end)
+						task.wait(1.5)
+					end
+					prisonGuardPatrols[cop]=nil
+				end
+				task.wait(PRISON_LIFE.GuardRespawn)
+			end
+		end)
+	end
+end
+
+local function makeInmateNpc(class: string): (Model?, Humanoid?, BasePart?)
+	local templates=ServerStorage:FindFirstChild("CivilianTemplates")
+	local pool=templates and templates:GetChildren() or {}
+	if #pool==0 then return nil end
+	local npc=pool[math.random(1,#pool)]:Clone()
+	for _,d in npc:GetDescendants() do
+		-- keep the walk animation; drop the civilian AI / dealer behaviour
+		if d:IsA("BaseScript") and d.Name~="Animate" then d:Destroy() end
+	end
+	local hum=npc:FindFirstChildOfClass("Humanoid");local root=npc:FindFirstChild("HumanoidRootPart")
+	if not hum or not root then npc:Destroy();return nil end
+	for _,d in npc:GetChildren() do if d:IsA("Shirt") or d:IsA("Pants") or d:IsA("Accessory") then d:Destroy() end end
+	local outfit=inmateClothes[class]
+	if outfit then
+		local shirt=Instance.new("Shirt");shirt.ShirtTemplate="http://www.roblox.com/asset/?id="..outfit.shirt;shirt.Parent=npc
+		local pants=Instance.new("Pants");pants.PantsTemplate="http://www.roblox.com/asset/?id="..outfit.pants;pants.Parent=npc
+	end
+	npc.Name=class.." Inmate"
+	npc:SetAttribute("PrisonNPCInmate",class)
+	hum.DisplayName=class.." Inmate"
+	hum.WalkSpeed=7
+	hum.DisplayDistanceType=Enum.HumanoidDisplayDistanceType.Viewer
+	for _,d in npc:GetDescendants() do if d:IsA("BasePart") then d.Anchored=false end end
+	return npc,hum,root
+end
+
+local function startNpcInmates()
+	local folder=Workspace:FindFirstChild("PrisonNPCs") or Instance.new("Folder")
+	folder.Name="PrisonNPCs";folder.Parent=Workspace
+	for _,group in PRISON_LIFE.Inmates do
+		local rooms=classRooms(group.cells)
+		if #rooms==0 then warn("[PrisonLife] no "..group.cells.." cells for "..group.class.." inmates");continue end
+		for index=1,group.count do
+			task.spawn(function()
+				task.wait(index*0.7)
+				local room=rooms[(index-1)%#rooms+1]
+				local door=PrisonFlow.approach(room)
+				local function dayPoint(): Vector3
+					if group.area then return PrisonNav.patrolStart(group.area) or door end
+					return door+Vector3.new(math.random(-6,6),0,math.random(-6,6))
+				end
+				while prison and prison.Parent do
+					local npc,hum,root=makeInmateNpc(group.class)
+					if not npc then warn("[PrisonLife] no CivilianTemplates to build inmates");return end
+					local start=if prisonLifeInCells() then door else dayPoint()
+					npc:PivotTo(CFrame.new(start+Vector3.new(0,3,0)))
+					npc.Parent=folder
+					pcall(function() root:SetNetworkOwner(nil) end)
+					local inCell=false
+					while hum.Health>0 and (npc.Parent or inCell) do
+						if prisonLifeInCells() then
+							if not inCell then
+								-- lights out: walk to the cell door and go in
+								openPrisonDoorsNear(door,10,6)
+								hum:MoveTo(door)
+								local t=os.clock()
+								while os.clock()-t<20 and hum.Health>0 and Util.flat(root.Position-door).Magnitude>4 do task.wait(0.5);hum:MoveTo(door) end
+								npc.Parent=nil;inCell=true
+							end
+							task.wait(5)
+						else
+							if inCell then
+								-- morning: out of the cell
+								npc:PivotTo(CFrame.new(door+Vector3.new(0,3,0)));npc.Parent=folder;inCell=false
+								pcall(function() root:SetNetworkOwner(nil) end)
+							end
+							hum:MoveTo(dayPoint())
+							hum.MoveToFinished:Wait() -- fires on arrival or Roblox's 8s MoveTo timeout
+							task.wait(math.random(3,9))
+						end
+					end
+					if npc.Parent then task.wait(10);npc:Destroy() end
+					task.wait(40) -- a new inmate is processed in later
+				end
+			end)
+		end
+	end
+	print("[PrisonLife] NPC inmates and stationed COs online")
+end
+
+local function startPrisonLife()
+	if not prison or not PrisonNav then return end
+	local t0=os.clock()
+	while not PrisonNav.ready and os.clock()-t0<60 do task.wait(1) end
+	if not PrisonNav.ready then warn("[PrisonLife] prison navigation not ready; prison life disabled");return end
+	startStationedGuards()
+	startNpcInmates()
 end
 
 function Justice.init()
@@ -11276,6 +11472,7 @@ function Justice.init()
 		end
 	end
 	task.defer(startPrisonGuardPrototype)
+	task.defer(startPrisonLife)
 
 	-- who can be made wanted
 	Heat.canBeWanted = function(player: Player, crimeName: string): boolean
@@ -11460,7 +11657,101 @@ function Justice.init()
 		end)
 	end
 
+	-- v200 PRISON PERSISTENCE. A housed inmate's sentence (time left, class,
+	-- charges, facility, pre-arrest team) is saved; rejoining puts them back in
+	-- a cell of their class, in uniform, with the timer continuing.
+	do
+		local DataStoreService=game:GetService("DataStoreService")
+		local okStore,store=pcall(DataStoreService.GetDataStore,DataStoreService,"LasVegas_PrisonData_v1")
+		if not okStore then store=nil;warn("[PrisonSave] DataStore unavailable (publish the place / enable API access): "..tostring(store)) end
+		local restoring=setmetatable({}, {__mode="k"})
+		local hasRecord=setmetatable({}, {__mode="k"})
+		local function key(player: Player): string return "prison_"..player.UserId end
+		local function snapshot(player: Player): any
+			local done=sentenceEnd[player]
+			if not done or player:GetAttribute("BookingState")~="Housed" then return nil end
+			local remaining=done-os.time()
+			if remaining<=0 then return nil end
+			local prev=previousTeam[player]
+			return {remaining=remaining,class=player:GetAttribute("SecurityClass"),charges=player:GetAttribute("Charges"),
+				facility=player:GetAttribute("Facility"),prevTeam=prev and prev.Name or nil,savedAt=os.time()}
+		end
+		PrisonSave={}
+		function PrisonSave.save(player: Player)
+			if not store or restoring[player] then return end
+			local data=snapshot(player)
+			if data then
+				local ok,err=pcall(function() store:SetAsync(key(player),data) end)
+				if ok then hasRecord[player]=true else warn("[PrisonSave] save failed "..player.Name..": "..tostring(err)) end
+			elseif hasRecord[player] then
+				PrisonSave.clear(player)
+			end
+		end
+		function PrisonSave.clear(player: Player)
+			hasRecord[player]=nil
+			if store then pcall(function() store:RemoveAsync(key(player)) end) end
+		end
+		function PrisonSave.restore(player: Player)
+			if not store then return end
+			restoring[player]=true
+			local ok,data=pcall(function() return store:GetAsync(key(player)) end)
+			if not ok or type(data)~="table" or (tonumber(data.remaining) or 0)<=0 then restoring[player]=nil;return end
+			hasRecord[player]=true
+			local class=tostring(data.class or "Medium")
+			local category=if class=="Death Row" then "DeathRow" else class.."Security"
+			local char=player.Character or player.CharacterAdded:Wait()
+			task.wait(2)
+			local room=PrisonFlow.pick(player,category)
+			local waitUntil=os.clock()+60
+			while player.Parent and not room and os.clock()<waitUntil do task.wait(5);room=PrisonFlow.pick(player,category) end
+			if not player.Parent or not room then
+				warn("[PrisonSave] no free "..category.." cell to restore "..player.Name.."; record kept for next join")
+				restoring[player]=nil;return
+			end
+			if type(data.prevTeam)=="string" then
+				local t=game:GetService("Teams"):FindFirstChild(data.prevTeam)
+				if t then previousTeam[player]=t end
+			end
+			sentenceEnd[player]=os.time()+math.floor(tonumber(data.remaining) or 60)
+			for _,fac in facilities do if fac.name==data.facility then inmateFacility[player]=fac end end
+			player:SetAttribute("SecurityClass",class);player:SetAttribute("SentenceSeconds",tonumber(data.remaining))
+			player:SetAttribute("SentenceEnd",sentenceEnd[player]);player:SetAttribute("Charges",data.charges)
+			player:SetAttribute("Facility",data.facility);player:SetAttribute("AssignedCell",room.name)
+			player:SetAttribute("BookingState","Housed");player:SetAttribute("CustodyPhase","SentencedPrisoner")
+			player:SetAttribute("PrisonDressOutComplete",true)
+			housingAssignment[player]=room.cell
+			PrisonFlow.rooms[player]=room;PrisonFlow.reserved[player]=nil;player:SetAttribute("ReservedPrisonCell",nil)
+			PrisonFlow.team(player,class..(if class=="Supermax" or class=="Death Row" then " Inmates" else " Security Inmates"))
+			pcall(PrisonFlow.applyInmateClothes,player,class)
+			if player.Character then pcall(restorePrisonRespawn,player,player.Character) end
+			if room.door then pcall(PrisonFlow.closeCell,room) end
+			PrisonFlow.state(player,"INCARCERATED",false)
+			sendJailState(player)
+			tell(player,"Housed",room.name,class)
+			print(("[PrisonSave] RESTORED %s -> %s [%s] %ds left"):format(player.Name,room.name,class,sentenceEnd[player]-os.time()))
+			restoring[player]=nil
+			-- the start menu assigns a team on join; re-assert once it has run
+			task.delay(6,function()
+				if player.Parent and sentenceEnd[player] then
+					PrisonFlow.team(player,class..(if class=="Supermax" or class=="Death Row" then " Inmates" else " Security Inmates"))
+				end
+			end)
+		end
+		task.spawn(function()
+			while true do
+				task.wait(60)
+				for _,player in Players:GetPlayers() do
+					if sentenceEnd[player] or hasRecord[player] then task.spawn(PrisonSave.save,player) end
+				end
+			end
+		end)
+		game:BindToClose(function()
+			for _,player in Players:GetPlayers() do PrisonSave.save(player) end
+		end)
+	end
+
 	local function onPlayer(player: Player)
+		task.spawn(PrisonSave.restore,player)
 		-- nobody should start the game in prison without a sentence
 		if player.Team and player.Team.Name == JCFG.PrisonerTeam and not inPrison(player) then
 			local t = teamNamed(JCFG.ReleaseTeam)
@@ -11509,6 +11800,7 @@ function Justice.init()
 	end
 	Players.PlayerAdded:Connect(onPlayer)
 	Players.PlayerRemoving:Connect(function(player)
+		PrisonSave.save(player) -- before the sentence tables are cleared
 		charges[player], sentenceEnd[player], previousTeam[player] = nil, nil, nil
 		crimeKeys[player], inmateFacility[player] = nil, nil
 		policeOfficerKills[player]=nil
@@ -11997,6 +12289,9 @@ local function isFootPatrol(c: any): boolean
 end
 
 local function isFreePatrol(c: any): boolean
+	-- v200: prison staff (guards, escort/processing officers) are not city
+	-- patrols; the dispatcher used to despawn them as "excess"/"recycled".
+	if c.prisonStaff or (c.model and c.model:GetAttribute("PrisonStaff")) then return false end
 	return c.role == "Patrol" and c.pursuit == nil and c.alive
 end
 

@@ -19,8 +19,9 @@ local RunService = game:GetService("RunService")
 ---------------------------------------------------------------------------
 -- Settings
 ---------------------------------------------------------------------------
-local STARTING_CASH = 500
-local STARTING_BANK = 2500
+local PlayerDefaults = require(script.Parent:WaitForChild("PlayerDefaults"))
+local STARTING_CASH = PlayerDefaults.STARTING_CASH
+local STARTING_BANK = PlayerDefaults.STARTING_BANK
 local PAYDAY_SECONDS = 300
 local DATASTORE_NAME = "LasVegas_PlayerData_v1"
 local MESSAGE_HISTORY = 10
@@ -267,8 +268,14 @@ local function loadData(player)
 	if type(data.house) == "string" then
 		player:SetAttribute("SavedHouse", data.house) -- HousingServer moves you back in
 	end
-	player.Cash.Value = tonumber(data.cash) or STARTING_CASH
-	player.Money.Value = tonumber(data.bank) or STARTING_BANK
+	local startCash, startBank = PlayerDefaults.start(player)
+	player.Cash.Value = tonumber(data.cash) or startCash
+	player.Money.Value = tonumber(data.bank) or startBank
+	-- v200: special starting balances are also a floor on every join
+	local floor = PlayerDefaults.bankFloor(player)
+	if floor > 0 and player.Money.Value < floor then
+		player.Money.Value = floor
+	end
 	loaded[player] = true
 
 	if type(data.cars) == "table" then
