@@ -432,8 +432,12 @@ local function isCellName(name: string): boolean
     for _,word in {"area", "outside", "transfer", "leads", "common", "hallway", "walkway", "lobby"} do
         if string.find(n,word,1,true) then return false end
     end
-	if string.find(n, "cellblock", 1, true) or string.find(n, "cell_block", 1, true) then
-		return false
+	-- v192: also the authored misspellings ("Cellbock", "Cellblok") and visit rooms;
+	-- "High sEcuirty Cellbock Door" read as a CELL door and sealed the whole block.
+	for _, word in { "cellblock", "cell_block", "cellbock", "cellblok", "cellbloc", "visit" } do
+		if string.find(n, word, 1, true) then
+			return false
+		end
 	end
 	-- corridors / doors that merely lead TO cells are not cells
 	for _, word in { "_to_", "outside", "hallway", "corridor", "leads", "transfer", "area" } do
@@ -760,6 +764,20 @@ local function attachDoors()
 		for _, sid in d.sides do
 			for _, z in nodes[sid].zones do
 				table.insert(d.zones, z)
+			end
+		end
+		-- v192: evidence beats names the other way too. A "cell door" with no cell
+		-- on either side is a corridor/cellblock door (typo'd names like
+		-- "Cellbock"): as CELL_DOOR the route search refused to pass it.
+		if d.kind == "CELL_DOOR" and #d.zones > 0 then
+			local anyCell = false
+			for _, z in d.zones do
+				if z.cell or Nav.CellPairs[z.name] then anyCell = true end
+			end
+			if not anyCell then
+				d.kind = "DOOR"
+				nodes[d.id].kind = "DOOR"
+				log("door %s has no cell behind it: treated as a passage door", d.name)
 			end
 		end
 		-- evidence beats names: a small room behind a cell door IS a cell
