@@ -747,6 +747,7 @@ local function releaseQueue(driver,jid)
 	local key=driver.vehicleKey or driver
 	if runtime then
 		if runtime.queue then runtime.queue[key]=nil end
+		if runtime.seen then runtime.seen[key]=nil end
 		if runtime.reservation==key then
 			runtime.reservationUntil=math.min(runtime.reservationUntil or math.huge,os.clock()+0.65)
 		end
@@ -838,15 +839,18 @@ end
 local function runtimeFor(jid)
 	local r=intersectionRuntime[jid]
 	if not r then
-		r={queue={},reservation=nil,reservationUntil=0}
+		r={queue={},seen={},reservation=nil,reservationUntil=0}
 		intersectionRuntime[jid]=r
 	end
 	local now=os.clock()
 	if r.reservation and r.reservationUntil<=now then
 		r.reservation=nil
 	end
+	-- A queued car refreshes `seen` every tick it is still approaching. Entries
+	-- from cars that rerouted, turned around or were despawned used to stay
+	-- "first in line" for 12s and hold every other car at the stop line.
 	for key,arrival in pairs(r.queue) do
-		if now-arrival>12 then r.queue[key]=nil end
+		if now-arrival>12 or now-(r.seen[key] or arrival)>1.5 then r.queue[key]=nil;r.seen[key]=nil end
 	end
 	return r
 end
@@ -875,6 +879,7 @@ local function intersectionControlledSpeed(driver,requestedSpeed)
 
 	local key=driver.vehicleKey or driver
 	local runtime=runtimeFor(jid)
+	if runtime.queue[key] then runtime.seen[key]=os.clock() end
 	local emergency=driver.emergency==true
 	local turnSpeed=emergency and 28 or 13
 	local approachSpeed=emergency and 24 or 11

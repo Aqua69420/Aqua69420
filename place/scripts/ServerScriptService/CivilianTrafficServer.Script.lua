@@ -291,42 +291,88 @@ local emergencyVehicles={}
 -- direct Workspace children. The old index therefore missed them completely and
 -- resident traffic would PivotTo straight through a custody cruiser. Index nested
 -- priority vehicles and include non-siren custody/medical transports explicitly.
+-- v191: each entry also carries a measured ground speed. Police cruisers keep
+-- Emergency=true after they park at a scene; the old index treated a parked
+-- cruiser like one running code, so every resident car within 30 studs "ahead"
+-- (any lane, even across the road) braked to 0 and - because its desired speed
+-- was 0 - the stuck recovery never fired. Those cars waited forever and the
+-- whole block piled up behind them.
+local emergencyLast=setmetatable({},{__mode="k"})
+local EMERGENCY_MOVING_SPEED=3
 task.spawn(function()
 	while true do
-		table.clear(emergencyVehicles)
+		local now=os.clock()
+		local list={}
 		for _,obj in ipairs(workspace:GetDescendants()) do
 			if obj:IsA("Model") then
 				local emergency=obj:GetAttribute("Emergency")
 				if emergency==true or obj:GetAttribute("CustodyTransport") or obj:GetAttribute("MedicalTransport") or obj:GetAttribute("IncidentResponse") then
-					if obj:FindFirstChildWhichIsA("BasePart",true) then table.insert(emergencyVehicles,obj) end
+					if obj:FindFirstChildWhichIsA("BasePart",true) then
+						local pos=obj:GetPivot().Position
+						local last=emergencyLast[obj]
+						local velocity=Vector3.zero
+						if last and now-last.t>0.05 then
+							local v=(pos-last.pos)/(now-last.t)
+							velocity=Vector3.new(v.X,0,v.Z)
+						end
+						emergencyLast[obj]={pos=pos,t=now}
+						table.insert(list,{model=obj,pos=pos,velocity=velocity,moving=velocity.Magnitude>EMERGENCY_MOVING_SPEED})
+					end
 				end
 			end
 		end
+		emergencyVehicles=list
 		task.wait(EMERGENCY_INDEX_INTERVAL)
 	end
 end)
 
+-- Relations:
+--   overlap   a priority vehicle is on top of us (ghosted transport)
+--   ahead     moving, in our road corridor, travelling our way
+--   oncoming  moving, in our road corridor, coming toward us
+--   behind    moving, in our corridor behind us -> pull aside, keep clearing
+--   parked    stationary and physically in OUR lane ahead -> a lane obstacle
+-- A stationary priority vehicle that is not in our lane is ignored.
 local function emergencyNearby(state)
 	local now=os.clock()
 	if state.nextEmergencyCheck and now<state.nextEmergencyCheck then
-		return state.emergencyNear,state.emergencyRelation,state.emergencyDistance or math.huge
+		return state.emergencyNear,state.emergencyRelation,state.emergencyDistance or math.huge,state.emergencySpeed or 0
 	end
 	state.nextEmergencyCheck=now+0.30+math.random()*0.10
-	state.emergencyNear=false;state.emergencyRelation=nil;state.emergencyDistance=math.huge
+	state.emergencyNear=false;state.emergencyRelation=nil;state.emergencyDistance=math.huge;state.emergencySpeed=0
 	local pos=state.position or state.driver.pos or state.car:GetPivot().Position
 	local heading=state.driver.heading
-	for _,obj in ipairs(emergencyVehicles) do
+	local right=Vector3.new(-heading.Z,0,heading.X)
+	for _,info in ipairs(emergencyVehicles) do
+		local obj=info.model
 		if obj.Parent and obj~=state.car then
-			local delta=Vector3.new(obj:GetPivot().Position.X-pos.X,0,obj:GetPivot().Position.Z-pos.Z)
+			local delta=Vector3.new(info.pos.X-pos.X,0,info.pos.Z-pos.Z)
 			local d=delta.Magnitude
 			if d<70 and d<state.emergencyDistance then
-				state.emergencyNear=true;state.emergencyDistance=d
-				local dot=(d>0.1 and heading:Dot(delta.Unit)) or 0
-				state.emergencyRelation=if d<16 then "overlap" elseif dot>0.18 then "ahead" else "behind"
+				local along=delta:Dot(heading)
+				local lateral=math.abs(delta:Dot(right))
+				local relation=nil
+				if d<16 and info.moving then
+					relation="overlap"
+				elseif info.moving then
+					if lateral<12 then
+						if along>0 then
+							relation=if info.velocity:Dot(heading)<-EMERGENCY_MOVING_SPEED then "oncoming" else "ahead"
+						else
+							relation="behind"
+						end
+					end
+				elseif along>0 and along<45 and lateral<5.5 then
+					relation="parked";d=along
+				end
+				if relation then
+					state.emergencyNear=true;state.emergencyDistance=d;state.emergencyRelation=relation
+					state.emergencySpeed=math.max(0,info.velocity:Dot(heading));state.emergencyPos=info.pos
+				end
 			end
 		end
 	end
-	return state.emergencyNear,state.emergencyRelation,state.emergencyDistance
+	return state.emergencyNear,state.emergencyRelation,state.emergencyDistance,state.emergencySpeed
 end
 
 local function desiredTrafficSpeed(state)
@@ -348,9 +394,38 @@ local function desiredTrafficSpeed(state)
             state.nextObstacleSenseAt=now+0.5+math.random()*0.15
             state.cachedObstacleGap=vehicleObstacleAhead(state)
         end
-        if (state.cachedObstacleGap or math.huge)<gap then gap=state.cachedObstacleGap;state.leadSpeed=0 end
+        -- While easing around a parked priority vehicle its body is expected
+        -- in the forward ray; the pass itself is speed-capped below.
+        if (state.cachedObstacleGap or math.huge)<gap and not state.passingParked then gap=state.cachedObstacleGap;state.leadSpeed=0 end
     end
 	local follow=profile.follow or 28
+	local pos=state.position or driver.pos or state.car:GetPivot().Position
+	local heading=driver.heading
+
+	local priorityNear,relation,priorityDist,prioritySpeed=emergencyNearby(state)
+	-- Easing around a parked priority vehicle continues until it is behind us.
+	if state.passingParked then
+		local target=state.passingParked
+		local along=Vector3.new(target.X-pos.X,0,target.Z-pos.Z):Dot(heading)
+		if along<-8 or now-(state.passingStarted or now)>20 or not network[driver.road] or driver.road~=state.passingRoad then
+			state.passingParked=nil;state.passingStarted=nil;state.passingRoad=nil;state.parkedBlockSince=nil
+		end
+	end
+	if priorityNear and relation=="parked" and not state.passingParked then
+		-- Queue behind it like any stopped car, then try a free adjacent lane,
+		-- then ease around it at walking pace. Never wait on it indefinitely.
+		gap=math.min(gap,priorityDist);state.leadSpeed=0
+		state.parkedBlockSince=state.parkedBlockSince or now
+		if now-state.parkedBlockSince>2 then
+			if tryLaneChange(state) then
+				state.parkedBlockSince=nil
+			elseif now-state.parkedBlockSince>3.5 then
+				state.passingParked=state.emergencyPos;state.passingStarted=now;state.passingRoad=driver.road
+			end
+		end
+	elseif not (priorityNear and relation=="parked") and not state.passingParked then
+		state.parkedBlockSince=nil
+	end
 
 	if gap<follow*0.72 then
 		state.blockedSince=state.blockedSince or now
@@ -374,15 +449,22 @@ local function desiredTrafficSpeed(state)
         if gap<=standstill then speed=0 end
     end
 
-	local priorityNear,relation,priorityDist=emergencyNearby(state)
-	if priorityNear then
-		-- Give police/EMS a real corridor instead of merely slowing to 5 MPH in-lane.
-		-- A vehicle in front stops/pulls aside; a priority vehicle coming from behind
-		-- makes traffic pull farther aside and continue clearing the lane.
+	if state.passingParked then
+		-- Swing toward the centre line past the parked unit, at walking pace.
+		driver.laneOffset=driver.baseLaneOffset-6.5
+		state.car:SetAttribute("TrafficYielding",true)
+		-- The lane offset eases over ~2.5s; creep while swinging out.
+		speed=math.min(speed,if now-(state.passingStarted or now)<2.5 then 2.5 else 6)
+	elseif priorityNear and relation~="parked" then
+		-- Give moving police/EMS a real corridor: pull toward the kerb. Traffic
+		-- in front of a unit running code keeps moving aside at a reduced speed
+		-- (it no longer brakes to a dead stop in the unit's path).
 		driver.laneOffset=driver.baseLaneOffset+3.4
 		state.car:SetAttribute("TrafficYielding",true)
 		if relation=="ahead" then
-			speed=math.min(speed,if priorityDist<30 then 0 else 6)
+			speed=math.min(speed,math.max(6,(prioritySpeed or 0)*0.9))
+		elseif relation=="oncoming" then
+			speed=math.min(speed,10)
 		elseif relation=="overlap" then
 			-- If an anchored resident car has already visually overlapped a ghost
 			-- transport, let it clear forward as soon as its own lane has room.
@@ -446,6 +528,70 @@ local function paint(car)
 	end
 end
 
+-- v191 destination spreading. The shared chooser weighted roads only by class
+-- and current occupancy, so over time the whole population converged on the
+-- same few arterials and queued there. Each resident now prefers a destination
+-- across town, avoids its own last few destinations, and avoids roads that
+-- many other residents are already heading to.
+local destinationClaims={}
+local roadMidpoints={}
+local function roadMidpoint(roadIdx)
+	local mid=roadMidpoints[roadIdx]
+	if not mid then
+		local pts=network[roadIdx].points
+		mid=pts[math.max(1,math.ceil(#pts/2))]
+		roadMidpoints[roadIdx]=mid
+	end
+	return mid
+end
+
+local function claimDestination(state,roadIdx)
+	if state.destination then
+		destinationClaims[state.destination]=math.max(0,(destinationClaims[state.destination] or 1)-1)
+	end
+	state.destination=roadIdx
+	if roadIdx then destinationClaims[roadIdx]=(destinationClaims[roadIdx] or 0)+1 end
+end
+
+local function chooseTripDestination(state,tried)
+	local driver=state.driver
+	local graph=RoadDriving.buildGraph(network)
+	local seen={[driver.road]=true}
+	local queue={driver.road}
+	local q=1
+	local choices,total={},0
+	local pos=state.position or driver.pos or state.car:GetPivot().Position
+	local recent=state.recentDestinations or {}
+	while q<=#queue do
+		local u=queue[q];q+=1
+		for _,edge in ipairs(graph[u] or {}) do
+			local i=edge.road
+			if not seen[i] then
+				seen[i]=true
+				table.insert(queue,i)
+				if not tried[i] then
+					local r=network[i]
+					local classWeight=(r.roadType=="Primary" and 1.3) or (r.roadType=="Secondary" and 1.1) or 0.75
+					local congestion=roadOccupancy[r.name] or 0
+					local claims=destinationClaims[i] or 0
+					local mid=roadMidpoint(i)
+					local distance=math.clamp(Vector3.new(mid.X-pos.X,0,mid.Z-pos.Z).Magnitude/350,0.25,1.6)
+					local repeatPenalty=if table.find(recent,i) then 0.15 else 1
+					local weight=classWeight*distance*repeatPenalty/(1+congestion*0.5+claims*0.9)
+					total+=weight
+					table.insert(choices,{road=i,ceiling=total})
+				end
+			end
+		end
+	end
+	if #choices==0 then return nil end
+	local roll=math.random()*total
+	for _,choice in ipairs(choices) do
+		if roll<=choice.ceiling then return choice.road end
+	end
+	return choices[#choices].road
+end
+
 local function newTrip(state)
 	local driver=state.driver
 	if not driver or not network[driver.road] then return false end
@@ -454,13 +600,16 @@ local function newTrip(state)
 	-- obstacle when one randomly selected route cannot be planned.
 	local tried={}
 	for _=1,math.min(10,math.max(2,#network)) do
-		local destination=RoadDriving.chooseDestinationRoad(network,driver.road,roadOccupancy)
+		local destination=chooseTripDestination(state,tried) or RoadDriving.chooseDestinationRoad(network,driver.road,roadOccupancy)
 		if destination and not tried[destination] then
 			tried[destination]=true
 			local route=RoadDriving.planTrip(driver,destination,roadOccupancy,{emergency=false})
 			if route then
 				driver.tripComplete=false
-				state.destination=destination
+				claimDestination(state,destination)
+				state.recentDestinations=state.recentDestinations or {}
+				table.insert(state.recentDestinations,destination)
+				while #state.recentDestinations>3 do table.remove(state.recentDestinations,1) end
 				state.nextTripCheck=os.clock()+math.random(20,38)
 				state.tripFailures=0
 				state.tripSerial=(state.tripSerial or 0)+1
@@ -599,6 +748,36 @@ local function updateTraffic(state,now,dt)
 			else
 				state.stuckSince=nil
 			end
+			-- v191 stationary watchdog. The check above only counts time when the
+			-- car WANTS to move (desired>5); a car held at 0 (queued behind a
+			-- blockage, a stale junction queue, a parked unit) could wait forever.
+			-- Legitimate waits (a red light is at most ~13s) are far shorter.
+			if moved<2.5 and state.dwellUntil<=now then
+				state.stillSince=state.stillSince or now
+				local still=now-state.stillSince
+				if still>25 and not state.stillRerouted then
+					-- Pick a new trip from here; planTrip may turn the car around.
+					state.stillRerouted=true
+					driver.route=nil;driver.nextConnection=nil;driver.tripComplete=true
+					state.dwellUntil=now+1
+					state.passingParked=nil;state.parkedBlockSince=nil
+				end
+				if still>90 then
+					-- Recycle only out of sight (or after a very long hold) so the
+					-- refill loop respawns it elsewhere in the city.
+					local nearestPlayer=math.huge
+					for _,plr in Players:GetPlayers() do
+						local root=plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+						if root and root:IsA("BasePart") then nearestPlayer=math.min(nearestPlayer,(root.Position-current).Magnitude) end
+					end
+					if nearestPlayer>180 or still>180 then
+						driverHumanoid.Health=0
+						return false
+					end
+				end
+			else
+				state.stillSince=nil;state.stillRerouted=nil
+			end
 			state.lastProgressPos=current
 			state.lastProgressAt=now
 		end
@@ -613,6 +792,7 @@ local function retireTraffic(state)
 		roadOccupancy[name]=math.max(0,(roadOccupancy[name] or 1)-1)
 	end
 	trafficRegistry[car]=nil
+	claimDestination(state,nil)
 	if car.Parent then car:SetAttribute("TrafficActive",false) end
 	spinWheels(state,false,0)
     if car.Parent and state.humanoid.Health>0 then car:Destroy() end
@@ -711,6 +891,7 @@ spawnCar=function()
 		local state=trafficRegistry[car]
 		if state then
 			if state.lastRoad and network[state.lastRoad] then local rn=network[state.lastRoad].name;roadOccupancy[rn]=math.max(0,(roadOccupancy[rn] or 1)-1) end
+			claimDestination(state,nil)
 			trafficRegistry[car]=nil
 		end
 		CollectionService:RemoveTag(car,"SmoothResidentTraffic")
