@@ -8400,7 +8400,7 @@ function PrisonFlow.acquireRoom(player: Player, category: string, alive: () -> b
 end
 
 function PrisonFlow.approach(room: any): Vector3
-	if room.open then return room.pos end -- doorless (low security) cell: walk straight in
+	if room.open then return (PrisonNav and PrisonNav.openCellDrop(room)) or room.pos end -- doorless (low security) cell: its open cellblock
 	local dp=markerFloorPosition(room.door)
 	local center=room.door:FindFirstChild("Center")
 	local cf=if center and center:IsA("BasePart") then center.CFrame else CFrame.new(dp)
@@ -8917,7 +8917,10 @@ function PrisonFlow.transfer(player: Player, role: string, room: any, owner: str
 		end
 		if not alive() then return false end
 		local outside=PrisonFlow.approach(room)
-		if not travel(outside,true) then return false end
+		-- Low security: already anywhere in the cell or its cellblock is delivered.
+		if not (room.open and PrisonNav.isInsideCell(room,root.Position)) and not travel(outside,true) then
+			if not (room.open and PrisonNav.isInsideCell(room,root.Position)) then return false end
+		end
 		local walkedInside
 		if room.open then
 			print("[PrisonNav] OPEN CELL ARRIVAL "..room.name)
@@ -11355,11 +11358,40 @@ function PL.startStationedGuards()
 	end
 end
 
+-- v203: CivilianServer moves Workspace.AIHolder into ServerStorage.CivilianTemplates
+-- when it starts, which can be after this script. Wait for it, then fall back to
+-- the AIHolder models, then to a plain generated R15 rig so NPCs always spawn.
+function PL.cloneTemplate(): Model?
+	local templates=ServerStorage:FindFirstChild("CivilianTemplates") or ServerStorage:WaitForChild("CivilianTemplates",30)
+	local pool={}
+	for _,m in (templates and templates:GetChildren() or {}) do
+		if m:IsA("Model") and m:FindFirstChildOfClass("Humanoid") then table.insert(pool,m) end
+	end
+	if #pool==0 then
+		local holder=workspace:FindFirstChild("AIHolder")
+		for _,m in (holder and holder:GetChildren() or {}) do
+			if m:IsA("Model") and m:FindFirstChildOfClass("Humanoid") then table.insert(pool,m) end
+		end
+	end
+	if #pool>0 then
+		local src=pool[math.random(1,#pool)]
+		local archivable=src.Archivable
+		src.Archivable=true
+		local npc=src:Clone()
+		src.Archivable=archivable
+		if npc then return npc end
+	end
+	local ok,rig=pcall(function()
+		return Players:CreateHumanoidModelFromDescription(Instance.new("HumanoidDescription"),Enum.HumanoidRigType.R15)
+	end)
+	if ok and rig then return rig end
+	warn("[PrisonLife] couldn't build an NPC: no templates and no R15 rig ("..tostring(rig)..")")
+	return nil
+end
+
 function PL.makeInmateNpc(class: string): (Model?, Humanoid?, BasePart?)
-	local templates=ServerStorage:FindFirstChild("CivilianTemplates")
-	local pool=templates and templates:GetChildren() or {}
-	if #pool==0 then return nil end
-	local npc=pool[math.random(1,#pool)]:Clone()
+	local npc=PL.cloneTemplate()
+	if not npc then return nil end
 	for _,d in npc:GetDescendants() do
 		-- keep the walk animation; drop the civilian AI / dealer behaviour
 		if d:IsA("BaseScript") and d.Name~="Animate" then d:Destroy() end
@@ -11383,7 +11415,7 @@ end
 
 -- One NPC inmate's day: common area by day, their cell at Lockdown/Count.
 function PL.inmateLife(npc: Model, hum: Humanoid, root: BasePart, group: any, room: any, folder: Instance)
-	local door=PrisonFlow.approach(room)
+	local door=if room.open then room.pos else PrisonFlow.approach(room)
 	local function dayPoint(): Vector3
 		if group.area then return PrisonNav.patrolStart(group.area) or door end
 		return door+Vector3.new(math.random(-6,6),0,math.random(-6,6))
@@ -11440,7 +11472,7 @@ function PL.startNpcInmates()
 				local room=rooms[(index-1)%#rooms+1]
 				while prison and prison.Parent do
 					local npc,hum,root=PL.makeInmateNpc(group.class)
-					if not npc then warn("[PrisonLife] no CivilianTemplates to build inmates");return end
+					if not npc then warn("[PrisonLife] couldn't build inmate NPC; retrying");task.wait(30);continue end
 					local door=PrisonFlow.approach(room)
 					local start=if PL.prisonLifeInCells() then door else (if group.area then PrisonNav.patrolStart(group.area) or door else door)
 					npc:PivotTo(CFrame.new(start+Vector3.new(0,3,0)))
@@ -11464,7 +11496,7 @@ end
 ---------------------------------------------------------------------------
 PL.NPC_ARRESTS = {
 	Enabled = true,
-	Interval = { 150, 300 }, -- seconds between arrests
+	Interval = { 90, 180 }, -- seconds between arrests
 	MaxHoused = 8, -- arrested NPCs kept in the prison at once
 	IntakeHold = 20,
 	BookingHold = 15,
@@ -11481,10 +11513,8 @@ function PL.rollClass(): string
 end
 
 function PL.makeCivilianNpc(): (Model?, Humanoid?, BasePart?)
-	local templates=ServerStorage:FindFirstChild("CivilianTemplates")
-	local pool=templates and templates:GetChildren() or {}
-	if #pool==0 then return nil end
-	local npc=pool[math.random(1,#pool)]:Clone()
+	local npc=PL.cloneTemplate()
+	if not npc then return nil end
 	for _,d in npc:GetDescendants() do
 		if d:IsA("BaseScript") and d.Name~="Animate" then d:Destroy() end
 	end
@@ -11522,7 +11552,8 @@ function PL.npcEscortTo(cop: any, npc: Model, goal: Vector3, label: string): boo
 end
 
 function PL.npcArrestOnce()
-	if not PrisonNav or not PrisonNav.ready or PL.npcArrestHoused>=PL.NPC_ARRESTS.MaxHoused then return end
+	if not PrisonNav or not PrisonNav.ready then warn("[NPCArrest] prison navigation not ready");return end
+	if PL.npcArrestHoused>=PL.NPC_ARRESTS.MaxHoused then return end
 	local fac=facilities[#facilities]
 	if not fac then return end
 	local players=Players:GetPlayers()
@@ -11532,11 +11563,11 @@ function PL.npcArrestOnce()
 		if r and not sentenceEnd[plr] then anchor=r.Position;break end
 	end
 	anchor=anchor or dropOffPoint(fac)
-	local spot=RoadGraph.randomPoint(anchor,150,600)
-	if not spot then return end
+	local spot=RoadGraph.randomPoint(anchor,150,600) or RoadGraph.randomPoint(anchor,50,1500)
+	if not spot then warn("[NPCArrest] no road point near "..tostring(anchor));return end
 	local class=PL.rollClass()
 	local npc,hum,root=PL.makeCivilianNpc()
-	if not npc then return end
+	if not npc then warn("[NPCArrest] couldn't build a suspect NPC");return end
 	npc.Name="Suspect";npc:SetAttribute("NPCSuspect",true)
 	npc:PivotTo(CFrame.new(spot+Vector3.new(0,3,0)));npc.Parent=PL.prisonNpcFolder()
 	pcall(function() root:SetNetworkOwner(nil) end)
@@ -11613,7 +11644,8 @@ end
 function PL.startNpcArrests()
 	if not PL.NPC_ARRESTS.Enabled then return end
 	task.spawn(function()
-		task.wait(60)
+		task.wait(30)
+		print("[NPCArrest] city arrests online")
 		while prison and prison.Parent do
 			local ok,err=pcall(PL.npcArrestOnce)
 			if not ok then warn("[NPCArrest] "..tostring(err)) end

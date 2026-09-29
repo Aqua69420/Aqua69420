@@ -1936,8 +1936,37 @@ function Nav.zoneConnected(zoneName: string): boolean
 	return false
 end
 
+-- v203: a doorless (low security) cell has no threshold to cross, so the
+-- whole cellblock around it counts: the inmate may be released anywhere in the
+-- cell or its open cellblock.
+function Nav.inOpenBlock(room: any, pos: Vector3): boolean
+	local z=zoneByName[room.name]
+	if not z then return false end
+	local area=if z.area and z.area~="CORRIDOR" then z.area else "LOW_SECURITY"
+	for _, other in zones do
+		if other.area==area and math.abs(pos.Y-other.y)<=6 and pointInPoly(pos.X,pos.Z,other.poly) then return true end
+	end
+	return false
+end
+
+-- v203: where the officer walks a low-security inmate to: the cellblock graph
+-- node nearest the cell (not the bunk-cluttered middle of the cell).
+function Nav.openCellDrop(room: any): Vector3?
+	local z=zoneByName[room.name]
+	local area=if z and z.area and z.area~="CORRIDOR" then z.area else "LOW_SECURITY"
+	local best,bestD=nil,math.huge
+	for _, n in nodes do
+		if n.kind~="DOOR" and n.zone and not n.zone.cell and n.zone.area==area and componentOf[n.id]==mainComponent then
+			local d=(n.pos-room.pos).Magnitude
+			if d<bestD and math.abs(n.pos.Y-room.pos.Y)<CFG.FloorTolerance+3 then best,bestD=n.pos,d end
+		end
+	end
+	return best
+end
+
 function Nav.isInsideCell(room: any, pos: Vector3): boolean
 	local z=zoneByName[room.name]
+	if room.open and Nav.inOpenBlock(room,pos) then return true end
 	if not z or not z.cell or math.abs(pos.Y-z.y)>6 then return false end
 	if not pointInPoly(pos.X,pos.Z,z.poly) or edgeDist(pos.X,pos.Z,z.poly)<1 then return false end
 	if room.open then return true end -- doorless cell: inside the footprint is inside
@@ -2055,7 +2084,7 @@ function Nav.localTravel(cop: any, goal: Vector3, o: any?): (boolean, string?)
 			if cop.alive then cop:stop() end
 			if prisoner and prisoner.Parent then hum:MoveTo(prisoner.Position) end
 		end
-		if not ok then
+		if not ok and prisoner then -- v203: guard patrols (no prisoner) fail quietly
 			warn(("[PrisonNavDiag] CUFF WALK FAILED reason=%s officer=%s prisoner=%s goal=%s door=%s"):format(tostring(why),tostring(cop.root.Position),tostring(prisoner and prisoner.Position),tostring(goal),o.directDoor and o.directDoor.Name or "none"))
 		end
 		return ok,why
