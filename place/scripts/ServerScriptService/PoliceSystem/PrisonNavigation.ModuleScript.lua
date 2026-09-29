@@ -2129,6 +2129,13 @@ local function traverse(cop: any, route: any, dest: any, o: any): (boolean, stri
 				local side=sides[1]
 				if sameSide(sides[2]) and not sameSide(sides[1]) then side=sides[2]
 				elseif sameSide(sides[1])==sameSide(sides[2]) and (nodes[sides[2]].pos-here).Magnitude<(nodes[side].pos-here).Magnitude then side=sides[2] end
+				-- v198: the route already says which side it enters from - trust it.
+				-- The plane test above is wrong for a corridor running alongside the
+				-- room (Hallway_7 beside High Security is "north" of that door).
+				local entry=nil
+				if node.kind=="DOOR_SIDE" and node.doorId==doorId then entry=id
+				elseif i>1 and nodes[ids[i-1]].doorId==doorId and nodes[ids[i-1]].kind=="DOOR_SIDE" then entry=ids[i-1] end
+				if entry and table.find(sides,entry) then side=entry end
 				local approach=table.clone(leg)
 				approach.radius=1.9
 				local approached,why=Nav.localTravel(cop,nodes[side].pos+Vector3.new(0,2.5,0),approach)
