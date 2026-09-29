@@ -10083,55 +10083,53 @@ function Justice.medicalCustody(player: Player,reason: string)
 	PrisonFlow.team(player,"Intake Prisoners")
 	radio(string.format("%s critically injured in police incident - EMS requested",player.Name),root.Position,stars)
 	print(("[PoliceSystem] CRITICAL CUSTODY: %s reason=%s"):format(player.Name,reason))
+	-- v199: until correctional medical intake is built, EMS stabilises the
+	-- patient on scene and the ambulance becomes the transport vehicle for the
+	-- NORMAL pipeline: prison transport -> intake cell -> booking. (The old
+	-- ambulanceMedicalTransport / medical-bay path is kept below, unused.)
 	task.spawn(function()
-		local medicalPos=prisonMedicalPoint() or (fac and fac.intake) or root.Position
-		local ok=false
-		for attempt=1,3 do
-			if not player.Parent or not criticalCustody[player] then return end
-			if fac and medicalPos then ok=ambulanceMedicalTransport(player,fac,medicalPos,attempt) end
-			if ok then break end
-			warn(("[PoliceSystem] MEDICAL TRANSPORT ATTEMPT %d FAILED: %s"):format(attempt,player.Name))
-			tell(player,"Custody","EMS transport delayed - another unit is being dispatched")
-			-- release anything a failed attempt left attached before retrying
-			local c,h,r=Util.charInfo(player)
-			if r then
-				for _,w in Workspace:GetDescendants() do
-					if w:IsA("WeldConstraint") and w.Name=="MedicalTransportWeld" and (w.Part1==r or w.Part0==r) then w:Destroy() end
-				end
-				if c then pcall(custodyTransportGhost,c,false) end
-				r.Anchored=false
+		local ambulance=nil
+		if fac then
+			local near=root.Position
+			local start=RoadGraph.randomPoint(near,40,150) or RoadGraph.randomPoint(near,0,400) or (near+Vector3.new(60,0,0))
+			local arrived,failed=false,false
+			print(("[PoliceSystem] EMS DISPATCH %s start=%s"):format(player.Name,tostring(start)))
+			local spawned=Van.spawn("Ambulance",CFrame.new(start),function()
+				local _,_,r=Util.charInfo(player);return if r then r.Position else near
+			end,function(v) ambulance=v;arrived=true end,function(reason) failed=true;warn(("[PoliceSystem] EMS SPAWN/ROUTE FAILED %s: %s"):format(player.Name,tostring(reason))) end,true)
+			local deadline=os.clock()+45
+			while player.Parent and criticalCustody[player] and not arrived and not failed and os.clock()<deadline do task.wait(0.25) end
+			if not arrived then
+				if spawned and not spawned.dead then pcall(function() spawned:destroy() end) end
+				ambulance=nil
+				warn("[PoliceSystem] EMS DID NOT ARRIVE for "..player.Name.."; police transport takes the patient")
 			end
-			task.wait(4)
 		end
-		if not ok then
-			-- LAST RESORT: EMS could not physically deliver after three units.
-			-- Admit the patient directly so recovery/booking never hang.
-			local c,h,r=Util.charInfo(player)
-			if not c or not h or not r or not medicalPos or not criticalCustody[player] then
-				warn("[PoliceSystem] MEDICAL TRANSPORT HELD: "..player.Name);tell(player,"Custody","EMS transport delayed - remaining in medical custody");return
-			end
-			for _,w in Workspace:GetDescendants() do
-				if w:IsA("WeldConstraint") and w.Name=="MedicalTransportWeld" and (w.Part1==r or w.Part0==r) then w:Destroy() end
-			end
-			pcall(custodyTransportGhost,c,false)
-			r.Anchored=false;r.AssemblyLinearVelocity=Vector3.zero
-			c:PivotTo(CFrame.new(medicalPos+Vector3.new(0,3,0)))
-			player:SetAttribute("CustodyOwner","MEDICAL");player:SetAttribute("MedicalTransportStage","ADMITTED")
-			h:MoveTo(r.Position);h.WalkSpeed=0;r.Anchored=true
-			warn(("[PoliceSystem] MEDICAL TRANSPORT FALLBACK: %s admitted directly after 3 EMS attempts"):format(player.Name))
-			ok=true
-		end
-		player:SetAttribute("BookingState","MedicalRecovery");player:SetAttribute("CustodyPhase","Medical")
-		tell(player,"Custody","Admitted to correctional medical - recovering for one day")
-		task.wait(MEDICAL_RECOVERY_SECONDS)
 		if not player.Parent or not criticalCustody[player] then return end
-		local _,h,r=Util.charInfo(player);if not h or not r then return end
-		r.Anchored=false;h.PlatformStand=false;h.AutoRotate=true;h.Health=h.MaxHealth
+		local c,h,r=Util.charInfo(player)
+		if not c or not h or not r then return end
+		-- stabilised on scene: normal custody from here
+		r.Anchored=false;h.PlatformStand=false;h.AutoRotate=true
+		h.Health=math.max(h.Health,math.floor(h.MaxHealth*0.5))
 		player:SetAttribute("PoliceCritical",nil);criticalCustody[player]=nil
-		player:SetAttribute("BookingState","MedicalDischarge");player:SetAttribute("CustodyPhase","Detainee")
-		print(("[PoliceSystem] MEDICAL DISCHARGE: %s -> Booking"):format(player.Name))
-		tell(player,"Custody","Medical cleared you - Booking Officer inbound")
-		book(player,fac,secs,text)
+		player:SetAttribute("CustodyPhase","Detainee");player:SetAttribute("BookingState","Arrested")
+		bookingGeneration[player]=(bookingGeneration[player] or 0)+1
+		custodyArrestAt[player]=os.clock()
+		if ambulance then ambulance.transporting=false;ambulance.pursuit=nil end
+		tell(player,"Custody","EMS stabilised you - transporting you to "..(if fac then fac.name else "prison"))
+		print(("[PoliceSystem] EMS STABILISED %s -> normal transport (ambulance=%s)"):format(player.Name,tostring(ambulance~=nil)))
+		local ok,transported=pcall(transport,player,fac,ambulance)
+		if not ok then
+			warn("[PoliceSystem] TRANSPORT ERROR: "..tostring(transported))
+			task.wait(2);ok,transported=pcall(transport,player,fac,ambulance)
+		end
+		if ok and transported then
+			print(("[PoliceSystem] INTAKE HANDOFF COMPLETE: %s (via EMS)"):format(player.Name))
+			book(player,fac,secs,text)
+		else
+			warn("[PoliceSystem] TRANSPORT HELD: physical intake did not complete for "..player.Name)
+			tell(player,"Custody","Transport delayed - remaining in custody")
+		end
 	end)
 end
 
