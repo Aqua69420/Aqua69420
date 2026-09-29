@@ -2079,8 +2079,18 @@ local function traverse(cop: any, route: any, dest: any, o: any): (boolean, stri
 		if doorId then
 			if flat(nodes[doorId].pos-cop.root.Position).Magnitude>CFG.DoorLead then
 				local sides=nodes[doorId].door.sides
+				-- v193: approach the side of the door the officer is ON. Picking the
+				-- nearer side by distance chose the far side when standing diagonal
+				-- to the door (High sEcuirty Cellbock Door), i.e. a goal behind the
+				-- still-closed door.
+				local dpos=nodes[doorId].pos
+				local here=cop.root.Position
+				local function sameSide(sid)
+					return flat(nodes[sid].pos-dpos):Dot(flat(here-dpos))>0
+				end
 				local side=sides[1]
-				if (nodes[sides[2]].pos-cop.root.Position).Magnitude<(nodes[side].pos-cop.root.Position).Magnitude then side=sides[2] end
+				if sameSide(sides[2]) and not sameSide(sides[1]) then side=sides[2]
+				elseif sameSide(sides[1])==sameSide(sides[2]) and (nodes[sides[2]].pos-here).Magnitude<(nodes[side].pos-here).Magnitude then side=sides[2] end
 				local approach=table.clone(leg)
 				approach.radius=1.9
 				local approached,why=Nav.localTravel(cop,nodes[side].pos+Vector3.new(0,2.5,0),approach)
