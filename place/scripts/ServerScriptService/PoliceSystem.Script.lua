@@ -8489,9 +8489,51 @@ local inmateClothes={
 	["Death Row"]={shirt="514949843",pants="514951070"},
 }
 
+-- v196: the player's own clothing, captured before the first uniform goes on,
+-- so a released inmate gets it back at dress-out.
+PrisonFlow.civilianClothes=setmetatable({}, {__mode="k"})
+
+function PrisonFlow.restoreCivilianClothes(player: Player): boolean
+	local saved=PrisonFlow.civilianClothes[player];local character=player.Character
+	if not character then return false end
+	local humanoid=character:FindFirstChildOfClass("Humanoid")
+	if saved and humanoid then
+		local got,description=pcall(function() return humanoid:GetAppliedDescription() end)
+		if got and description then
+			description.Shirt=saved.descShirt or 0;description.Pants=saved.descPants or 0
+			pcall(function() humanoid:ApplyDescription(description) end)
+		end
+	end
+	character=player.Character or character
+	local shirt=character:FindFirstChildOfClass("Shirt")
+	local pants=character:FindFirstChildOfClass("Pants")
+	if saved then
+		if saved.shirt then shirt=shirt or Instance.new("Shirt");shirt.Name="Shirt";shirt.ShirtTemplate=saved.shirt;shirt.Parent=character elseif shirt then shirt:Destroy() end
+		if saved.pants then pants=pants or Instance.new("Pants");pants.Name="Pants";pants.PantsTemplate=saved.pants;pants.Parent=character elseif pants then pants:Destroy() end
+	else
+		-- no snapshot (joined mid-sentence): at least remove the uniform
+		if shirt and shirt.Name=="InmateUniformShirt" then shirt:Destroy() end
+		if pants and pants.Name=="InmateUniformPants" then pants:Destroy() end
+	end
+	PrisonFlow.civilianClothes[player]=nil
+	for _,name in {"PrisonClothesIssued","InmateShirtAssetId","InmatePantsAssetId"} do player:SetAttribute(name,nil) end
+	print(("[CustodyDiag] RELEASE PROPERTY: civilian clothing returned to %s (snapshot=%s)"):format(player.Name,tostring(saved~=nil)))
+	return true
+end
+
 function PrisonFlow.applyInmateClothes(player: Player, security: string): boolean
 	local outfit=inmateClothes[security];local character=player.Character
 	if not outfit or not character then return false end
+	if player:GetAttribute("PrisonClothesIssued")~=true and not PrisonFlow.civilianClothes[player] then
+		local h=character:FindFirstChildOfClass("Humanoid")
+		local s=character:FindFirstChildOfClass("Shirt");local pa=character:FindFirstChildOfClass("Pants")
+		local snap={shirt=s and s.ShirtTemplate or nil,pants=pa and pa.PantsTemplate or nil}
+		if h then
+			local got,d=pcall(function() return h:GetAppliedDescription() end)
+			if got and d then snap.descShirt=d.Shirt;snap.descPants=d.Pants end
+		end
+		PrisonFlow.civilianClothes[player]=snap
+	end
 	-- Set the avatar's canonical classic-clothing IDs as well as the Shirt/Pants
 	-- instances. Some player appearances are rebuilt by Roblox after the initial
 	-- clothing objects replicate, which can otherwise leave the inmate visibly
@@ -8814,7 +8856,8 @@ function PrisonFlow.transfer(player: Player, role: string, room: any, owner: str
 			PrisonFlow.state(player,owner,true)
 			print(("[CustodyDiag] CUFF WALK START %s role=%s officer=%s prisoner=%s"):format(player.Name,role,tostring(cop.root.Position),tostring(root.Position)))
 		end
-		if owner=="HOUSING_ESCORT" and player:GetAttribute("PrisonDressOutComplete")~=true then
+		local releaseDress=owner=="RELEASE_ESCORT" and player:GetAttribute("ReleaseDressOutComplete")~=true
+		if (owner=="HOUSING_ESCORT" and player:GetAttribute("PrisonDressOutComplete")~=true) or releaseDress then
 			local dress=PrisonFlow.findDressOutRoom()
 			if not dress then error("mapped dress-out room or door unavailable") end
 			local dressOutside=PrisonFlow.approach(dress)
@@ -8825,11 +8868,16 @@ function PrisonFlow.transfer(player: Player, role: string, room: any, owner: str
 			-- have actually crossed back out, so a retry resumes from dress-out.
 			PrisonFlow.rooms[player]=dress
 			if not alive() then return false end
-			local clothesOK,clothesResult=pcall(PrisonFlow.applyInmateClothes,player,tostring(player:GetAttribute("SecurityClass") or "Medium"))
+			local clothesOK,clothesResult
+			if releaseDress then
+				clothesOK,clothesResult=pcall(PrisonFlow.restoreCivilianClothes,player)
+			else
+				clothesOK,clothesResult=pcall(PrisonFlow.applyInmateClothes,player,tostring(player:GetAttribute("SecurityClass") or "Medium"))
+			end
 			if not clothesOK or clothesResult~=true then
 				warn(("[CustodyDiag] DRESS OUT CLOTHING FAILED %s; continuing escort to reserved cell (%s)"):format(player.Name,tostring(clothesResult)))
 			else
-				print(("[CustodyDiag] DRESS OUT CLOTHING APPLIED %s; continuing to reserved cell"):format(player.Name))
+				print(("[CustodyDiag] DRESS OUT CLOTHING %s %s; continuing to reserved cell"):format(if releaseDress then "RETURNED" else "APPLIED",player.Name))
 			end
 			local refreshedChar,refreshedHum,refreshedRoot=Util.charInfo(player)
 			if refreshedChar and refreshedHum and refreshedRoot then
@@ -8848,7 +8896,7 @@ function PrisonFlow.transfer(player: Player, role: string, room: any, owner: str
 			local exitOutside=dressOutside+lane
 			if not cross(exitOutside,dress.door,true,lane) then return false end
 			PrisonFlow.rooms[player]=nil
-			player:SetAttribute("PrisonDressOutComplete",true)
+			player:SetAttribute(if releaseDress then "ReleaseDressOutComplete" else "PrisonDressOutComplete",true)
 			print("[CustodyDiag] DRESS OUT COMPLETE "..dress.name.."; continuing to "..room.name)
 		end
 		if not alive() then return false end
@@ -8869,19 +8917,42 @@ function PrisonFlow.transfer(player: Player, role: string, room: any, owner: str
 		hum:MoveTo(root.Position); hum.WalkSpeed=0
 		print("[CustodyDiag] PRISONER INSIDE "..room.name)
 		-- Confirm the CO actually crosses the threshold too before leaving.
+		-- v196: every officer (booking, housing, death row) uses the same
+		-- threshold step just inside the door, defined from the mapped door
+		-- marker; the housing CO used to target the prisoner's own deep stand
+		-- point, which the body sweep rejected (cell furniture / the inmate).
+		local securedAtDoor=false
 		if not PrisonNav.isInsideCell(room,cop.root.Position) then
 			local dp=markerFloorPosition(room.door)
 			local inward=Util.safeUnit(Util.flat(room.pos-dp),Vector3.xAxis)
-			if not cross((if owner=="HOUSING_ESCORT" then cellStand else room.pos-inward*1.6),room.door,false) then return false end
-			if not PrisonNav.isInsideCell(room,cop.root.Position) then return false end
+			local step=room.pos-inward*1.6
+			if dp then
+				for _,depth in {3.2,3.8,2.9,4.5} do
+					local p=dp+inward*depth
+					if PrisonNav.isInsideCell(room,p+Vector3.new(0,3,0)) then step=p;break end
+				end
+			end
+			local entered=cross(step,room.door,false) and PrisonNav.isInsideCell(room,cop.root.Position)
+			if not entered then
+				-- Prisoner is already inside: an officer standing in the doorway
+				-- can remove the cuffs through the door and secure it from there.
+				if dp and PrisonNav.isInsideCell(room,root.Position) and Util.flat(cop.root.Position-dp).Magnitude<=7 then
+					securedAtDoor=true
+					print("[CustodyDiag] OFFICER SECURING FROM DOORWAY "..room.name)
+				else
+					return false
+				end
+			end
 		end
-		print("[CustodyDiag] OFFICER INSIDE "..room.name)
+		if not securedAtDoor then print("[CustodyDiag] OFFICER INSIDE "..room.name) end
 		hum:SetAttribute("PoliceCuffed",nil)
 		-- Uncuffed now, but client movement remains suspended until the lock is confirmed.
 		hum.WalkSpeed=0; hum:MoveTo(root.Position)
 		print("[CustodyDiag] UNCUFFED INSIDE; controls held until door lock "..room.name)
 		local exited=cross(outside,room.door,false)
 		if not exited and alive() and cop.alive then exited=cross(outside,room.door,false) end
+		-- Doorway securing: the officer only has to be clear of the cell.
+		if not exited and securedAtDoor and not PrisonNav.isInsideCell(room,cop.root.Position) then exited=true end
 		if not exited then
 			warn("[CustodyDiag] EXIT FAILED: keeping door open and retrying officer exit "..room.door.Name)
 			return false
@@ -8934,6 +9005,12 @@ function PrisonFlow.fallbackDeliver(player: Player, role: string, room: any, own
 	PrisonFlow.jobs[player]=nil
 	local waiting=PrisonFlow.pending[player];PrisonFlow.pending[player]=nil
 	if waiting and waiting.alive then pcall(function() waiting:despawn("custody fallback") end) end
+	if owner=="RELEASE_ESCORT" and player:GetAttribute("ReleaseDressOutComplete")~=true then
+		pcall(PrisonFlow.restoreCivilianClothes,player)
+		player:SetAttribute("ReleaseDressOutComplete",true)
+		char,hum,root=Util.charInfo(player)
+		if not char or not hum or not root then return false end
+	end
 	if owner=="HOUSING_ESCORT" and player:GetAttribute("PrisonDressOutComplete")~=true then
 		-- Dress-out still happens before the first cell, even on this path.
 		local dressed,result=pcall(PrisonFlow.applyInmateClothes,player,tostring(player:GetAttribute("SecurityClass") or "Medium"))
@@ -10205,6 +10282,34 @@ release = function(player: Player, how: string)
 	tell(player,"Custody",if how=="bail" then "Bail accepted - Release Officer is collecting you" else "Sentence complete - Release Officer is collecting you")
 	print(("[PoliceSystem] RELEASE START: %s (%s)"):format(player.Name,how))
 
+	-- v196 property release: an inmate who was dressed out goes back through
+	-- dress-out for their own clothes, is held in a booking cell, and is then
+	-- collected there by the Release Officer. Reuses the physical custody
+	-- transfer (cuff walk, doors, cell securing, fallback) in RELEASE_ESCORT mode.
+	if player:GetAttribute("PrisonClothesIssued")==true or player:GetAttribute("PrisonDressOutComplete")==true then
+		custody[player]=true -- the transfer only runs for players in processing
+		player:SetAttribute("ReleaseDressOutComplete",nil)
+		local holding=PrisonFlow.pick(player,"BookingCell")
+		local waitUntil=os.clock()+60
+		while not holding and player.Parent and os.clock()<waitUntil do task.wait(3);holding=PrisonFlow.pick(player,"BookingCell") end
+		if holding then
+			tell(player,"Custody","Housing officer escorting you to property release")
+			print(("[CustodyDiag] RELEASE PROCESSING %s -> dress-out -> %s"):format(player.Name,holding.name))
+			if not PrisonFlow.deliver(player,"HOUSING OFFICER",holding,"RELEASE_ESCORT") then
+				warn("[CustodyDiag] RELEASE PROCESSING interrupted for "..player.Name)
+			end
+			-- The Release Officer collects from the holding cell: unlock it for the walk out.
+			pcall(openMarkedDoor,holding.door,40)
+			PrisonFlow.rooms[player]=nil;PrisonFlow.reserved[player]=nil
+			cuff(player);PrisonFlow.state(player,"RELEASE",true)
+			tell(player,"Custody","Release Officer is collecting you from holding")
+			task.wait(3)
+		else
+			warn("[CustodyDiag] RELEASE PROCESSING: no booking cell free; releasing directly "..player.Name)
+			pcall(PrisonFlow.restoreCivilianClothes,player)
+		end
+	end
+
 	local inside,outside,exitDoor=prisonExit()
 	local function stillHere(): boolean
 		local _,hum=Util.charInfo(player);return player.Parent~=nil and hum~=nil and hum.Health>0 and releaseBusy[player]==true
@@ -10271,6 +10376,7 @@ release = function(player: Player, how: string)
 
 	local target=releaseTargetTeam(player)
 	clearJusticeState(player);previousTeam[player]=nil
+	for _,name in {"PrisonDressOutComplete","ReleaseDressOutComplete","PrisonClothesIssued","InmateShirtAssetId","InmatePantsAssetId"} do player:SetAttribute(name,nil) end
 	if target then player.Neutral=false;player.Team=target end
 	returnGuns(player);uncuff(player);releaseBusy[player]=nil
 	tell(player,"Released",how)
@@ -10542,6 +10648,8 @@ deathRowExecution=function(player: Player)
 		resetExecutedPlayer(player)
 		player:SetAttribute("SentenceSeconds",0);player:SetAttribute("BookingState","Executed");player:SetAttribute("CustodyPhase","Executed")
 		player:SetAttribute("DeathRowExecutionComplete",true)
+		-- v196: close the jail / State Prison HUD (normal releases send this too).
+		tell(player,"Released","executed")
 		print("[DeathRow] execution sequence complete for "..player.Name)
 	end
 	deathRowExecutionActive[player]=nil

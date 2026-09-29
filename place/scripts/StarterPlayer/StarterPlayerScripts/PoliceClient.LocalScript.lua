@@ -1477,7 +1477,7 @@ R.Justice.OnClientEvent:Connect(function(kind, a, b, c)
 	elseif kind == "Released" then
 		jailFrame.Visible = false
 		bookingFrame.Visible=false;bookingPhone.Visible=false;custodyLabel.Visible=false
-		local msg = if a == "bail" then "Bailed out" elseif a == "escaped" then "You broke out - every cop in the city is looking for you" else "Sentence served - you're free"
+		local msg = if a == "bail" then "Bailed out" elseif a == "executed" then "Executed - your record and belongings have been wiped" elseif a == "escaped" then "You broke out - every cop in the city is looking for you" else "Sentence served - you're free"
 		table.insert(bannerQueue, { text = msg, style = if a == "escaped" then "wave" else "good" })
 		showBanners()
 	elseif kind == "Dispatch" then

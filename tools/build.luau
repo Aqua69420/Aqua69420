@@ -21,6 +21,10 @@ local function pathOf(inst)
 end
 
 local byPath, count = {}, {}
+local byInstancePath = {}
+for _, d in game:GetDescendants() do
+	byInstancePath[pathOf(d)] = d
+end
 for _, d in game:GetDescendants() do
 	if d:IsA("LuaSourceContainer") then
 		local key = pathOf(d) .. "." .. d.ClassName .. ".lua"
@@ -39,7 +43,20 @@ local function walk(dir, rel)
 		elseif string.sub(name, -4) == ".lua" then
 			local inst = byPath[key]
 			if not inst then
-				warn("no script in place for " .. key)
+				-- New script: create it under its parent path if that parent exists.
+				local parentPath, leaf = string.match(key, "^(.*)/([^/]+)$")
+				local base, class = string.match(leaf or key, "^(.*)%.(%a+)%.lua$")
+				local parent = if parentPath then byInstancePath[parentPath] else nil
+				if parent and base and (class == "LocalScript" or class == "Script" or class == "ModuleScript") then
+					local created = roblox.Instance.new(class)
+					created.Name = base
+					created.Source = fs.readFile(full)
+					created.Parent = parent
+					changed += 1
+					print("created " .. key)
+				else
+					warn("no script in place for " .. key)
+				end
 			elseif count[key] > 1 then
 				warn("ambiguous path, skipped: " .. key)
 			else
