@@ -847,6 +847,14 @@ local function buildPortals()
 			if math.abs(A.y - B.y) > CFG.FloorTolerance then
 				continue
 			end
+			-- v197: two different cellblocks (Medium vs High/Max vs Low vs Medical)
+			-- never connect through an open border - only through a
+			-- mapped door. A diagonal High_Security / MEdium_Security_Cellblock_2
+			-- border produced a fake portal and escorts wandered the Medium block.
+			local secured = { MEDIUM_SECURITY = true, MAXIMUM_SECURITY = true, LOW_SECURITY = true, MEDICAL = true }
+			if A.area ~= B.area and secured[A.area] and secured[B.area] then
+				continue
+			end
 			local a, b = A.bbox, B.bbox
 			local t = CFG.PortalTolerance
 			if a[1] > b[3] + t or b[1] > a[3] + t or a[2] > b[4] + t or b[2] > a[4] + t then
@@ -894,7 +902,21 @@ local function buildPortals()
 			end
 			local pA = ground(Vector3.new(inA.X, A.y, inA.Y))
 			local pB = ground(Vector3.new(inB.X, B.y, inB.Y))
-			if rayClear(pA, pB) then
+			-- v197: the border must be open along its length, not only at the
+			-- midpoint (a single gap/doorframe used to create a whole portal).
+			local open = rayClear(pA, pB)
+			if open and span >= 8 then
+				for _, f in { 0.25, 0.75 } do
+					local m2 = first:Lerp(last, f)
+					local a2, b2 = m2 + normal * 3, m2 - normal * 3
+					if not pointInPoly(a2.X, a2.Y, A.poly) then a2, b2 = b2, a2 end
+					if not rayClear(ground(Vector3.new(a2.X, A.y, a2.Y)), ground(Vector3.new(b2.X, B.y, b2.Y))) then
+						open = false
+						break
+					end
+				end
+			end
+			if open then
 				local id = addNode(ground(midV), "PORTAL", { name = A.name .. " | " .. B.name })
 				joinZone(A, id)
 				joinZone(B, id)
