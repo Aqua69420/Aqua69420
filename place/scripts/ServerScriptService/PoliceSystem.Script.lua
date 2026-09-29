@@ -8353,17 +8353,21 @@ function PrisonFlow.pick(player: Player, category: string): any?
     for name,pair in PrisonNav.CellPairs do
         if pair.category==category then
             local cell,door=zones:FindFirstChild(name),doors:FindFirstChild(pair.door)
+            -- v204: reachability only orders the candidates. As a hard filter
+            -- (v201) it could drop a whole class and leave the housing officer
+            -- waiting forever for "an available mapped cell".
             local reachable=not PrisonNav.zoneConnected or PrisonNav.zoneConnected(name)
-            if cell and door and markerDoorTarget(door) and reachable then
+            if cell and door and markerDoorTarget(door) then
                 local capacity=pair.capacity or 1
                 total+=capacity
                 local used=0
                 for _ in occupants[cell] or {} do used+=1 end
-                if used<capacity then table.insert(candidates,{cell=cell,door=door,pos=pair.pos,name=name,category=category,open=pair.open==true,capacity=capacity,used=used}) end
+                if used<capacity then table.insert(candidates,{cell=cell,door=door,pos=pair.pos,name=name,category=category,open=pair.open==true,capacity=capacity,used=used,reachable=reachable}) end
             end
         end
     end
     table.sort(candidates,function(a,b)
+        if a.reachable~=b.reachable then return a.reachable end
         local an=tonumber(a.name:match("_(%d+)$")) or 1
         local bn=tonumber(b.name:match("_(%d+)$")) or 1
         if an~=bn then return an<bn end
@@ -9812,9 +9816,23 @@ local function finishPrisonCase(player: Player, counselName: string)
 	-- must physically collect them from here and walk them to the assigned housing cell.
 	local housingCategory=if security=="Death Row" then "DeathRow" else security.."Security"
 	local housingRoom=PrisonFlow.pick(player,housingCategory)
+	local housingWaitStart=os.clock()
 	while processingAlive(player) and not housingRoom do
 		tell(player,"Custody","Housing assignment delayed - waiting for an available mapped cell")
+		local mapped=0
+		for _,pair in (PrisonNav and PrisonNav.CellPairs or {}) do if pair.category==housingCategory then mapped+=1 end end
+		warn(("[CustodyDiag] HOUSING WAIT %s category=%s mappedCells=%d"):format(player.Name,housingCategory,mapped))
 		task.wait(10); housingRoom=PrisonFlow.pick(player,housingCategory)
+		-- v204: never hang in booking. After 30s (or at once if the class has no
+		-- mapped cells) use the next class of housing; death row never downgrades.
+		if not housingRoom and security~="Death Row" and (mapped==0 or os.clock()-housingWaitStart>30) then
+			for _,alt in housingCategories(security) do
+				if alt~=housingCategory then
+					housingRoom=PrisonFlow.pick(player,alt)
+					if housingRoom then warn(("[CustodyDiag] HOUSING OVERFLOW %s %s -> %s"):format(player.Name,housingCategory,alt));break end
+				end
+			end
+		end
 	end
 	if not housingRoom then bookingBusy[player]=nil; return end
 	local cellName,cellObj=housingRoom.name,housingRoom.cell
@@ -11318,7 +11336,7 @@ function PL.classRooms(category: string): { any }
 	for name,pair in PrisonNav.CellPairs do
 		if pair.category==category then
 			local door=doors:FindFirstChild(pair.door)
-			if door and (not PrisonNav.zoneConnected or PrisonNav.zoneConnected(name)) then
+			if door then
 				table.insert(list,{door=door,pos=pair.pos,name=name,category=category,open=pair.open==true})
 			end
 		end
@@ -11477,6 +11495,7 @@ function PL.startNpcInmates()
 					local start=if PL.prisonLifeInCells() then door else (if group.area then PrisonNav.patrolStart(group.area) or door else door)
 					npc:PivotTo(CFrame.new(start+Vector3.new(0,3,0)))
 					npc.Parent=folder
+					PL.prisonNpcCollision(npc)
 					pcall(function() root:SetNetworkOwner(nil) end)
 					PL.inmateLife(npc,hum,root,group,room,folder)
 					task.wait(40) -- a new inmate is processed in later
@@ -11510,6 +11529,37 @@ function PL.rollClass(): string
 	local roll=math.random()*total
 	for _,c in PL.NPC_ARRESTS.Classes do roll-=c[2];if roll<=0 then return c[1] end end
 	return "Medium"
+end
+
+-- v204: a live city pedestrian to arrest, dealers weighted 4x. Anything not
+-- spawned by CivilianServer (players, police, prison NPCs) is never picked.
+function PL.pickCitySuspect(): (Model?, Humanoid?, BasePart?)
+	local pool,total={},0
+	for _,m in Workspace:GetChildren() do
+		if m:IsA("Model") and m:GetAttribute("CityCivilian") and not m:GetAttribute("PoliceArrested") and not Players:GetPlayerFromCharacter(m) then
+			local h=m:FindFirstChildOfClass("Humanoid");local r=m:FindFirstChild("HumanoidRootPart")
+			if h and r and h.Health>0 then
+				local w=if m:GetAttribute("Dealer") then 4 else 1
+				total+=w;table.insert(pool,{m=m,h=h,r=r,w=w})
+			end
+		end
+	end
+	if total==0 then return nil end
+	local roll=math.random()*total
+	for _,c in pool do roll-=c.w;if roll<=0 then return c.m,c.h,c.r end end
+	local c=pool[#pool];return c.m,c.h,c.r
+end
+
+-- v204: prison NPCs never physically block a player's cuff-walk or an officer.
+function PL.prisonNpcCollision(npc: Model)
+	pcall(function()
+		local physics=game:GetService("PhysicsService")
+		if not physics:IsCollisionGroupRegistered("PrisonNPC") then physics:RegisterCollisionGroup("PrisonNPC") end
+		for _,g in {"PrisonNPC","PrisonEscort","PoliceNPC"} do
+			if physics:IsCollisionGroupRegistered(g) then physics:CollisionGroupSetCollidable("PrisonNPC",g,false) end
+		end
+		Util.setCollisionGroup(npc,"PrisonNPC")
+	end)
 end
 
 function PL.makeCivilianNpc(): (Model?, Humanoid?, BasePart?)
@@ -11563,16 +11613,30 @@ function PL.npcArrestOnce()
 		if r and not sentenceEnd[plr] then anchor=r.Position;break end
 	end
 	anchor=anchor or dropOffPoint(fac)
-	local spot=RoadGraph.randomPoint(anchor,150,600) or RoadGraph.randomPoint(anchor,50,1500)
-	if not spot then warn("[NPCArrest] no road point near "..tostring(anchor));return end
 	local class=PL.rollClass()
-	local npc,hum,root=PL.makeCivilianNpc()
-	if not npc then warn("[NPCArrest] couldn't build a suspect NPC");return end
+	-- v204: arrest a real city pedestrian (drug dealers far more often);
+	-- only when none is available is a stand-in suspect spawned on a road.
+	local npc,hum,root=PL.pickCitySuspect()
+	local spot
+	if npc and root then
+		spot=root.Position
+		npc:SetAttribute("PoliceArrested",true) -- CivilianServer stops its wander and spawns a replacement
+		for _,d in npc:GetDescendants() do if d:IsA("ProximityPrompt") then d:Destroy() end end
+		hum:MoveTo(root.Position)
+		print(("[NPCArrest] city %s %s picked up at %s (will be %s)"):format(if npc:GetAttribute("Dealer") then "dealer" else "pedestrian",npc.Name,tostring(spot),class))
+	else
+		spot=RoadGraph.randomPoint(anchor,150,600) or RoadGraph.randomPoint(anchor,50,1500)
+		if not spot then warn("[NPCArrest] no road point near "..tostring(anchor));return end
+		npc,hum,root=PL.makeCivilianNpc()
+		if not npc or not hum or not root then warn("[NPCArrest] couldn't build a suspect NPC");return end
+		npc:PivotTo(CFrame.new(spot+Vector3.new(0,3,0)))
+		print(("[NPCArrest] suspect at %s (will be %s)"):format(tostring(spot),class))
+	end
 	npc.Name="Suspect";npc:SetAttribute("NPCSuspect",true)
-	npc:PivotTo(CFrame.new(spot+Vector3.new(0,3,0)));npc.Parent=PL.prisonNpcFolder()
+	npc.Parent=PL.prisonNpcFolder()
+	PL.prisonNpcCollision(npc)
 	pcall(function() root:SetNetworkOwner(nil) end)
 	PL.npcLabel(npc,"WANTED")
-	print(("[NPCArrest] suspect at %s (will be %s)"):format(tostring(spot),class))
 	-- 1) a cruiser comes for them
 	local arrived,failed,van=false,false,nil
 	local start=RoadGraph.randomPoint(spot,200,450) or (spot+Vector3.new(250,0,0))

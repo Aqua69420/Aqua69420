@@ -290,7 +290,7 @@ local function groundPoint(centre, radius)
 end
 
 local function wander(npc, humanoid, anchor)
-	while npc.Parent and humanoid.Health > 0 do
+	while npc.Parent and humanoid.Health > 0 and not npc:GetAttribute("PoliceArrested") do
 		local target = groundPoint(anchor, WANDER_RADIUS)
 		humanoid:MoveTo(target)
 		local reached = false
@@ -410,6 +410,19 @@ local function spawnOne(isDealer)
 	npc.Parent = workspace
 	spawnedCount += 1
 	activeCivilians[npc] = { humanoid = humanoid }
+	-- PoliceSystem's NPC arrests pick city pedestrians (dealers more often).
+	-- Once one is taken into custody it belongs to the prison; a replacement
+	-- pedestrian spawns here in the city.
+	npc:SetAttribute("CityCivilian", true)
+	local replaced = false
+	npc:GetAttributeChangedSignal("PoliceArrested"):Connect(function()
+		if replaced or not npc:GetAttribute("PoliceArrested") then return end
+		replaced = true
+		activeCivilians[npc] = nil
+		task.delay(RESPAWN_DELAY, function()
+			spawnOne(isDealer)
+		end)
+	end)
 
 	if isDealer then
 		attachDealer(npc)
@@ -449,6 +462,8 @@ local function spawnOne(isDealer)
 				killer:SetAttribute("LastCrimeZ", kroot.Position.Z)
 			end
 		end
+		if replaced then return end
+		replaced = true
 		task.delay(RESPAWN_DELAY, function()
 			spawnOne(isDealer)
 		end)

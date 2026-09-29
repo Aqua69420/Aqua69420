@@ -495,7 +495,7 @@ function Nav.refreshCellPairs(map: Instance)
         local capacity=tonumber(zone:GetAttribute("Capacity")) or tonumber(string.match(string.lower(desc),"(%d+)%s*inmate")) or 1
         local poly=footprint(zone)
         local dp=Nav.doorFloor(marker)
-        local open=category=="LowSecurity" or (dp~=nil and #poly>=3 and edgeDist(dp.X,dp.Z,poly)>4)
+        local open=category=="LowSecurity" -- v204: only low security cells are doorless
         Nav.CellPairs[zone.Name]={category=category,door=marker.Name,pos=pos,capacity=math.max(1,capacity),open=open}
         return true
     end
@@ -1930,6 +1930,7 @@ end
 function Nav.zoneConnected(zoneName: string): boolean
 	local z=zoneByName[zoneName]
 	if not z then return false end
+	if #z.members==0 then return true end -- no graph nodes recorded: unknown, don't exclude
 	for _,id in z.members do
 		if componentOf[id]==mainComponent then return true end
 	end
@@ -1988,6 +1989,7 @@ function Nav.cellStand(room: any, cop: any, character: Model): Vector3
 	if axis:Dot(room.pos-dp)<0 then axis=-axis end
 	local ignore={cop.model,character}
 	local map=opts.mapRoot and opts.mapRoot();if map then table.insert(ignore,map) end
+	local npcs=workspace:FindFirstChild("PrisonNPCs");if npcs then table.insert(ignore,npcs) end
 	local state={directDoor=room.door,ignore=ignore}
 	local z=zoneByName[room.name];local allowed={};if z then allowed[z]=true end
 	for _,depth in {3.5,4,4.5,5,5.5,6} do
@@ -2022,6 +2024,8 @@ local function escortIgnore(cop: any, char: Model?, o: any): {Instance}
 	end
 	local map=Nav.mapRoot or (opts.mapRoot and opts.mapRoot())
 	if map then table.insert(ignore,map) end
+	-- v204: prison NPC inmates/suspects never block a cuff-walk sweep
+	local npcs=workspace:FindFirstChild("PrisonNPCs");if npcs then table.insert(ignore,npcs) end
 	if char then table.insert(ignore,char) end
 	if o.ignoreCharacter then table.insert(ignore,o.ignoreCharacter) end
 	for _,part in o.ignoreParts or {} do if part then table.insert(ignore,part) end end
