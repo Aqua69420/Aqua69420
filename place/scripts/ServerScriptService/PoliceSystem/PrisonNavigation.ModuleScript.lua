@@ -1537,6 +1537,7 @@ local function clearPath(s: any)
 	if s.path then s.path:Destroy(); s.path = nil end
 	s.points = nil
 	s.direct = nil
+	s.bodyWidth = nil
 end
 
 local function permittedSegment(a: Vector3, b: Vector3, allowed: any): boolean
@@ -1570,13 +1571,21 @@ local function clearDoorSegment(s: any, a: Vector3, b: Vector3, allowed: any): (
 	overlap.FilterDescendantsInstances=s.ignore or {}
 	overlap.RespectCanCollide=true
 	local size=Vector3.new(3,5,3)
+	-- A door-threshold resync may sweep the real collision width of a humanoid
+	-- torso (2 studs) plus margin instead of the corridor-clearance box.
+	if s.bodyWidth then size=Vector3.new(s.bodyWidth,5,s.bodyWidth) end
 	-- The mapped dress-out openings have only a 2.8-stud clear width because
 	-- their wall jamb reaches the edge of the frame. Keep the normal 3-stud
 	-- corridor sweep everywhere else, but allow single-file passage here.
 	if s.directDoor and string.find(string.lower(s.directDoor.Name),"dress out room door",1,true) then
-		size=Vector3.new(2,5,2)
+		size=Vector3.new(math.min(2,size.X),5,math.min(2,size.Z))
 	end
 	local offset=Vector3.new(0,0.3,0)
+	-- In a mapped doorway, anchor the body volume to the authored door floor
+	-- (floor+0.8 .. floor+5.8, the same band a standard rig's root gives).
+	-- Player avatars with a taller HipHeight otherwise sweep higher than the
+	-- NPC officer and graze door frames the officer passes cleanly.
+	if floor and math.abs(a.Y-floor.Y)<6 then offset=Vector3.new(0,floor.Y+3.3-a.Y,0) end
 	-- Blockcast omits initial overlaps, so check the starting volume explicitly.
 	local touching=Workspace:GetPartBoundsInBox(CFrame.new(a+offset),size,overlap)
 	if #touching>0 then
@@ -1652,6 +1661,61 @@ local function clearDoorSegment(s: any, a: Vector3, b: Vector3, allowed: any): (
 end
 
 
+-- Door frame from a mapped DoorMarker: floor point, crossing axis (through the
+-- opening) and lateral axis (along the opening), plus the half clear width.
+local function doorFrame(marker: Instance): (Vector3?, Vector3?, Vector3?, number)
+	local dp=Nav.doorFloor(marker)
+	if not dp then return nil,nil,nil,0 end
+	local center=marker:FindFirstChild("Center")
+	local cf=if center and center:IsA("BasePart") then center.CFrame else CFrame.new(dp)
+	local sx=tonumber(marker:GetAttribute("SizeX")) or 1
+	local sz=tonumber(marker:GetAttribute("SizeZ")) or 4
+	local axis=if sx<sz then cf.RightVector else cf.LookVector
+	axis=flat(axis)
+	if axis.Magnitude<0.01 then return nil,nil,nil,0 end
+	axis=axis.Unit
+	local lateral=Vector3.new(-axis.Z,0,axis.X)
+	return dp,axis,lateral,math.max(sx,sz)/2
+end
+Nav.doorFrame=doorFrame
+
+-- Threshold resync: when a body sweep from the actor's current spot clips a
+-- door jamb, the actor is usually standing off the door's centre line (it
+-- stopped inside the arrival radius of the staging point). Find a validated
+-- point on the SAME side of the door, on the centre line, from which a
+-- straight walk through the opening is clear. Collision stays on; only the
+-- sweep box can narrow to a real torso width (2.4) when the corridor box (3)
+-- does not fit the 4.2-stud opening. Returns point, bodyWidth, or nil.
+local ALIGN_DEPTHS={0,2.5,3.5,1.8,4.5}
+local ALIGN_LATERAL={0,0.3,-0.3,0.6,-0.6}
+local function doorAlignment(s: any, a: Vector3, goal: Vector3, allowed: any, maxShift: number?): (Vector3?, number?)
+	if not s.directDoor then return nil,nil end
+	local dp,axis,lateral=doorFrame(s.directDoor)
+	if not dp then return nil,nil end
+	local da=axis:Dot(flat(a-dp))
+	local side=if da>=0 then 1 else -1
+	local limit=maxShift or 6
+	local saved=s.bodyWidth
+	for _,width in {3,2.4} do
+		s.bodyWidth=if width==3 then nil else width
+		for _,depthChoice in ALIGN_DEPTHS do
+			local depth=if depthChoice==0 then math.clamp(math.abs(da),1.6,4.5) else depthChoice
+			for _,off in ALIGN_LATERAL do
+				local p=dp+axis*side*depth+lateral*off
+				p=Vector3.new(p.X,a.Y,p.Z)
+				local shift=flat(p-a).Magnitude
+				if shift<=limit and (shift<0.2 or clearDoorSegment(s,a,p,allowed)) and clearDoorSegment(s,p,goal,allowed) then
+					local chosen=s.bodyWidth
+					s.bodyWidth=saved
+					return p,chosen or 3
+				end
+			end
+		end
+	end
+	s.bodyWidth=saved
+	return nil,nil
+end
+
 local function pathStep(s: any, root: BasePart, goal: Vector3, radius: number, allowed: any, move: any, stop: any): (boolean, string?)
 	local now = os.clock()
 	local distance = flat(goal-root.Position).Magnitude
@@ -1674,8 +1738,16 @@ local function pathStep(s: any, root: BasePart, goal: Vector3, radius: number, a
 	if (s.failures or 0) >= 3 then return false, "no progress" end
 	if s.preciseArrival and distance<2 then
 		local clear,reason=clearDoorSegment(s,root.Position,goal,allowed)
+		if not clear and not s.bodyWidth then
+			-- Final settle inside a doorway: retry with the humanoid torso width
+			-- before declaring the alignment blocked.
+			s.bodyWidth=2.4
+			clear=clearDoorSegment(s,root.Position,goal,allowed)
+			if not clear then s.bodyWidth=nil end
+		end
 		if not clear then stop();return false,"alignment blocked: "..tostring(reason) end
-		clearPath(s);s.goal=goal
+		local width=s.bodyWidth
+		clearPath(s);s.goal=goal;s.bodyWidth=width
 		move(goal,true)
 		return false
 	end
@@ -1695,12 +1767,22 @@ local function pathStep(s: any, root: BasePart, goal: Vector3, radius: number, a
 		if not ok or path.Status ~= Enum.PathStatus.Success then
 			path:Destroy(); path=nil
 			local clear,rejection=clearDoorSegment(s,root.Position,goal,allowed)
+			local aligned,width=nil,nil
+			if not clear and s.directDoor then
+				aligned,width=doorAlignment(s,root.Position,goal,allowed)
+			end
 			if clear then
 				points={{Position=goal}}; s.direct=true
 				if not s.loggedDirect then
 					s.loggedDirect=true
 					print("[PrisonNav] VERIFIED DOOR PASSAGE "..s.directDoor.Name)
 				end
+			elseif aligned then
+				-- Walk to the centre line first, then straight through the opening.
+				points={{Position=aligned},{Position=goal}}; s.direct=true
+				s.bodyWidth=if width and width<3 then width else nil
+				s.alignments=(s.alignments or 0)+1
+				print(("[PrisonNav] DOOR THRESHOLD RESYNC actor=%s door=%s via=%s width=%.1f (was: %s)"):format(s.actor or "?",s.directDoor.Name,tostring(aligned),width or 3,tostring(rejection)))
 			else
 				stop(); s.failures=(s.failures or 0)+1
 				if s.directDoor and (not s.lastDiagnostic or now-s.lastDiagnostic>2) then
@@ -1737,7 +1819,9 @@ local function pathStep(s: any, root: BasePart, goal: Vector3, radius: number, a
 		wp = s.points[s.index]
 		s.progressAt = now
 	end
-	if s.direct and not clearDoorSegment(s,root.Position,wp.Position,allowed) then
+	if s.direct and flat(wp.Position-root.Position).Magnitude>0.2 and not clearDoorSegment(s,root.Position,wp.Position,allowed) then
+		-- Drifted off the verified line: stop and re-plan from here (the
+		-- threshold resync above picks a fresh aligned point).
 		s.invalid=true; stop(); return false
 	end
 	move(wp.Position)
@@ -1790,6 +1874,35 @@ local function behindTrail(trail: {Vector3}, head: Vector3, gap: number): Vector
 	return trail[1]
 end
 
+local function escortIgnore(cop: any, char: Model?, o: any): {Instance}
+	local ignore={}
+	if cop and cop.model then table.insert(ignore,cop.model) end
+	for _,obj in opts.ignore or {} do if obj then table.insert(ignore,obj) end end
+	for _,p in game:GetService("Players"):GetPlayers() do
+		if p.Character then table.insert(ignore,p.Character) end
+	end
+	local map=Nav.mapRoot or (opts.mapRoot and opts.mapRoot())
+	if map then table.insert(ignore,map) end
+	if char then table.insert(ignore,char) end
+	if o.ignoreCharacter then table.insert(ignore,o.ignoreCharacter) end
+	for _,part in o.ignoreParts or {} do if part then table.insert(ignore,part) end end
+	return ignore
+end
+
+-- Soft-recovery helper for the custody controller. Returns a validated point
+-- near `from`, on the same side of `marker`, lined up with the opening so that
+-- a straight walk to `goal` clears the jambs, or nil. `maxShift` bounds how
+-- far from `from` the point may be (a micro-resync, never a cross-map jump).
+function Nav.doorRecoveryPoint(cop: any, char: Model?, marker: Instance, from: Vector3, goal: Vector3, maxShift: number?, o: any?): (Vector3?, number?)
+	o=o or {}
+	local s={actor="recovery",directDoor=marker,ignore=escortIgnore(cop,char,o)}
+	local allowed={}
+	for _,p in {from,goal} do
+		local z=zoneAt(p,0);if z and z.cell then allowed[z]=true end
+	end
+	return doorAlignment(s,from,goal,allowed,maxShift)
+end
+
 function Nav.localTravel(cop: any, goal: Vector3, o: any?): (boolean, string?)
 	o=o or {}
 	local alive=o.alive or function() return true end
@@ -1805,16 +1918,7 @@ function Nav.localTravel(cop: any, goal: Vector3, o: any?): (boolean, string?)
 	local motion=o.motion or {}
 	local trail=motion.trail or {cop.root.Position,leaderRoot.Position}
 	motion.trail=trail
-    local ignore={cop.model}
-    for _,obj in opts.ignore or {} do if obj then table.insert(ignore,obj) end end
-    for _,p in game:GetService("Players"):GetPlayers() do
-        if p.Character then table.insert(ignore,p.Character) end
-    end
-    local map=Nav.mapRoot or (opts.mapRoot and opts.mapRoot())
-	if map then table.insert(ignore,map) end
-	if char then table.insert(ignore,char) end
-	if o.ignoreCharacter then table.insert(ignore,o.ignoreCharacter) end
-	for _,part in o.ignoreParts or {} do if part then table.insert(ignore,part) end end
+	local ignore=escortIgnore(cop,char,o)
 	local lead={actor=if prisoner then "prisoner-front" else "officer",directDoor=o.directDoor,ignore=ignore,flow=o.continueMotion,arrivalRadius=o.arrivalRadius,preciseArrival=o.preciseArrival,allowClearCorridor=o.allowClearCorridor==true,allowDoorwayOverlapEscape=o.allowDoorwayOverlapEscape==true}
 	local rear={actor="officer-behind",directDoor=o.directDoor,ignore=ignore,following=true,allowDoorwayOverlapEscape=o.allowDoorwayOverlapEscape==true}
 	local allowed={}
@@ -1830,6 +1934,11 @@ function Nav.localTravel(cop: any, goal: Vector3, o: any?): (boolean, string?)
 	end
 	local deadline=os.clock()+(o.maxTime or 20)
 	local lastDoor=0
+	-- Pair watchdog: if neither body makes progress for 1.5s, or the prisoner
+	-- drifts beyond the formation gap for 3s, drop both local paths and re-plan
+	-- from the current positions. Bounded; pathStep's own failure count still
+	-- ends a genuinely blocked leg.
+	local watch={at=os.clock(),lead=leaderRoot.Position,rear=cop.root.Position,replans=0,driftSince=nil}
 	local function finish(ok: boolean,why: string?): (boolean,string?)
 		clearPath(lead);clearPath(rear)
 		if not ok or not o.continueMotion then
@@ -1845,6 +1954,22 @@ function Nav.localTravel(cop: any, goal: Vector3, o: any?): (boolean, string?)
 		if prisoner and (hum.Health<=0 or o.escortee.Character~=char) then return finish(false,"prisoner lost") end
 		if o.keepDoor and os.clock()-lastDoor>1 then lastDoor=os.clock();pcall(o.keepDoor) end
 		local gap=if prisoner then flat(prisoner.Position-cop.root.Position).Magnitude else 0
+		do
+			local now=os.clock()
+			if flat(leaderRoot.Position-watch.lead).Magnitude>0.75 or flat(cop.root.Position-watch.rear).Magnitude>0.75 then
+				watch.at,watch.lead,watch.rear=now,leaderRoot.Position,cop.root.Position
+			end
+			if prisoner and gap>=8 then watch.driftSince=watch.driftSince or now else watch.driftSince=nil end
+			local stalled=now-watch.at>1.5
+			local drifted=watch.driftSince~=nil and now-watch.driftSince>3
+			if (stalled or drifted) and watch.replans<4 then
+				watch.replans+=1
+				watch.at,watch.lead,watch.rear,watch.driftSince=now,leaderRoot.Position,cop.root.Position,nil
+				print(("[PrisonNav] ESCORT REPLAN reason=%s gap=%.1f door=%s"):format(if drifted then "prisoner drift" else "no progress",gap,o.directDoor and o.directDoor.Name or "none"))
+				clearPath(lead);clearPath(rear)
+				lead.nextCompute=nil;rear.nextCompute=nil
+			end
+		end
 		local reached=false
 		local leadGoal=goal
 		if o.allowClearCorridor then

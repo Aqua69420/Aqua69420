@@ -8640,10 +8640,54 @@ function PrisonFlow.transfer(player: Player, role: string, room: any, owner: str
 				if passFolder then passFolder:Destroy();passFolder=nil end
 			end
 			local motion={}
+			-- Soft recovery for one doorway leg (escort only). Stage 1 walks the
+			-- cuffed pair back onto the door's centre line on the prisoner's current
+			-- side (physical resync). Stage 2 is a validated micro-reposition of at
+			-- most 3.5 studs on the same side of the door. Collision is never
+			-- disabled; the point must pass the same body/floor sweep as walking.
+			local function recoverLeg(point: Vector3, stage: number): boolean
+				if not alive() or not cop.alive then return false end
+				local legGoal=point+Vector3.new(0,2.5,0)
+				local resyncPoint=PrisonNav.doorRecoveryPoint(cop,char,door,root.Position,legGoal,if stage==1 then 5 else 3.5,{ignoreParts=passParts})
+				if not resyncPoint then
+					warn(("[CustodyDiag] CUFF WALK RECOVERY stage=%d door=%s: no validated threshold point near prisoner=%s"):format(stage,door.Name,tostring(root.Position)))
+					return false
+				end
+				openMarkedDoor(door,6)
+				if stage==1 then
+					print(("[CustodyDiag] CUFF WALK RECOVERY stage=resync door=%s prisoner=%s -> %s"):format(door.Name,tostring(root.Position),tostring(resyncPoint)))
+					motion.trail=nil
+					local walked,why=PrisonNav.localTravel(cop,resyncPoint,{alive=alive,escortee=player,radius=1.9,maxTime=10,
+						formationGap=1.8,motion=motion,arrivalRadius=0.6,preciseArrival=true,directDoor=door,
+						ignoreCharacter=char,ignoreParts=passParts,keepDoor=function() openMarkedDoor(door,6) end})
+					if not walked then warn("[CustodyDiag] CUFF WALK RECOVERY resync walk failed: "..tostring(why)) end
+					return walked
+				end
+				local shift=Util.flat(resyncPoint-root.Position)
+				print(("[CustodyDiag] CUFF WALK RECOVERY stage=micro-reposition door=%s shift=%.2f prisoner=%s -> %s"):format(door.Name,shift.Magnitude,tostring(root.Position),tostring(resyncPoint)))
+				hum:MoveTo(root.Position)
+				root.AssemblyLinearVelocity=Vector3.zero
+				char:PivotTo(char:GetPivot()+Vector3.new(shift.X,0,shift.Z))
+				motion.trail=nil
+				task.wait(0.2)
+				return true
+			end
 			for index,point in points do
 				print(("[CustodyDiag] %s door=%s leg=%d/%d officer=%s prisoner=%s target=%s escort=%s"):format(role,door.Name,index,#points,tostring(cop.root.Position),tostring(root.Position),tostring(point),tostring(escort)))
-				local ok,why=PrisonNav.localTravel(cop,point+Vector3.new(0,2.5,0),{alive=alive,escortee=if escort then player else nil,
-					radius=1.9,maxTime=24,formationGap=1.8,motion=motion,continueMotion=index<#points,arrivalRadius=1.25,preciseArrival=(not escort and index==1 and #points>1) or (owner=="HOUSING_ESCORT" and index==#points),directDoor=door,ignoreCharacter=char,ignoreParts=passParts,keepDoor=function() openMarkedDoor(door,6) end})
+				local function walkLeg(): (boolean, string?)
+					return PrisonNav.localTravel(cop,point+Vector3.new(0,2.5,0),{alive=alive,escortee=if escort then player else nil,
+						radius=1.9,maxTime=24,formationGap=1.8,motion=motion,continueMotion=index<#points,arrivalRadius=1.25,preciseArrival=(not escort and index==1 and #points>1) or (owner=="HOUSING_ESCORT" and index==#points),directDoor=door,ignoreCharacter=char,ignoreParts=passParts,keepDoor=function() openMarkedDoor(door,6) end})
+				end
+				local ok,why=walkLeg()
+				local stage=0
+				while not ok and escort and stage<2 and why~="cancelled" and why~="prisoner lost" and alive() and cop.alive do
+					stage+=1
+					warn(("[CustodyDiag] CUFF WALK LEG FAILED door=%s leg=%d/%d stage=%d reason=%s; recovering"):format(door.Name,index,#points,stage,tostring(why)))
+					if recoverLeg(point,stage) then
+						ok,why=walkLeg()
+						if ok then print(("[CustodyDiag] CUFF WALK RECOVERED door=%s leg=%d/%d stage=%d"):format(door.Name,index,#points,stage)) end
+					end
+				end
 				if not ok then
 					restoreDoorway()
 					warn("[Custody] "..role.." door "..door.Name.." target="..tostring(point)..": "..tostring(why))
@@ -8853,12 +8897,78 @@ function PrisonFlow.transfer(player: Player, role: string, room: any, owner: str
 	return true
 end
 
+-- Physical cuff-walk attempts before the last-resort placement, and the overall
+-- window for one delivery. Normal escorts finish in the first attempt; leg-level
+-- resync / micro-reposition and graph repaths run inside each attempt.
+local DELIVER_MAX_ATTEMPTS=3
+local DELIVER_TIMEOUT=300
+
+-- LAST RESORT ONLY. Places the prisoner inside the assigned mapped cell and
+-- finalizes custody exactly as a completed walk would, so the case can never
+-- hang in an escort state. Reached only after DELIVER_MAX_ATTEMPTS failed
+-- physical transfers (each with its own recovery) or DELIVER_TIMEOUT.
+function PrisonFlow.fallbackDeliver(player: Player, role: string, room: any, owner: string): boolean
+	local char,hum,root=Util.charInfo(player)
+	if not char or not hum or not root or not room then return false end
+	-- Release any officer still parked for this job; its model owns the
+	-- NoCollisionConstraint folders, so despawning cleans the pair links.
+	PrisonFlow.jobs[player]=nil
+	local waiting=PrisonFlow.pending[player];PrisonFlow.pending[player]=nil
+	if waiting and waiting.alive then pcall(function() waiting:despawn("custody fallback") end) end
+	if owner=="HOUSING_ESCORT" and player:GetAttribute("PrisonDressOutComplete")~=true then
+		-- Dress-out still happens before the first cell, even on this path.
+		local dressed,result=pcall(PrisonFlow.applyInmateClothes,player,tostring(player:GetAttribute("SecurityClass") or "Medium"))
+		if not dressed or result~=true then warn("[CustodyDiag] FALLBACK DRESS OUT FAILED "..player.Name..": "..tostring(result)) end
+		player:SetAttribute("PrisonDressOutComplete",true)
+		char,hum,root=Util.charInfo(player)
+		if not char or not hum or not root then return false end
+	end
+	local lift=if hum.RigType==Enum.HumanoidRigType.R6 then 3 else hum.HipHeight+root.Size.Y/2
+	local candidates={room.pos}
+	local dp=room.door and markerFloorPosition(room.door)
+	if dp then
+		local inward=Util.safeUnit(Util.flat(room.pos-dp),Vector3.xAxis)
+		for _,depth in {4,5,3.5,6} do table.insert(candidates,dp+inward*depth) end
+	end
+	local stand=room.pos
+	for _,p in candidates do
+		if PrisonNav and PrisonNav.isInsideCell(room,p+Vector3.new(0,lift,0)) then stand=p;break end
+	end
+	local target=stand+Vector3.new(0,lift,0)
+	local facing=if dp then Util.safeUnit(Util.flat(dp-stand),Vector3.zAxis) else Vector3.zAxis
+	hum:MoveTo(root.Position);hum.WalkSpeed=0
+	root.AssemblyLinearVelocity=Vector3.zero
+	char:PivotTo(CFrame.lookAt(target,target+facing))
+	PrisonFlow.rooms[player]=room
+	PrisonFlow.reserved[player]=nil
+	player:SetAttribute("ReservedPrisonCell",nil)
+	hum:SetAttribute("PoliceCuffed",nil)
+	if room.door then
+		local okClose,closed,closeWhy=pcall(PrisonFlow.closeCell,room)
+		print(("[CustodyDiag] FALLBACK CELL CLOSE cell=%s closed=%s reason=%s"):format(tostring(room.name),tostring(okClose and closed),tostring(if okClose then closeWhy else closed)))
+	end
+	PrisonFlow.state(player,if owner=="HOUSING_ESCORT" then "INCARCERATED" elseif owner=="INTAKE_ESCORT" then "INTAKE_CELL" else "BOOKING",false)
+	escortFailure[player]=nil;player:SetAttribute("EscortFailure",nil)
+	warn(("[CustodyDiag] DESTINATION FALLBACK %s role=%s cell=%s stand=%s (physical cuff-walk exhausted)"):format(player.Name,role,tostring(room.name),tostring(stand)))
+	return true
+end
+
 -- Each attempt has bounded local/graph watchdogs. A delayed replacement can resume
 -- the SAME destination from the current position without rerolling the case.
 function PrisonFlow.deliver(player: Player, role: string, room: any, owner: string): boolean
 	local character=player.Character
+	local started=os.clock()
+	local attempts=0
 	while processingAlive(player) and player.Character==character do
+		attempts+=1
 		if PrisonFlow.transfer(player,role,room,owner) then return true end
+		if not (processingAlive(player) and player.Character==character) then break end
+		if attempts>=DELIVER_MAX_ATTEMPTS or os.clock()-started>DELIVER_TIMEOUT then
+			warn(("[CustodyDiag] CUFF WALK EXHAUSTED %s role=%s attempts=%d elapsed=%.0fs; using destination fallback"):format(player.Name,role,attempts,os.clock()-started))
+			if PrisonFlow.jobs[player] then task.wait(0.5) end
+			if PrisonFlow.fallbackDeliver(player,role,room,owner) then return true end
+			started,attempts=os.clock(),0
+		end
 		tell(player,"Custody","Correctional escort delayed - the officer will retry")
 		task.wait(15)
 	end
