@@ -11405,9 +11405,14 @@ local function setupDoors()
 					while prison and prison.Parent do
 						task.wait(0.4)
 						for _,c in centers do
-							local ok,parts=pcall(function() return Workspace:GetPartBoundsInRadius(c.pos,48) end)
+							local ok,parts=pcall(function() return Workspace:GetPartBoundsInRadius(c.pos,60) end)
 							if ok then
 								for _,part in parts do
+									-- v219: AI cruisers / vans / armored trucks are seatless "ghost cars"
+									-- in the PoliceVehicle collision group
+									if part.CollisionGroup=="PoliceVehicle" then
+										swingGateOpen(c.gate,8);break
+									end
 									if part:IsA("VehicleSeat") then
 										local occ=part.Occupant
 										local driver=occ and Players:GetPlayerFromCharacter(occ.Parent)
@@ -12358,6 +12363,24 @@ function PL.npcArrestOnce()
 	for _,d in npc:GetDescendants() do if d:IsA("BasePart") then d.CanCollide=false;d.Massless=true end end
 	local roadDone=false
 	van.transporting=true
+	-- v219: the sally-port gates open for the NPC transport exactly like a player's
+	if fac.gates then
+		task.spawn(function()
+			while van.transporting and not van.dead and body.Parent do
+				local near=math.huge
+				for _,g in swingGates(fac.model) do
+					local ok,cf=pcall(g.GetPivot,g)
+					if ok then near=math.min(near,Util.flat(cf.Position-body.Position).Magnitude) end
+				end
+				for _,gateName in {"GATE","GATE1","GATE2"} do
+					local leaf=fac.model:FindFirstChild(gateName)
+					if leaf and leaf:IsA("Model") then near=math.min(near,Util.flat(leaf:GetPivot().Position-body.Position).Magnitude) end
+				end
+				if near<=80 then pcall(physicalGateOpen,fac.gates,8) end
+				task.wait(0.35)
+			end
+		end)
+	end
 	if not van:driveTo(dropOffPoint(fac),true,function() roadDone=true end) then
 		weld:Destroy();npc:Destroy();pcall(function() van:destroy() end);return
 	end
