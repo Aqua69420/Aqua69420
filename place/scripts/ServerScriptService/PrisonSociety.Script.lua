@@ -576,13 +576,11 @@ local function swing(char: Model)
 end
 
 local function hitSound(root: BasePart, blade: boolean)
-	if not blade then
-		return -- v226: fists are silent (the old sword-lunge swoosh is gone); only the shiv slashes
-	end
+	-- v227: fists land with a dull thud (no sword swoosh); the shiv still slashes
 	local s = Instance.new("Sound")
-	s.SoundId = if blade then "rbxasset://sounds/swordslash.wav" else "rbxasset://sounds/swordlunge.wav"
-	s.Volume = 0.6
-	s.PlaybackSpeed = if blade then 1.1 else 0.7
+	s.SoundId = if blade then "rbxasset://sounds/swordslash.wav" else "rbxasset://sounds/collide.wav"
+	s.Volume = if blade then 0.6 else 0.8
+	s.PlaybackSpeed = if blade then 1.1 else 0.55
 	s.Parent = root
 	s:Play()
 	task.delay(2, function()
@@ -657,7 +655,15 @@ local lastPunch: { [Player]: number } = {}
 local function playerStrike(player: Player, blade: boolean)
 	local char = player.Character
 	local hum, root = charInfo(char)
-	if not char or not hum or not root or isCuffed(hum) or hum.Sit then
+	if not char or not hum or not root then
+		return
+	end
+	if isCuffed(hum) then
+		PunchRE:FireClient(player, "blocked", "You can't swing while cuffed")
+		return
+	end
+	if hum.Sit then
+		PunchRE:FireClient(player, "blocked", "Stand up to fight")
 		return
 	end
 	local now = os.clock()
@@ -666,8 +672,10 @@ local function playerStrike(player: Player, blade: boolean)
 	end
 	lastPunch[player] = now
 	swing(char)
-	local target = targetInFront(char, root, PUNCH_RANGE)
+	-- v227: a slightly wider reach so a punch at someone right beside you still lands
+	local target = targetInFront(char, root, PUNCH_RANGE + 1)
 	if not target then
+		PunchRE:FireClient(player, "miss")
 		return
 	end
 	local troot = target:FindFirstChild("HumanoidRootPart") :: BasePart?
@@ -675,6 +683,8 @@ local function playerStrike(player: Player, blade: boolean)
 		hitSound(troot, blade)
 	end
 	onPlayerHit(player, target, if blade then SHIV_DAMAGE else FIST_DAMAGE)
+	local thum = target:FindFirstChildOfClass("Humanoid")
+	PunchRE:FireClient(player, "hit", target.Name, thum and thum.Health or 0, thum and thum.MaxHealth or 100)
 end
 
 PunchRE.OnServerEvent:Connect(function(player)

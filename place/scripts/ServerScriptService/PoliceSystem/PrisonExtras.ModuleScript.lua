@@ -676,6 +676,28 @@ local function setLabel(cop: any, text: string)
 	end
 end
 
+-- v227: inmates can walk away from a CO - it just costs them. Losing the CO's
+-- respect, a strike, and a second strike within 4 minutes is solitary.
+X.brokeAway = {} :: { [Player]: boolean }
+function X.walkedAway(plr: Player, what: string)
+	local r = tonumber(plr:GetAttribute("CORespect")) or 0
+	plr:SetAttribute("CORespect", math.clamp(r - 12, -100, 100))
+	local strike = X.strikes and X.strikes[plr]
+	if strike and os.clock() - strike.at > 240 then
+		strike = nil
+	end
+	strike = { n = (strike and strike.n or 0) + 1, at = os.clock() }
+	X.strikes[plr] = strike
+	print(("[PrisonExtras] %s walked away from %s (strike %d)"):format(plr.Name, what, strike.n))
+	if strike.n >= 2 then
+		X.strikes[plr] = nil
+		notice(plr, "You walked away from a CO again - you're going to SOLITARY")
+		task.spawn(X.solitaryPlayer, plr, "ignoring a correctional officer")
+	else
+		notice(plr, ("You walked away from %s. COs -12 respect - do it again and it's solitary."):format(what))
+	end
+end
+
 function X.moveClass(class: string, from: string?, to: string)
 	local members = {}
 	for _, rec in X.npcs do
@@ -796,14 +818,24 @@ function X.moveClass(class: string, from: string?, to: string)
 			-- straggler who wanders off is brought back into the column
 			for _, plr in plist do
 				local _, hum, root = C.Util.charInfo(plr)
-				if hum and root and plr:GetAttribute("CustodyOwner") == "INCARCERATED" then
+				if hum and root and plr:GetAttribute("CustodyOwner") == "INCARCERATED" and not X.brokeAway[plr] then
 					slot += 1
 					local target = trail[math.max(1, #trail - slot * 2)]
 					local d = flat(root.Position - target).Magnitude
-					if d > 5 then
+					if hum.Sit or hum.SeatPart then
+						hum.Sit = false -- v227: never left stuck in a cafeteria seat
+						hum.Jump = true
+					end
+					if d > 28 then
+						-- v227: walked off - free to go, with consequences
+						X.brokeAway[plr] = true
+						stuckSince[plr] = nil
+						X.walkedAway(plr, "the line-up")
+					elseif d > 5 then
 						hum:MoveTo(target)
 						stuckSince[plr] = stuckSince[plr] or os.clock()
-						if d > 28 or os.clock() - stuckSince[plr] > 8 then
+						if os.clock() - stuckSince[plr] > 8 then
+							-- physically stuck (a seat, a table corner) - the CO pulls them along
 							root.CFrame = CFrame.new(target + Vector3.new(0, 3, 0))
 							stuckSince[plr] = nil
 							notice(plr, "Stay in line")
@@ -823,6 +855,10 @@ function X.moveClass(class: string, from: string?, to: string)
 		end
 		for _, plr in plist do
 			local _, hum, root = C.Util.charInfo(plr)
+			if X.brokeAway[plr] then
+				X.brokeAway[plr] = nil
+				continue -- they walked off; the CO sweep deals with them now
+			end
 			if to == "CELL" then
 				-- walked back into their own cell and locked in
 				local room = C.PL.playerRoom(plr)
@@ -1169,6 +1205,7 @@ function X.returnPlayer(plr: Player, class: string, want: string)
 		end)
 		local deadline = os.clock() + 95
 		local stuck: number? = nil
+		local walkedOff = false
 		while not done and not hit and os.clock() < deadline and cop.alive and plr.Parent do
 			local _, h2, r2 = C.Util.charInfo(plr)
 			if not h2 or not r2 or not sweepEligible(plr) then
@@ -1180,10 +1217,18 @@ function X.returnPlayer(plr: Player, class: string, want: string)
 			end
 			local target = trail[math.max(1, #trail - 2)]
 			local d = flat(r2.Position - target).Magnitude
-			if d > 5 then
+			if h2.Sit or h2.SeatPart then
+				h2.Sit = false
+				h2.Jump = true
+			end
+			if d > 28 then
+				-- v227: walked away from the escorting CO
+				walkedOff = true
+				break
+			elseif d > 5 then
 				h2:MoveTo(target)
 				stuck = stuck or os.clock()
-				if d > 28 or os.clock() - (stuck :: number) > 8 then
+				if os.clock() - (stuck :: number) > 8 then
 					r2.CFrame = CFrame.new(target + Vector3.new(0, 3, 0))
 					stuck = nil
 				end
@@ -1194,6 +1239,17 @@ function X.returnPlayer(plr: Player, class: string, want: string)
 			task.wait(0.3)
 		end
 		conn:Disconnect()
+		if walkedOff and not hit then
+			done = true
+			setLabel(cop, "GET BACK HERE!")
+			task.delay(3, function()
+				if cop.alive then
+					cop:despawn("inmate walked off")
+				end
+			end)
+			X.walkedAway(plr, "the CO")
+			return
+		end
 		if hit then
 			notice(plr, "Assaulting a correctional officer - SOLITARY")
 			cop:despawn("assaulted")

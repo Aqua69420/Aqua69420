@@ -67,14 +67,86 @@ local function clickingSomething(): boolean
 	return false
 end
 
+local function whyNoPunch(): string?
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not char or not hum or hum.Health <= 0 then
+		return "You're down"
+	end
+	if hum.Sit then
+		return "Stand up to fight"
+	end
+	if char:FindFirstChildOfClass("Tool") then
+		return "Put your item away to use your fists"
+	end
+	return nil
+end
+
+-- v227: the punch shows on your own screen right away (the button flashes and a
+-- hit marker says whether you connected) instead of silently doing nothing
+local hitMarker = Instance.new("TextLabel")
+hitMarker.Name = "PunchMarker"
+hitMarker.AnchorPoint = Vector2.new(0.5, 0.5)
+hitMarker.Position = UDim2.new(0.5, 0, 0.42, 0)
+hitMarker.Size = UDim2.fromOffset(320, 30)
+hitMarker.BackgroundTransparency = 1
+hitMarker.Font = Enum.Font.GothamBlack
+hitMarker.TextSize = 20
+hitMarker.TextStrokeTransparency = 0.4
+hitMarker.TextColor3 = Color3.new(1, 1, 1)
+hitMarker.Text = ""
+hitMarker.Visible = false
+hitMarker.Parent = gui
+local markerSerial = 0
+local function flashMarker(text: string, color: Color3)
+	markerSerial += 1
+	local mine = markerSerial
+	hitMarker.Text = text
+	hitMarker.TextColor3 = color
+	hitMarker.Visible = true
+	task.delay(0.7, function()
+		if markerSerial == mine then
+			hitMarker.Visible = false
+		end
+	end)
+end
+
+local punchButton: TextButton -- forward
 local lastPunch = 0
 local function punch()
-	if os.clock() - lastPunch < 0.45 or not canPunch() then
+	if os.clock() - lastPunch < 0.45 then
+		return
+	end
+	local why = whyNoPunch()
+	if why then
+		flashMarker(why, Color3.fromRGB(255, 200, 90))
 		return
 	end
 	lastPunch = os.clock()
+	if punchButton then
+		punchButton.BackgroundColor3 = Color3.fromRGB(230, 70, 70)
+		task.delay(0.15, function()
+			punchButton.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+		end)
+	end
 	PunchRE:FireServer()
 end
+
+PunchRE.OnClientEvent:Connect(function(kind, a, hp, maxHp)
+	if kind == "hit" then
+		local pct = if typeof(hp) == "number" and typeof(maxHp) == "number" and maxHp > 0
+			then math.floor(math.max(0, hp) / maxHp * 100 + 0.5)
+			else nil
+		flashMarker(
+			if pct then ("HIT  %s  (%d%%)"):format(tostring(a), pct) else "HIT",
+			Color3.fromRGB(255, 90, 90)
+		)
+	elseif kind == "miss" then
+		flashMarker("miss", Color3.fromRGB(200, 200, 200))
+	elseif kind == "blocked" then
+		flashMarker(tostring(a), Color3.fromRGB(255, 200, 90))
+	end
+end)
 
 UserInputService.InputBegan:Connect(function(input, processed)
 	if processed then
@@ -89,7 +161,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 	end
 end)
 
-local punchButton = Instance.new("TextButton")
+punchButton = Instance.new("TextButton")
 punchButton.Name = "PunchButton"
 punchButton.AnchorPoint = Vector2.new(1, 1)
 punchButton.Position = UDim2.new(1, -110, 1, -150)
@@ -103,7 +175,12 @@ punchButton.Text = "PUNCH"
 punchButton.Visible = false
 punchButton.Parent = gui
 corner(punchButton, 32)
-punchButton.Activated:Connect(punch)
+punchButton.ZIndex = 5
+punchButton.Active = true
+punchButton.AutoButtonColor = true
+-- v227: fire on press (Activated can be swallowed when the thumb drifts off the button)
+punchButton.MouseButton1Down:Connect(punch)
+punchButton.TouchTap:Connect(punch)
 
 ---------------------------------------------------------------------------
 -- notices
@@ -493,7 +570,9 @@ end)
 task.spawn(function()
 	while true do
 		task.wait(0.1)
-		punchButton.Visible = canPunch() and (isMobile() or player:GetAttribute("SentenceEnd") ~= nil)
+		-- v227: inmates always see it (it explains why when you can't swing); free
+		-- players on touch screens only get it when they can actually punch
+		punchButton.Visible = player:GetAttribute("SentenceEnd") ~= nil or (isMobile() and canPunch())
 		if timerEnd and box.Visible then
 			local left = math.max(0, timerEnd - os.clock())
 			timerBar.Size = UDim2.new(left / timerTotal, 0, 0, if forcedChoice then 6 else 4)
