@@ -3,7 +3,7 @@
     <Properties>
       <string name="Name">FacilityMapper</string>
       <ProtectedString name="Source"><![CDATA[--!nocheck
--- Facility Mapper (Studio plugin)  v2
+-- Facility Mapper (Studio plugin)  v3
 -- Maps the prison, Police HQ, City Jail, law offices and city markers in the
 -- same format the game's navigation already reads (the format of the original
 -- prison map):
@@ -36,8 +36,8 @@ local MAPPER_VERSION = 2
 ---------------------------------------------------------------------------
 -- definitions
 ---------------------------------------------------------------------------
-local FACILITY_TYPES = { "Prison", "PoliceHQ", "CityJail", "LawOffice", "Bank", "City" }
-local DEFAULT_MODEL = { Prison = "CorrectionalFacility", PoliceHQ = "PoliceHQ", CityJail = "CityJail", Bank = "Bank" }
+local FACILITY_TYPES = { "Prison", "Courthouse", "PoliceHQ", "CityJail", "LawOffice", "Bank", "City" }
+local DEFAULT_MODEL = { Prison = "CorrectionalFacility", Courthouse = "Courthouse", PoliceHQ = "PoliceHQ", CityJail = "CityJail", Bank = "Bank" }
 
 -- zone types: room = needs a door and is registered as a room/cell category;
 -- navIgnore = not a walkable nav area (sniper zones and the like)
@@ -49,6 +49,9 @@ local ZONE_INFO = {
 	TerritoryEK = {}, TerritoryIS = {}, TerritoryDS = {}, TerritoryTL = {},
 	-- bank safe deposit vault
 	DepositVault = { room = true },
+	-- courts
+	JuryRoom = { room = true }, JudgeChambers = { room = true }, SecurityCheckpoint = {}, ClerkOffice = {},
+	CourtLobby = {}, PressArea = {},
 	-- rooms (need a mapped door)
 	Interrogation = { room = true }, LegalVisit = { room = true }, Courtroom = { room = true },
 	MunicipalCourt = { room = true }, CourtHolding = { room = true }, HoldingCell = { room = true },
@@ -64,10 +67,14 @@ local ZONE_INFO = {
 local ZONE_TYPES = {
 	Prison = {
 		"Interrogation", "Courtroom", "CourtHolding", "LegalVisit", "GuardTower", "KillZone", "Perimeter",
-		"ProtectiveCustody", "Hallway", "Stairs", "Room", "Walkway", "Yard",
+		"ProtectiveCustody", "JuryRoom", "JudgeChambers", "Hallway", "Stairs", "Room", "Walkway", "Yard",
 		"IntakeCell", "BookingCell", "OverflowHolding", "LongTermHolding", "LowSecurity", "MediumSecurity",
 		"HighSecurity", "MaximumSecurity", "Supermax", "Solitary", "DeathRow", "ExecutionRoom",
 		"ContactVisit", "VisitPrisoner", "VisitVisitor",
+	},
+	Courthouse = {
+		"Courtroom", "CourtHolding", "JuryRoom", "JudgeChambers", "SecurityCheckpoint", "CourtLobby", "ClerkOffice",
+		"LegalVisit", "SallyPort", "PressArea", "Hallway", "Stairs", "Office", "Room",
 	},
 	PoliceHQ = {
 		"SallyPort", "BookingArea", "HoldingCell", "Interrogation", "LegalVisit", "Lobby", "MunicipalCourt",
@@ -83,6 +90,7 @@ local ZONE_TYPES = {
 }
 local POINT_TYPES = {
 	Prison = { "PrisonPhone", "SniperPost", "Spotlight", "BailiffSpot", "CourtCam", "OfficerPost", "TurnInPoint", "DrugTestStation", "CommissaryWindow" },
+	Courthouse = { "BailiffSpot", "CourtCam", "ClerkWindow", "MetalDetector", "VehicleDropoff", "TurnInPoint", "CourthouseSteps", "PressPodium", "OfficerPost" },
 	PoliceHQ = { "BookingDesk", "TurnInPoint", "VehicleDropoff", "FrontDesk", "BailiffSpot", "CourtCam", "DetectivePost", "OfficerPost", "HoldingPhone", "MDTTerminal", "EvidenceLocker", "MugshotSpot", "PressPodium", "PoliceSpawn" },
 	CityJail = { "BookingDesk", "VehicleDropoff", "ReleasePoint", "JailPhone", "OfficerPost", "TurnInPoint" },
 	LawOffice = { "Reception", "WaitingArea" },
@@ -94,7 +102,7 @@ local POINT_TYPES = {
 	},
 }
 -- points that face a direction (placed facing where the camera looks)
-local AIMED_POINT = { SniperPost = true, Spotlight = true, CourtCam = true }
+local AIMED_POINT = { SniperPost = true, Spotlight = true, CourtCam = true, PressPodium = true }
 local SEAT_ROLES = {
 	"JudgeSeat", "DefendantSeat", "DefenseSeat", "ProsecutorSeat", "WitnessSeat", "JurorSeat", "GallerySeat",
 	"SuspectSeat", "DetectiveSeat", "InmateVisitSeat", "LawyerVisitSeat", "LawyerSeat", "ClientSeat", "ReceptionSeat",
@@ -114,22 +122,37 @@ local CHECKLIST = {
 		{ kind = "seat", type = "DefenseSeat", min = 1 }, { kind = "seat", type = "ProsecutorSeat", min = 1 },
 		{ kind = "seat", type = "WitnessSeat", min = 1 }, { kind = "seat", type = "JurorSeat", min = 12 },
 		{ kind = "seat", type = "GallerySeat", min = 1 }, { kind = "point", type = "BailiffSpot", min = 1 },
+		{ kind = "zone", type = "JuryRoom", min = 1 }, { kind = "zone", type = "CourtHolding", min = 0, optional = true },
+		{ kind = "zone", type = "JudgeChambers", min = 0, optional = true },
 		{ kind = "zone", type = "GuardTower", min = 1 }, { kind = "point", type = "SniperPost", min = 1 },
 		{ kind = "point", type = "Spotlight", min = 1 }, { kind = "zone", type = "KillZone", min = 1 },
 		{ kind = "zone", type = "Perimeter", min = 1 }, { kind = "point", type = "PrisonPhone", min = 2 },
 		{ kind = "zone", type = "ProtectiveCustody", min = 0, optional = true },
 		{ kind = "point", type = "CourtCam", min = 0, optional = true },
 	},
+	Courthouse = {
+		{ kind = "zone", type = "Courtroom", min = 1 }, { kind = "zone", type = "CourtHolding", min = 1 },
+		{ kind = "zone", type = "JuryRoom", min = 1 }, { kind = "zone", type = "JudgeChambers", min = 1 },
+		{ kind = "zone", type = "SecurityCheckpoint", min = 1 }, { kind = "zone", type = "CourtLobby", min = 1 },
+		{ kind = "zone", type = "SallyPort", min = 1 },
+		{ kind = "seat", type = "JudgeSeat", min = 1 }, { kind = "seat", type = "DefendantSeat", min = 1 },
+		{ kind = "seat", type = "DefenseSeat", min = 1 }, { kind = "seat", type = "ProsecutorSeat", min = 1 },
+		{ kind = "seat", type = "WitnessSeat", min = 1 }, { kind = "seat", type = "JurorSeat", min = 12 },
+		{ kind = "seat", type = "GallerySeat", min = 1 },
+		{ kind = "point", type = "BailiffSpot", min = 1 }, { kind = "point", type = "ClerkWindow", min = 1 },
+		{ kind = "point", type = "MetalDetector", min = 1 }, { kind = "point", type = "VehicleDropoff", min = 1 },
+		{ kind = "point", type = "CourthouseSteps", min = 1 },
+		{ kind = "point", type = "CourtCam", min = 0, optional = true },
+		{ kind = "zone", type = "LegalVisit", min = 0, optional = true },
+		{ kind = "zone", type = "PressArea", min = 0, optional = true },
+	},
 	PoliceHQ = {
 		{ kind = "zone", type = "SallyPort", min = 1 }, { kind = "zone", type = "BookingArea", min = 1 },
 		{ kind = "zone", type = "HoldingCell", min = 1 }, { kind = "zone", type = "Interrogation", min = 1 },
 		{ kind = "zone", type = "LegalVisit", min = 1 }, { kind = "zone", type = "Lobby", min = 1 },
-		{ kind = "zone", type = "MunicipalCourt", min = 1 },
+		{ kind = "zone", type = "MunicipalCourt", min = 0, optional = true },
 		{ kind = "point", type = "BookingDesk", min = 1 }, { kind = "point", type = "TurnInPoint", min = 1 },
 		{ kind = "point", type = "VehicleDropoff", min = 1 },
-		{ kind = "seat", type = "JudgeSeat", min = 1 }, { kind = "seat", type = "DefendantSeat", min = 1 },
-		{ kind = "seat", type = "DefenseSeat", min = 1 }, { kind = "seat", type = "ProsecutorSeat", min = 1 },
-		{ kind = "seat", type = "GallerySeat", min = 1 },
 		{ kind = "point", type = "BailiffSpot", min = 0, optional = true },
 		{ kind = "point", type = "CourtCam", min = 0, optional = true },
 	},
@@ -172,7 +195,7 @@ local CHECKLIST = {
 		{ kind = "zone", type = "TerritoryIS", min = 0, optional = true },
 		{ kind = "zone", type = "TerritoryDS", min = 0, optional = true },
 		{ kind = "zone", type = "TerritoryTL", min = 0, optional = true },
-		{ kind = "point", type = "CourthouseSteps", min = 0, optional = true },
+		-- (CourthouseSteps now belongs to the Courthouse facility)
 		{ kind = "point", type = "PlateMakerSpot", min = 3 },
 		{ kind = "point", type = "ShadyDealer", min = 1 },
 		{ kind = "point", type = "ChopShop", min = 1 },
