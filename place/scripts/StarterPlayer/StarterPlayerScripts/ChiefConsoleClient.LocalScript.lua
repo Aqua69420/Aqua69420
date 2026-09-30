@@ -3,7 +3,7 @@
 -- the Chief of Police team (aquagaming22 only - the server checks too):
 --   * pick a player
 --   * set their wanted level (0-6 stars)
---   * issue / clear a warrant
+--   * issue a warrant with chosen charges (incl. 5 officer kills = Death Row) / clear it
 --   * dispatch any unit type (patrol ... SWAT, riot, SEALs, juggernauts, army),
 --     how many, in what vehicle, with how many helicopters
 --   * authorize lethal force
@@ -170,28 +170,136 @@ for n = 0, 6 do
 	end)
 end
 
--- warrant
+-- warrant (v235: pick the crimes - they go on the suspect's record and decide
+-- the case at booking; "5 police officers" means Death Row)
+local warrantCrimes: { { key: string, charge: string, stars: number } } = {}
+local pickedCrimes: { [string]: boolean } = {}
+
 local warrantRow = row(4)
+local openWarrant = button(warrantRow, "ISSUE WARRANT...", 0.7, Color3.fromRGB(150, 70, 20), 1)
+button(warrantRow, "CLEAR", 0.3, Color3.fromRGB(60, 70, 80), 2).Activated:Connect(function()
+	if selectedName then
+		call("clearWarrant", selectedName)
+	end
+end)
+
+local picker = make("Frame", {
+	Name = "WarrantPicker",
+	Size = UDim2.fromScale(1, 1),
+	BackgroundColor3 = Color3.fromRGB(16, 18, 24),
+	Visible = false,
+	ZIndex = 20,
+}, panel)
+corner(picker, 10)
+local pickerTitle = make("TextLabel", {
+	Position = UDim2.fromOffset(14, 8),
+	Size = UDim2.new(1, -28, 0, 24),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBlack,
+	TextSize = 16,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextColor3 = Color3.fromRGB(255, 170, 90),
+	Text = "WARRANT - select the charges",
+	ZIndex = 21,
+}, picker)
+local crimeList = make("ScrollingFrame", {
+	Position = UDim2.fromOffset(12, 38),
+	Size = UDim2.new(1, -24, 1, -130),
+	BackgroundColor3 = Color3.fromRGB(26, 28, 36),
+	BorderSizePixel = 0,
+	ScrollBarThickness = 6,
+	CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	ZIndex = 21,
+}, picker)
+corner(crimeList, 6)
+make("UIGridLayout", { CellSize = UDim2.new(0.5, -6, 0, 34), CellPadding = UDim2.fromOffset(4, 4), SortOrder = Enum.SortOrder.LayoutOrder }, crimeList)
+make("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 8) }, crimeList)
 local reason = make("TextBox", {
-	LayoutOrder = 1,
-	Size = UDim2.new(0.5, -4, 1, 0),
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.new(0, 12, 1, -50),
+	Size = UDim2.new(1, -24, 0, 30),
 	BackgroundColor3 = Color3.fromRGB(34, 36, 46),
 	TextColor3 = Color3.new(1, 1, 1),
-	PlaceholderText = "Warrant reason",
+	PlaceholderText = "Extra details (optional)",
 	Text = "",
 	Font = Enum.Font.Gotham,
 	TextSize = 13,
 	ClearTextOnFocus = false,
-}, warrantRow)
+	ZIndex = 21,
+}, picker)
 corner(reason, 6)
-button(warrantRow, "WARRANT", 0.27, Color3.fromRGB(150, 70, 20), 2).Activated:Connect(function()
-	if selectedName then
-		call("warrant", selectedName, reason.Text)
+local pickerButtons = make("Frame", {
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.new(0, 12, 1, -10),
+	Size = UDim2.new(1, -24, 0, 34),
+	BackgroundTransparency = 1,
+	ZIndex = 21,
+}, picker)
+make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, pickerButtons)
+local issue = button(pickerButtons, "ISSUE WARRANT", 0.65, Color3.fromRGB(170, 70, 20), 1)
+local cancel = button(pickerButtons, "CANCEL", 0.35, Color3.fromRGB(60, 70, 80), 2)
+issue.ZIndex = 22
+cancel.ZIndex = 22
+
+local function paintCrimes()
+	for _, c in crimeList:GetChildren() do
+		if c:IsA("TextButton") then
+			c:Destroy()
+		end
 	end
+	for i, crime in warrantCrimes do
+		local on = pickedCrimes[crime.key] == true
+		local deathRow = crime.key == "FiveCopKills"
+		local b = make("TextButton", {
+			LayoutOrder = i,
+			BackgroundColor3 = if on then (if deathRow then Color3.fromRGB(170, 20, 20) else Color3.fromRGB(150, 80, 20))
+				else Color3.fromRGB(40, 42, 54),
+			TextColor3 = Color3.new(1, 1, 1),
+			Font = if deathRow then Enum.Font.GothamBlack else Enum.Font.GothamMedium,
+			TextScaled = true,
+			Text = (if on then "✔ " else "") .. crime.charge .. "  " .. string.rep("★", crime.stars),
+			ZIndex = 22,
+		}, crimeList)
+		corner(b, 5)
+		make("UITextSizeConstraint", { MaxTextSize = 13 }, b)
+		make("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }, b)
+		b.Activated:Connect(function()
+			pickedCrimes[crime.key] = not pickedCrimes[crime.key] or nil
+			paintCrimes()
+		end)
+	end
+end
+
+openWarrant.Activated:Connect(function()
+	if not selectedName then
+		status.Text = "Select a player first"
+		return
+	end
+	pickerTitle.Text = "WARRANT for " .. selectedName .. " - select the charges"
+	table.clear(pickedCrimes)
+	reason.Text = ""
+	paintCrimes()
+	picker.Visible = true
 end)
-button(warrantRow, "CLEAR", 0.23, Color3.fromRGB(60, 70, 80), 3).Activated:Connect(function()
-	if selectedName then
-		call("clearWarrant", selectedName)
+cancel.Activated:Connect(function()
+	picker.Visible = false
+end)
+issue.Activated:Connect(function()
+	if not selectedName then
+		return
+	end
+	local keys = {}
+	for _, crime in warrantCrimes do
+		if pickedCrimes[crime.key] then
+			table.insert(keys, crime.key)
+		end
+	end
+	local ok = call("warrant", selectedName, reason.Text, keys)
+	if ok then
+		picker.Visible = false
+	else
+		pickerTitle.Text = status.Text -- the picker covers the status line
 	end
 end)
 
@@ -261,7 +369,10 @@ local function refreshList()
 			c:Destroy()
 		end
 	end
-	local ok, success, entries, serverUnits = pcall(console.InvokeServer, console, "list")
+	local ok, success, entries, serverUnits, crimes = pcall(console.InvokeServer, console, "list")
+	if ok and type(crimes) == "table" and #crimes > 0 then
+		warrantCrimes = crimes
+	end
 	if not ok or not success or type(entries) ~= "table" then
 		status.Text = "Console unavailable"
 		return

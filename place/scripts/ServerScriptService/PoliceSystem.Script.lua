@@ -15119,6 +15119,24 @@ do
 	for _, u in CHIEF_UNITS do
 		allowedUnit[u] = true
 	end
+	-- v235: crimes the Chief can put on a warrant (in severity order), plus the
+	-- five-officer-kill charge that sends the suspect to Death Row at booking
+	local WARRANT_CRIMES = {
+		"Assault", "Drugs", "VehicleTheft", "Burglary", "ResistingArrest", "ShotsFired", "AssaultOfficer",
+		"Robbery", "Murder", "CopKilled", "PrisonEscape", "BankRobbery", "HelicopterDown",
+	}
+	local FIVE_KILLS = "FiveCopKills"
+	local function warrantCrimeList()
+		local out = {}
+		for _, key in WARRANT_CRIMES do
+			local crime = Config.Crimes[key]
+			if crime then
+				table.insert(out, { key = key, charge = crime.Charge or key, stars = crime.MinStars or 1 })
+			end
+		end
+		table.insert(out, { key = FIVE_KILLS, charge = "Murder of 5 police officers (Death Row)", stars = 5 })
+		return out
+	end
 	local function isChief(player: Player): boolean
 		if not player.Team or player.Team.Name ~= "Chief of Police" then
 			return false
@@ -15157,7 +15175,7 @@ do
 					warrant = plr:GetAttribute("Warrant"),
 				})
 			end
-			return true, out, CHIEF_UNITS
+			return true, out, CHIEF_UNITS, warrantCrimeList()
 		end
 		local plr = target(a)
 		if not plr then
@@ -15172,14 +15190,53 @@ do
 			State.log(chief.Name, "chief set", plr.Name, "wanted", stars)
 			return true, ("%s is now %d-star wanted"):format(plr.Name, stars)
 		elseif action == "warrant" then
-			local reason = if type(b) == "string" and b ~= "" then string.sub(b, 1, 80) else "Chief's warrant"
-			plr:SetAttribute("Warrant", reason)
+			local note = if type(b) == "string" and b ~= "" then string.sub(b, 1, 80) else nil
+			-- v235: the charges on the warrant are real crimes on the suspect's record:
+			-- they set the wanted level, how police respond, and the case at booking
+			local picked = {}
+			if type(c) == "table" then
+				local valid = { [FIVE_KILLS] = true }
+				for _, key in WARRANT_CRIMES do
+					valid[key] = true
+				end
+				for _, key in c do
+					if type(key) == "string" and valid[key] and not table.find(picked, key) then
+						table.insert(picked, key)
+					end
+				end
+			end
+			local names = {}
+			for _, key in picked do
+				if key == FIVE_KILLS then
+					-- five officer kills on record = Death Row at booking
+					-- each charge goes through the crime listener, which counts officer
+					-- kills and arms Death Row at five
+					local have = tonumber(plr:GetAttribute("PoliceOfficersKilled")) or 0
+					for _ = 1, math.max(1, 5 - have) do
+						Heat.addCrime(plr, "CopKilled")
+					end
+					plr:SetAttribute("DeathRowTestOverride", true)
+					table.insert(names, "Murder of 5 police officers")
+				else
+					Heat.addCrime(plr, key)
+					table.insert(names, Config.Crimes[key].Charge or key)
+				end
+			end
+			if #names == 0 and not note then
+				return false, "Pick at least one crime (or write a reason)"
+			end
+			local reason = table.concat(names, ", ")
+			if note then
+				reason = if reason == "" then note else reason .. " - " .. note
+			end
+			plr:SetAttribute("Warrant", string.sub(reason, 1, 200))
 			if Heat.stars(plr) < 2 then
 				Heat.setStars(plr, 2, "Warrant")
 			end
+			State.log(chief.Name, "chief warrant", plr.Name, reason)
 			State.announce(plr, "A WARRANT HAS BEEN ISSUED FOR YOUR ARREST: " .. reason, "danger")
 			lawBroadcast(("WARRANT: %s - %s"):format(plr.Name, reason))
-			return true, "Warrant issued for " .. plr.Name
+			return true, ("Warrant issued for %s (%d charge%s)"):format(plr.Name, #names, if #names == 1 then "" else "s")
 		elseif action == "clearWarrant" then
 			plr:SetAttribute("Warrant", nil)
 			Heat.clear(plr, "Chief order")
