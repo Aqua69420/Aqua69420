@@ -82,6 +82,8 @@ UserInputService.InputBegan:Connect(function(input, processed)
 	end
 	if input.UserInputType == Enum.UserInputType.MouseButton1 and not clickingSomething() then
 		punch()
+	elseif input.KeyCode == Enum.KeyCode.F and player:GetAttribute("SentenceEnd") then
+		punch() -- v226: F punches while you're an inmate
 	elseif input.KeyCode == Enum.KeyCode.ButtonR2 then
 		punch()
 	end
@@ -193,14 +195,11 @@ type Row = { frame: Frame, fill: Frame, value: TextLabel, key: string }
 local rows: { Row } = {}
 local collapsed = false
 
-for _, v in gangInfo:GetChildren() do
-	if not v:IsA("Color3Value") then
-		continue
-	end
+local function makeRow(labelText: string, color: Color3, key: string, order: number)
 	local row = Instance.new("Frame")
 	row.Size = UDim2.new(1, 0, 0, 30)
 	row.BackgroundTransparency = 1
-	row.LayoutOrder = tonumber(v:GetAttribute("Order")) or 9
+	row.LayoutOrder = order
 	row.Parent = panel
 	local name = Instance.new("TextLabel")
 	name.Size = UDim2.new(0.75, 0, 0, 14)
@@ -209,13 +208,13 @@ for _, v in gangInfo:GetChildren() do
 	name.Font = Enum.Font.GothamMedium
 	name.TextSize = 12
 	name.TextXAlignment = Enum.TextXAlignment.Left
-	name.Text = tostring(v:GetAttribute("GangName") or v.Name)
+	name.Text = labelText
 	name.Parent = row
 	local swatch = Instance.new("Frame")
 	swatch.AnchorPoint = Vector2.new(1, 0)
 	swatch.Position = UDim2.new(1, 0, 0, 1)
 	swatch.Size = UDim2.fromOffset(18, 10)
-	swatch.BackgroundColor3 = v.Value
+	swatch.BackgroundColor3 = color
 	swatch.BorderSizePixel = 0
 	swatch.Parent = row
 	local stroke = Instance.new("UIStroke")
@@ -252,8 +251,15 @@ for _, v in gangInfo:GetChildren() do
 	value.TextSize = 12
 	value.TextXAlignment = Enum.TextXAlignment.Right
 	value.Parent = row
-	table.insert(rows, { frame = row, fill = fill, value = value, key = v.Name })
+	table.insert(rows, { frame = row, fill = fill, value = value, key = key })
 end
+for _, v in gangInfo:GetChildren() do
+	if v:IsA("Color3Value") then
+		makeRow(tostring(v:GetAttribute("GangName") or v.Name), v.Value, v.Name, tonumber(v:GetAttribute("Order")) or 9)
+	end
+end
+-- v226: what the correctional officers think of you
+makeRow("Correctional Officers", Color3.fromRGB(70, 130, 220), "CO", 99)
 
 local function refreshPanel()
 	local inmate = player:GetAttribute("CustodyOwner") == "INCARCERATED"
@@ -261,7 +267,7 @@ local function refreshPanel()
 	local mine = player:GetAttribute("PrisonGang")
 	for _, r in rows do
 		r.frame.Visible = not collapsed
-		local rep = tonumber(player:GetAttribute("Rep_" .. r.key)) or 0
+		local rep = tonumber(player:GetAttribute(if r.key == "CO" then "CORespect" else "Rep_" .. r.key)) or 0
 		local frac = math.abs(rep) / 100 * 0.5
 		if rep >= 0 then
 			r.fill.Position = UDim2.new(0.5, 0, 0, 0)
@@ -275,7 +281,7 @@ local function refreshPanel()
 			else Color3.fromRGB(170, 170, 170)
 		r.value.Text = (if mine == r.key then "★ " else "") .. tostring(rep)
 	end
-	header.Text = "Crew respect  " .. (if collapsed then "▸" else "▾")
+	header.Text = "Respect  " .. (if collapsed then "▸" else "▾")
 end
 
 header.Activated:Connect(function()
@@ -283,7 +289,7 @@ header.Activated:Connect(function()
 	refreshPanel()
 end)
 player.AttributeChanged:Connect(function(name)
-	if name == "CustodyOwner" or name == "PrisonGang" or string.sub(name, 1, 4) == "Rep_" then
+	if name == "CustodyOwner" or name == "PrisonGang" or name == "CORespect" or string.sub(name, 1, 4) == "Rep_" then
 		refreshPanel()
 	end
 end)
@@ -487,7 +493,7 @@ end)
 task.spawn(function()
 	while true do
 		task.wait(0.1)
-		punchButton.Visible = isMobile() and canPunch()
+		punchButton.Visible = canPunch() and (isMobile() or player:GetAttribute("SentenceEnd") ~= nil)
 		if timerEnd and box.Visible then
 			local left = math.max(0, timerEnd - os.clock())
 			timerBar.Size = UDim2.new(left / timerTotal, 0, 0, if forcedChoice then 6 else 4)

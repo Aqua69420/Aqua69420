@@ -164,6 +164,12 @@ local function isInmate(player: Player): boolean
 end
 
 local function isCuffed(hum: Humanoid): boolean
+	-- v226: a housed inmate is never cuffed (a stale flag left by a fallback cell
+	-- placement used to block every punch)
+	local plr = hum.Parent and Players:GetPlayerFromCharacter(hum.Parent)
+	if plr and plr:GetAttribute("CustodyOwner") == "INCARCERATED" then
+		return false
+	end
 	return hum:GetAttribute("PoliceCuffed") == true
 end
 
@@ -272,6 +278,7 @@ type Npc = {
 	gang: string?,
 	dealer: boolean,
 	lastSaid: number,
+	co: boolean?,
 }
 local npcs: { [Model]: Npc } = {}
 
@@ -389,6 +396,49 @@ task.spawn(function()
 	watchFolder(f)
 end)
 
+-- v226: correctional officers can be talked to (their respect is its own score)
+local CO_NAMES = { "Reyes", "Walsh", "Okafor", "Brennan", "Castillo", "Hughes", "Nakamura", "Doyle", "Petrov", "Grant", "Morales", "Fitch" }
+local cos: { [Model]: Npc } = {}
+local function registerCO(model: Instance)
+	if not model:IsA("Model") or cos[model] then
+		return
+	end
+	local hum = model:FindFirstChildOfClass("Humanoid") or model:WaitForChild("Humanoid", 5)
+	local root = model:FindFirstChild("HumanoidRootPart") or model:WaitForChild("HumanoidRootPart", 5)
+	if not hum or not root or not hum:IsA("Humanoid") or not root:IsA("BasePart") then
+		return
+	end
+	local n: Npc = {
+		model = model,
+		hum = hum,
+		root = root :: BasePart,
+		name = "C.O. " .. pick(CO_NAMES),
+		gang = nil,
+		dealer = false,
+		lastSaid = 0,
+		co = true,
+	}
+	cos[model] = n
+	setupPrompt(n)
+	local prompt = (root :: BasePart):FindFirstChild("SocietyTalk") :: ProximityPrompt?
+	if prompt then
+		prompt.ActionText = "Talk to CO"
+		prompt.ObjectText = n.name
+	end
+	model.Destroying:Connect(function()
+		cos[model] = nil
+	end)
+end
+do
+	local CollectionService = game:GetService("CollectionService")
+	for _, m in CollectionService:GetTagged("PrisonCO") do
+		task.spawn(registerCO, m)
+	end
+	CollectionService:GetInstanceAddedSignal("PrisonCO"):Connect(function(m)
+		task.spawn(registerCO, m)
+	end)
+end
+
 local function freeNpcsNear(pos: Vector3, radius: number, filter: ((Npc) -> boolean)?): { Npc }
 	local out = {}
 	for _, n in npcs do
@@ -424,6 +474,23 @@ local function addRep(player: Player, key: string?, delta: number, why: string?)
 	end
 	if why then
 		notice(player, ("%s %s%d respect (%s)"):format(GANGS[key].name, if delta > 0 then "+" else "", delta, why))
+	end
+end
+
+-- v226 CO RESPECT: how the correctional officers see you (-100..100), separate
+-- from gang respect. Earned by talking to COs; high respect gets favors and
+-- second chances, low respect gets searches and trips to solitary.
+local function getCORespect(player: Player): number
+	return tonumber(player:GetAttribute("CORespect")) or 0
+end
+
+local function addCORespect(player: Player, delta: number, why: string?)
+	if delta == 0 then
+		return
+	end
+	player:SetAttribute("CORespect", math.clamp(math.floor(getCORespect(player) + delta + 0.5), -100, 100))
+	if why then
+		notice(player, ("COs %s%d respect (%s)"):format(if delta > 0 then "+" else "", delta, why))
 	end
 end
 
@@ -509,6 +576,9 @@ local function swing(char: Model)
 end
 
 local function hitSound(root: BasePart, blade: boolean)
+	if not blade then
+		return -- v226: fists are silent (the old sword-lunge swoosh is gone); only the shiv slashes
+	end
 	local s = Instance.new("Sound")
 	s.SoundId = if blade then "rbxasset://sounds/swordslash.wav" else "rbxasset://sounds/swordlunge.wav"
 	s.Volume = 0.6
@@ -677,9 +747,19 @@ reportPlayerFight = function(player: Player)
 			local _, r = charInfo(player.Character)
 			if r and coNear(cop, r.Position, 12) then
 				if os.clock() - (lastInmateHit[player] or 0) < 12 then
-					confiscate(player)
-					notice(player, "A CO caught you fighting - you're going to solitary")
-					discipline(player, "fighting")
+					local blind = (tonumber(player:GetAttribute("COBlindEyeUntil")) or 0) > os.time()
+					if blind then
+						notice(player, "The CO looks the other way...")
+					elseif getCORespect(player) >= 50 then
+						-- the COs like you: one warning instead of the hole
+						addCORespect(player, -20, "caught fighting - let off with a warning")
+						notice(player, "CO: \"Break it up. That's your one warning.\"")
+					else
+						confiscate(player)
+						notice(player, "A CO caught you fighting - you're going to solitary")
+						addCORespect(player, -8, "fighting")
+						discipline(player, "fighting")
+					end
 				end
 				break
 			end
@@ -1002,8 +1082,8 @@ local function sendDialogue(player: Player, s: Session, text: string, options: {
 	DialogueRE:FireClient(player, {
 		token = s.token,
 		name = s.npc.name,
-		gang = gang and gang.name or "Unaffiliated",
-		color = gang and gang.color or Color3.fromRGB(150, 150, 150),
+		gang = if gang then gang.name elseif s.npc.co then ("Correctional Officer · your CO respect %d"):format(getCORespect(player)) else "Unaffiliated",
+		color = if gang then gang.color elseif s.npc.co then Color3.fromRGB(70, 130, 220) else Color3.fromRGB(150, 150, 150),
 		text = text,
 		options = options,
 		seconds = if s.scene and s.sceneEnds then math.max(0.5, s.sceneEnds - os.clock())
@@ -1015,6 +1095,15 @@ local function sendDialogue(player: Player, s: Session, text: string, options: {
 end
 
 local function mainOptions(player: Player, n: Npc): { { id: string, text: string } }
+	if n.co then
+		return {
+			{ id = "co_respect", text = "Show respect, officer" },
+			{ id = "co_favor", text = "Ask for a favor" },
+			{ id = "co_snitch", text = "Give up some information" },
+			{ id = "co_mouth", text = "Mouth off" },
+			{ id = "leave", text = "Walk away" },
+		}
+	end
 	local opts = {
 		{ id = "respect", text = "Show respect" },
 		{ id = "joke", text = "Crack a joke" },
@@ -1031,6 +1120,10 @@ local function mainOptions(player: Player, n: Npc): { { id: string, text: string
 end
 
 openDialogue = function(player: Player, n: Npc, kind: string, opener: string?)
+	if n.co and not isInmate(player) then
+		notice(player, "COs only talk to inmates in here")
+		return
+	end
 	if sessions[player] then
 		closeDialogue(player)
 	end
@@ -1057,7 +1150,12 @@ openDialogue = function(player: Player, n: Npc, kind: string, opener: string?)
 	sessions[player] = s
 	local mood = moodFor(player, n)
 	local text = opener or pick(LINES[mood])
-	if mood == "hostile" then
+	if n.co then
+		local r = getCORespect(player)
+		text = if r >= 50 then pick({ "What do you need? Make it quick.", "You've been keeping your nose clean. What's up?" })
+			elseif r <= -40 then pick({ "You again. Watch yourself.", "Give me one reason, inmate. One." })
+			else pick({ "Keep it short, inmate.", "What.", "Talk." })
+	elseif mood == "hostile" then
 		text = pick(LINES.hostile)
 	elseif n.dealer and kind == "talk" then
 		text = pick(LINES.dealer)
@@ -1119,7 +1217,8 @@ end
 -- contraband, cash.
 ---------------------------------------------------------------------------
 local SCENE_TIME = 10
-type Outcome = { say: { string }, rep: number?, rival: number?, fight: number?, co: number?, item: string?, cash: number?, notice: string?, next: string?, crew: boolean? }
+type Outcome = { say: { string }, rep: number?, rival: number?, fight: number?, co: number?, item: string?, cash: number?, notice: string?, next: string?, crew: boolean?,
+	corep: number?, needs: number?, fail: any?, sentence: number?, blindEye: number?, snitch: boolean?, gamble: number?, search: number? }
 local SCENES: { [string]: { line: { string }, options: { { text: string, tone: string, out: Outcome } }, timeout: Outcome } } = {
 	joke = {
 		line = { "Go on then, comedian. Make me laugh.", "You think you're funny? Prove it.", "Everybody's a comedian in here. Your turn." },
@@ -1163,6 +1262,52 @@ local SCENES: { [string]: { line: { string }, options: { { text: string, tone: s
 	},
 }
 
+-- v226: talking to the COs
+SCENES.co_respect = {
+	line = { "Keep it short, inmate.", "You want something?", "Make it quick." },
+	options = {
+		{ text = "\"Just saying thanks for keeping it calm, sir.\"", tone = "calm", out = { say = { "...Noted.", "Appreciate it. Stay out of trouble." }, corep = 6 } },
+		{ text = "Offer to help clean the block", tone = "calm", out = { say = { "Mop's in the closet. Don't make me regret it.", "Good. Show me." }, corep = 10, notice = "You spent the afternoon mopping. The COs noticed." } },
+		{ text = "Ask how his day is going", tone = "bold", out = { say = { "...Long. Thanks for asking.", "Same as yesterday. Move along." }, corep = 4, gamble = 5 } },
+		{ text = "Complain about the food", tone = "risky", out = { say = { "Write a letter to the governor.", "It's prison, not a buffet." }, corep = -4 } },
+	},
+	timeout = { say = { "Nothing? Then move along." }, corep = -2 },
+}
+SCENES.co_favor = {
+	line = { "A favor? Depends who's asking.", "Favors are earned, inmate." },
+	options = {
+		{ text = "Extra phone time", tone = "calm", out = { needs = 15, say = { "Fine. Ten minutes. Don't abuse it." }, corep = 1, notice = "Extra phone time - small wins.",
+			fail = { say = { "Phone's for inmates I trust. Not you." }, corep = -1 } } },
+		{ text = "Put in a good word with the parole board", tone = "bold", out = { needs = 50, say = { "You've earned it. I'll write it up." }, sentence = -120, notice = "A CO vouched for you: 2 minutes off your sentence.",
+			fail = { say = { "A good word? For you? Earn it first." }, corep = -3 } } },
+		{ text = "Ask him to look the other way tonight", tone = "risky", out = { needs = 70, say = { "I didn't see anything. For a while." }, blindEye = 300, corep = -5, notice = "The COs will look the other way for 5 minutes.",
+			fail = { say = { "Are you asking me to break the rules?" }, corep = -12, co = 0.3 } } },
+		{ text = "Slip him $500", tone = "risky", out = { needs = 0, cash = 500, say = { "...I'll see what I can do." }, corep = 12, sentence = -60, notice = "The CO pocketed it. A minute off your sentence.",
+			fail = { say = { "BRIBING AN OFFICER?!" }, corep = -30, co = 0.8 } } },
+	},
+	timeout = { say = { "If you can't ask, don't waste my time." }, corep = -2 },
+}
+SCENES.co_snitch = {
+	line = { "Information? Go on.", "You got something for me?" },
+	options = {
+		{ text = "Tell him who's dealing on the block", tone = "risky", out = { say = { "Good to know. We'll take it from here." }, corep = 12, snitch = true, notice = "If the yard finds out you talked..." } },
+		{ text = "Warn him about a planned fight", tone = "calm", out = { say = { "Appreciate the heads up." }, corep = 8, snitch = true } },
+		{ text = "Make something up", tone = "risky", out = { say = { "...We'll see if that checks out." }, gamble = 12, corep = -6 } },
+		{ text = "Change your mind", tone = "calm", out = { say = { "Then stop wasting my time." }, corep = -3 } },
+	},
+	timeout = { say = { "Thought so. Nothing." }, corep = -2 },
+}
+SCENES.co_mouth = {
+	line = { "What did you just say to me?", "Say that again, inmate." },
+	options = {
+		{ text = "\"Nothing, officer.\"", tone = "calm", out = { say = { "That's what I thought." }, corep = -2 } },
+		{ text = "\"You heard me.\"", tone = "hostile", out = { say = { "Keep talking. See where it gets you." }, corep = -12, co = 0.35 } },
+		{ text = "Spit at his feet", tone = "hostile", out = { say = { "That's it. You're done." }, corep = -25, co = 0.85, search = 1 } },
+		{ text = "Laugh it off", tone = "bold", out = { say = { "Something funny? No? Then move." }, corep = -5, search = 0.3 } },
+	},
+	timeout = { say = { "Silent now? Smart. Barely." }, corep = -6, co = 0.2 },
+}
+
 local function startScene(player: Player, s: Session, id: string)
 	local sc = SCENES[id]
 	if not sc then
@@ -1187,6 +1332,41 @@ resolveScene = function(player: Player, s: Session, out: Outcome, timedOut: bool
 	s.scene = nil
 	s.sceneEnds = nil
 	s.answered = true
+	-- v226: CO favors depend on your standing with the COs
+	if out.needs and getCORespect(player) < out.needs and out.fail then
+		out = out.fail
+	end
+	if out.corep then
+		local d = out.corep
+		if out.gamble and math.random() < 0.5 then
+			d += out.gamble
+		end
+		addCORespect(player, d, if timedOut then "froze up" else nil)
+	end
+	if out.sentence then
+		local adjust = ServerStorage:FindFirstChild("PrisonSentenceAdjust")
+		if adjust then
+			pcall(adjust.Invoke, adjust, player, out.sentence)
+		end
+	end
+	if out.blindEye then
+		player:SetAttribute("COBlindEyeUntil", os.time() + out.blindEye)
+	end
+	if out.snitch then
+		local keys = {}
+		for k in GANGS do
+			table.insert(keys, k)
+		end
+		local g = keys[math.random(1, #keys)]
+		if math.random() < 0.4 then
+			addRep(player, g, -20, "word got out you snitched")
+		end
+	end
+	if out.search and math.random() < out.search then
+		task.delay(1, function()
+			confiscate(player)
+		end)
+	end
 	addRep(player, n.gang, out.rep or 0, if timedOut then "froze up" else "chose")
 	if out.rival and gang then
 		setRep(player, gang.rival, getRep(player, gang.rival) + out.rival)
@@ -1266,6 +1446,8 @@ DialogueRE.OnServerEvent:Connect(function(player, token, choice)
 		say(n.model, if mood == "hostile" then "Yeah, keep walking." else "Aight.", 3)
 		closeDialogue(player)
 	elseif choice == "respect" or choice == "joke" or choice == "trash" then
+		startScene(player, s, choice)
+	elseif n.co and string.sub(choice, 1, 3) == "co_" and SCENES[choice] then
 		startScene(player, s, choice)
 	elseif choice == "trash_legacy" then
 		addRep(player, n.gang, -15, "talked trash")
@@ -1502,4 +1684,55 @@ Players.PlayerRemoving:Connect(function(player)
 	attacking[player] = nil
 end)
 
-print("[PrisonSociety] ready: gangs, contraband, fights")
+-- v226: what the COs think of you plays out on its own. Every so often a CO who is
+-- near an inmate reacts to their standing: low respect means cell searches, shake-
+-- downs and trips to solitary for nothing much; high respect earns small favors.
+-- Respect also drifts slowly back toward zero.
+task.spawn(function()
+	while true do
+		task.wait(45)
+		for _, player in Players:GetPlayers() do
+			if not isInmate(player) then
+				continue
+			end
+			local r = getCORespect(player)
+			if r ~= 0 and math.random() < 0.5 then
+				player:SetAttribute("CORespect", r - math.sign(r))
+			end
+			local _, root = charInfo(player.Character)
+			if not root then
+				continue
+			end
+			local nearCO: Npc? = nil
+			for _, co in cos do
+				if co.model.Parent and co.hum.Health > 0 and (co.root.Position - root.Position).Magnitude < 30 then
+					nearCO = co
+					break
+				end
+			end
+			if not nearCO then
+				continue
+			end
+			if r <= -60 and math.random() < 0.35 then
+				say(nearCO.model, pick({ "You. Against the wall.", "I've had it with you. Let's go.", "Attitude check - solitary." }), 4)
+				notice(player, "The COs have had enough of you - you're going to solitary")
+				confiscate(player)
+				addCORespect(player, 25) -- a stint in the hole resets things a little
+				discipline(player, "disrespecting staff")
+			elseif r <= -30 and math.random() < 0.4 then
+				say(nearCO.model, pick({ "Shakedown. Arms out.", "Random search. Don't move." }), 4)
+				notice(player, "A CO searched you")
+				confiscate(player)
+			elseif r >= 60 and math.random() < 0.25 then
+				say(nearCO.model, pick({ "You're alright, inmate.", "Keep it up and I'll put in a word for you." }), 4)
+				local adjust = ServerStorage:FindFirstChild("PrisonSentenceAdjust")
+				if adjust then
+					pcall(adjust.Invoke, adjust, player, -30)
+				end
+				notice(player, "A CO put in a good word - 30 seconds off your sentence")
+			end
+		end
+	end
+end)
+
+print("[PrisonSociety] ready: gangs, contraband, fights, CO respect")

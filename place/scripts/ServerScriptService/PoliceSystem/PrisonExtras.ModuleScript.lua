@@ -62,14 +62,19 @@ X.START = { Low = 5, Medium = 5, High = 2, Maximum = 1, Supermax = 2, ["Death Ro
 X.START_SOLITARY = { 1, 2 } -- this many of them begin in solitary
 -- intake leans towards the general population
 X.ARREST_WEIGHT = { Low = 1.6, Medium = 1.4, High = 0.8, Maximum = 0.5, Supermax = 0.4, ["Death Row"] = 0.15 } -- share of NPC_COUNT spawned at server start; arrests bring in the rest
+-- v226: NPC terms are at least 30 minutes so the population sticks around; the
+-- inmates already inside when a server starts are part-way through theirs (see
+-- X.seeding) so releases and new arrivals flow from the first minutes.
 X.SENTENCE = {
-	Low = { 240, 480 },
-	Medium = { 420, 900 },
-	High = { 900, 1500 },
-	Maximum = { 1500, 2400 },
-	Supermax = { 2400, 3600 },
-	["Death Row"] = { 900, 1800 },
+	Low = { 1800, 2700 },
+	Medium = { 2100, 3600 },
+	High = { 2700, 4800 },
+	Maximum = { 3600, 6000 },
+	Supermax = { 5400, 9000 },
+	["Death Row"] = { 1800, 3600 },
 }
+X.MIN_SENTENCE = 1800
+X.seeding = false
 X.CHARGES = {
 	Low = { "Petty theft", "Trespassing", "Vandalism", "Disorderly conduct", "Shoplifting", "Driving without a license",
 		"Public intoxication", "Loitering", "Jaywalking", "Illegal gambling", "Counterfeit casino chips", "Noise violation" },
@@ -500,7 +505,7 @@ local function sentenceFor(class: string): (number, string, string)
 	if class ~= "Death Row" then
 		secs = math.floor(secs * (1 - quality * (0.3 + math.random() * 0.5)))
 	end
-	return math.max(120, secs), table.concat(list, ", "), counsel
+	return math.max(X.MIN_SENTENCE, secs), table.concat(list, ", "), counsel
 end
 
 -- take over an NPC that is already in the prison (spawned here or arrived via intake)
@@ -510,6 +515,10 @@ function X.adopt(npc: Model, hum: Humanoid, root: BasePart, class: string): bool
 		return false
 	end
 	local secs, charges, counsel = sentenceFor(class)
+	if X.seeding then
+		-- already inside when the server started: somewhere in the middle of the term
+		secs = math.max(60, math.floor(secs * (0.02 + (math.random() ^ 1.3) * 0.98)))
+	end
 	local rec = {
 		model = npc,
 		hum = hum,
@@ -921,6 +930,7 @@ function X.startPopulation()
 		-- interleave the classes so the first arrivals are already a mix
 		local left = table.clone(X.START)
 		local any = true
+		X.seeding = true
 		while any do
 			any = false
 			for _, class in X.CLASSES do
@@ -932,6 +942,7 @@ function X.startPopulation()
 				end
 			end
 		end
+		X.seeding = false
 		-- one or two start the day in solitary
 		task.delay(20, function()
 			local pool = {}
@@ -1119,7 +1130,8 @@ function X.returnPlayer(plr: Player, class: string, want: string)
 		end
 		strike = { n = (strike and strike.n or 0) + 1, at = os.clock() }
 		X.strikes[plr] = strike
-		if strike.n >= 3 then
+		local respect = tonumber(plr:GetAttribute("CORespect")) or 0
+		if strike.n >= (if respect >= 40 then 4 elseif respect <= -30 then 2 else 3) then
 			notice(plr, "You keep wandering off - a CO is taking you to solitary")
 			X.strikes[plr] = nil
 			task.spawn(X.solitaryPlayer, plr, "out of place, ignoring orders")
@@ -1252,7 +1264,10 @@ function X.startSweep()
 					local _, _, root = C.Util.charInfo(plr)
 					if root and not X.inPlace(root.Position, class, want, C.PL.playerRoom(plr)) then
 						X.outSince[plr] = X.outSince[plr] or now
-						if now - X.outSince[plr] > X.SWEEP_GRACE_PLAYER then
+						-- v226: COs who respect you give you longer; ones who don't, less
+						local r = tonumber(plr:GetAttribute("CORespect")) or 0
+						local grace = X.SWEEP_GRACE_PLAYER + (if r >= 40 then 20 elseif r <= -30 then -8 else 0)
+						if now - X.outSince[plr] > grace then
 							print(("[PrisonExtras] CO SWEEP player %s out of place (want %s)"):format(plr.Name, want))
 							task.spawn(X.returnPlayer, plr, class, want)
 						end
@@ -2429,6 +2444,22 @@ function X.init(ctx: any)
 		return X.discipline(target, reason)
 	end
 	discipline.Parent = ServerStorage
+	-- v226: a CO's good word (or a bad report) moves an inmate's release time
+	local adjust = ServerStorage:FindFirstChild("PrisonSentenceAdjust") or Instance.new("BindableFunction")
+	adjust.Name = "PrisonSentenceAdjust"
+	adjust.OnInvoke = function(target, delta)
+		if typeof(target) ~= "Instance" or not target:IsA("Player") or type(delta) ~= "number" then
+			return false
+		end
+		local done = C.sentenceEnd[target]
+		if not done then
+			return false
+		end
+		C.sentenceEnd[target] = math.max(os.time() + 15, done + math.floor(delta))
+		target:SetAttribute("SentenceEnd", C.sentenceEnd[target])
+		return true
+	end
+	adjust.Parent = ServerStorage
 	Players.PlayerRemoving:Connect(function(player)
 		local visit = X.visits[player]
 		if visit then

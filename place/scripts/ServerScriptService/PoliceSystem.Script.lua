@@ -9329,7 +9329,13 @@ function PrisonFlow.deliver(player: Player, role: string, room: any, owner: stri
 		attempts+=1
 		if PrisonFlow.transfer(player,role,room,owner) then return true end
 		if not (processingAlive(player) and player.Character==character) then break end
-		if attempts>=PrisonFlow.DELIVER_MAX_ATTEMPTS or os.clock()-started>PrisonFlow.DELIVER_TIMEOUT then
+		-- v226: a cell in an area the walking map can't reach (upper floors whose
+		-- stairs aren't mapped) will never succeed on a retry - place them now
+		-- instead of three failed walks and a minute of waiting
+		local failure=tostring(player:GetAttribute("EscortFailure") or "")
+		local unreachable=string.find(failure,"no connected route",1,true)~=nil or string.find(failure,"vertical difference",1,true)~=nil
+		if attempts>=PrisonFlow.DELIVER_MAX_ATTEMPTS or os.clock()-started>PrisonFlow.DELIVER_TIMEOUT or unreachable then
+			if unreachable then warn("[CustodyDiag] CELL UNREACHABLE on the walking map ("..tostring(room.name).."): placing "..player.Name.." directly") end
 			warn(("[CustodyDiag] CUFF WALK EXHAUSTED %s role=%s attempts=%d elapsed=%.0fs; using destination fallback"):format(player.Name,role,attempts,os.clock()-started))
 			if PrisonFlow.jobs[player] then task.wait(0.5) end
 			if PrisonFlow.fallbackDeliver(player,role,room,owner) then return true end
@@ -11714,7 +11720,7 @@ local function spawnPrisonPatrol(index:number,start:any,points:{any})
 	local cop=nameEscort(escortCop(start.pos,Vector3.new(0,0,-1)),"CORRECTIONAL OFFICER")
 	if not cop or not cop.model then return end
 	cop.model.Name="PrisonGuard_"..tostring(index)
-	cop.model:SetAttribute("PrisonGuardPrototype",true)
+	cop.model:SetAttribute("PrisonGuardPrototype",true);game:GetService("CollectionService"):AddTag(cop.model,"PrisonCO")
 	cop.model:SetAttribute("GuardHomeZone",start.zone.Name)
 	cop.cfg.WalkSpeed=math.max(8,math.min(cop.cfg.WalkSpeed,11))
 	prisonGuardPatrols[cop]=true
@@ -11770,7 +11776,7 @@ local function startPrisonGuardPrototype()
 							local cop=nameEscort(escortCop(from,Vector3.new(0,0,-1)),"CORRECTIONAL OFFICER")
 							if cop and cop.model then
 								cop.model.Name="PrisonGuard_"..zoneKey
-								cop.model:SetAttribute("PrisonGuardPrototype",true)
+								cop.model:SetAttribute("PrisonGuardPrototype",true);game:GetService("CollectionService"):AddTag(cop.model,"PrisonCO")
 								cop.model:SetAttribute("PatrolZone",zoneKey)
 								cop.cfg.WalkSpeed=math.max(8,math.min(cop.cfg.WalkSpeed,11))
 								prisonGuardPatrols[cop]=true
@@ -11917,7 +11923,7 @@ function PL.startStationedGuards()
 				local cop=nameEscort(escortCop(post,Vector3.new(0,0,-1)),"CORRECTIONAL OFFICER")
 				if cop and cop.model then
 					cop.model.Name="PrisonPost_"..area
-					cop.model:SetAttribute("PrisonGuardPost",area)
+					cop.model:SetAttribute("PrisonGuardPost",area);game:GetService("CollectionService"):AddTag(cop.model,"PrisonCO")
 					prisonGuardPatrols[cop]=true
 					PL.guards[cop]=area
 					pcall(function() cop:setGunOut(true) end)

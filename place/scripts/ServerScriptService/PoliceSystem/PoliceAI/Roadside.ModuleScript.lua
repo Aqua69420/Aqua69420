@@ -680,7 +680,7 @@ end
 function Roadside.watchStrip(op: any)
 	local inc = op.inc
 	local dir, right = op.site.dir, op.site.right
-	op.conn = RunService.Heartbeat:Connect(function()
+	op.conn = RunService.Heartbeat:Connect(function(dt)
 		if op.done or op.state ~= "deployed" then
 			if op.conn then
 				op.conn:Disconnect()
@@ -700,6 +700,30 @@ function Roadside.watchStrip(op: any)
 			return
 		end
 		local center = bcf.Position
+		-- v226: as the suspect closes in, the officer drags the strip further out
+		-- into the car's path (it only ever grows from the curb, up to 30 studs)
+		do
+			local toSite = (center - op.site.pos):Dot(dir)
+			local closing = (seat.AssemblyLinearVelocity):Dot(dir)
+			if math.abs(toSite) < 140 and toSite * closing < 0 then
+				local lat = (center - op.site.pos):Dot(right)
+				local want = math.clamp(math.min(op.inner, lat - size.X / 2 - 1.5), op.outer - 30, op.outer - 0.6)
+				local cur = op.spanB or op.inner
+				if math.abs(want - cur) > 0.2 then
+					local step = math.clamp(want - cur, -45 * dt, 45 * dt)
+					spanStrip(op, op.outer, cur + step)
+					if not op.dragged then
+						op.dragged = true
+						Log.event("SPIKE STRIP DRAGGED", "#%d officer drags the strip toward the suspect", inc.id)
+					end
+					op.redressAt = os.clock() + 0.25
+				elseif op.redressAt and os.clock() > op.redressAt then
+					op.redressAt = nil
+					clearDressing(op)
+					dressStrip(op)
+				end
+			end
+		end
 		local long = (center - op.stripCenter):Dot(dir)
 		local prev = op.prevLong
 		op.prevLong = long
