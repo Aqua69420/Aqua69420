@@ -25,7 +25,7 @@ end
 
 local function tactical(cop: any): boolean
 	local u = cop.unitType
-	return u == "Shotgunner" or u == "SWAT" or u == "Riot" or u == "Heavy"
+	return u == "Shotgunner" or u == "SWAT" or u == "Riot" or u == "Heavy" or u == "SEAL" or u == "Juggernaut" or u == "Army"
 end
 
 ---------------------------------------------------------------------------

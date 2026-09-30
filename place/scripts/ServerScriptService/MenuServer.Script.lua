@@ -41,6 +41,30 @@ end
 local teamInfo = readJson("TeamInfo")
 local admins = readJson("AdminInfo")
 
+-- v212: Chief of Police - only aquagaming22 can join (from the Teams menu).
+-- Carries the command console (PoliceSystem "ChiefConsole").
+local CHIEF = "Chief of Police"
+local hasChief = false
+for _, info in ipairs(teamInfo) do
+	if info[1] == CHIEF then
+		hasChief = true
+	end
+end
+if not hasChief then
+	table.insert(teamInfo, {
+		CHIEF, "Really red", { "aquagaming22" }, 255,
+		{ "Radio", "Body Armour", "Arrest", "Info Tool", "DoorOpener", "Tazer", "TAR-21", "M4A1", "M9", "Spike Strip" },
+		{ "Police Car", "Police SUV" },
+	})
+	local value = ReplicatedStorage:FindFirstChild("TeamInfo")
+	if value then
+		local ok, encoded = pcall(HttpService.JSONEncode, HttpService, teamInfo)
+		if ok then
+			value.Value = encoded
+		end
+	end
+end
+
 -- Build the Team objects
 local teamsByColor = {}
 for _, info in ipairs(teamInfo) do
@@ -122,7 +146,8 @@ local function setTeam(player, color, moveCharacter)
 		topBar:FireClient(player)
 	end
 	if moveCharacter and player.Character then
-		local spawnPart = findSpawn(entry.team.TeamColor)
+		-- the Chief works out of the LVPD station
+		local spawnPart = findSpawn(entry.team.TeamColor) or (entry.info[1] == CHIEF and findSpawn(BrickColor.new("Sand blue")) or nil)
 		if spawnPart then
 			player.Character:PivotTo(spawnPart.CFrame + Vector3.new(0, 4, 0))
 		end

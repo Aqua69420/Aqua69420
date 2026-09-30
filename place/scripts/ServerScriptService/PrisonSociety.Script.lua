@@ -545,6 +545,7 @@ local function targetInFront(char: Model, root: BasePart, range: number): Model?
 end
 
 local attack -- forward
+local reportPlayerFight -- forward (v212)
 
 -- a player landed a hit on `model`
 local function onPlayerHit(player: Player, model: Model, damage: number)
@@ -554,6 +555,10 @@ local function onPlayerHit(player: Player, model: Model, damage: number)
 	end
 	hum:TakeDamage(damage)
 	local n = npcs[model]
+	local victim = Players:GetPlayerFromCharacter(model)
+	if isInmate(player) and (n or (victim and isInmate(victim))) then
+		reportPlayerFight(player)
+	end
 	if not n then
 		return
 	end
@@ -643,6 +648,46 @@ local function confiscate(player: Player)
 	end
 end
 
+-- v212: fighters a CO catches go to solitary (PoliceSystem's PrisonExtras)
+local lastInmateHit: { [Player]: number } = {}
+local function discipline(target: Instance, why: string)
+	local fn = ServerStorage:FindFirstChild("PrisonDiscipline")
+	if fn and fn:IsA("BindableFunction") then
+		task.spawn(function()
+			pcall(fn.Invoke, fn, target, why)
+		end)
+	end
+end
+
+-- a player threw punches at an inmate: the nearest CO comes, and if the
+-- player is still fighting when they arrive, it's solitary
+local watchingFight: { [Player]: boolean } = {}
+reportPlayerFight = function(player: Player)
+	lastInmateHit[player] = os.clock()
+	if watchingFight[player] or not isInmate(player) then
+		return
+	end
+	watchingFight[player] = true
+	task.spawn(function()
+		local _, root = charInfo(player.Character)
+		local cop = root and callCO(root.Position)
+		local t0 = os.clock()
+		while cop and os.clock() - t0 < 22 and player.Parent do
+			local _, r = charInfo(player.Character)
+			if r and coNear(cop, r.Position, 12) then
+				if os.clock() - (lastInmateHit[player] or 0) < 12 then
+					confiscate(player)
+					notice(player, "A CO caught you fighting - you're going to solitary")
+					discipline(player, "fighting")
+				end
+				break
+			end
+			task.wait(0.5)
+		end
+		watchingFight[player] = nil
+	end)
+end
+
 ---------------------------------------------------------------------------
 -- an NPC goes after a player
 ---------------------------------------------------------------------------
@@ -695,6 +740,11 @@ attack = function(n: Npc, player: Player, duration: number)
 			say(n.model, pick(LINES.brokenUp), 3)
 			confiscate(player)
 			notice(player, "Correctional officers broke up the fight")
+			-- the aggressor goes to solitary; so does the player if they threw punches
+			discipline(n.model, "fighting")
+			if os.clock() - (lastInmateHit[player] or 0) < 25 then
+				discipline(player, "fighting")
+			end
 			break
 		end
 		task.wait(0.3)
@@ -726,6 +776,7 @@ local function npcFight(a: Npc, b: Npc)
 		cop = callCO((a.root.Position + b.root.Position) / 2)
 	end)
 	local deadline = os.clock() + 30
+	local brokenUp = false
 	local nextHit = { [a] = 0, [b] = 0.5 }
 	local function alive(n: Npc)
 		return n.model.Parent ~= nil and n.hum.Health > 0 and not n.model:GetAttribute("InCell")
@@ -760,6 +811,7 @@ local function npcFight(a: Npc, b: Npc)
 					say(b.model, pick(LINES.brokenUp), 3)
 				end
 			end)
+			brokenUp = true
 			break
 		end
 		task.wait(0.3)
@@ -767,6 +819,9 @@ local function npcFight(a: Npc, b: Npc)
 	for _, n in { a, b } do
 		n.hum:MoveTo(n.root.Position)
 		releaseNpc(n)
+		if brokenUp then
+			discipline(n.model, "fighting")
+		end
 		task.delay(25, function()
 			if n.hum.Parent and n.hum.Health > 0 then
 				n.hum.Health = n.hum.MaxHealth
@@ -873,6 +928,24 @@ local function givePills(player: Player)
 		tool:Destroy()
 	end)
 	tool.Parent = player:FindFirstChildOfClass("Backpack")
+end
+
+-- v212: items smuggled in on a contact visit (PrisonExtras)
+do
+	local fn = ServerStorage:FindFirstChild("PrisonContraband") or Instance.new("BindableFunction")
+	fn.Name = "PrisonContraband"
+	fn.OnInvoke = function(player: Player, item: string)
+		if typeof(player) ~= "Instance" or not player:IsA("Player") then
+			return false
+		end
+		if item == "Shiv" then
+			giveShiv(player)
+		else
+			givePills(player)
+		end
+		return true
+	end
+	fn.Parent = ServerStorage
 end
 
 -- leaving prison: contraband and the bandana stay behind
@@ -1137,7 +1210,10 @@ task.spawn(function()
 			if free(n) and now - n.lastSaid > 12 and math.random() < 0.08 then
 				n.lastSaid = now
 				local line
-				if n.dealer and math.random() < 0.4 then
+				local charges = n.model:GetAttribute("Charges")
+				if type(charges) == "string" and math.random() < 0.15 then
+					line = pick({ "They got me on " .. string.lower(charges) .. ". Can you believe that?", "In for " .. string.lower(charges) .. ". Framed, obviously." })
+				elseif n.dealer and math.random() < 0.4 then
 					line = pick(LINES.dealer)
 				elseif n.gang and math.random() < 0.35 then
 					line = pick(LINES.gang[n.gang])

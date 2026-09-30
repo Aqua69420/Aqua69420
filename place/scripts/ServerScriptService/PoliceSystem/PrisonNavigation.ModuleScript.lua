@@ -403,7 +403,22 @@ end
 
 local function areaOf(name: string): string
 	local n = string.lower(name)
-	if string.find(n, "tower", 1, true) then
+	-- v212: the expanded prison's shared spaces (matched on the zone's own name)
+	if string.find(n, "^indoor_yard") then
+		return "INDOOR_YARD"
+	elseif string.find(n, "^yard") then
+		return "YARD"
+	elseif string.find(n, "^cafeteria") then
+		return "CAFETERIA"
+	elseif string.find(n, "^solitary_block") then
+		return "SOLITARY"
+	elseif string.find(n, "^supermax_cellblock") then
+		return "SUPERMAX"
+	elseif string.find(n, "^longterm_holding_cellblock") or string.find(n, "^overflow_holding_cellblock") then
+		return "HOLDING"
+	elseif string.find(n, "^walkway area outside of death row") then
+		return "DEATH_ROW"
+	elseif string.find(n, "tower", 1, true) then
 		return "TOWER"
 	elseif string.find(n, "medium", 1, true) then
 		return "MEDIUM_SECURITY"
@@ -517,9 +532,22 @@ function Nav.refreshCellPairs(map: Instance)
         end
         if passage then continue end
         local explicit=zone:GetAttribute("Category")
-        local category=if explicit=="IntakeCell" or explicit=="BookingCell" then explicit
+        local category=if type(explicit)=="string" and explicit~="" then explicit
             elseif string.find(name,"intake",1,true) and string.find(name,"cell",1,true) then "IntakeCell"
             elseif string.find(name,"booking",1,true) and string.find(name,"cell",1,true) then "BookingCell" else nil
+        -- v212: the expanded prison (solitary, supermax, maximum, holding,
+        -- execution and visiting rooms)
+        if not category then
+            if string.find(name,"solitary",1,true) and string.find(name,"cell",1,true) then category="Solitary"
+            elseif string.find(name,"supermax",1,true) and string.find(name,"cell",1,true) then category="Supermax"
+            elseif string.find(name,"maximum",1,true) and string.find(name,"cell",1,true) then category="MaximumSecurity"
+            elseif (string.find(name,"longterm",1,true) or string.find(name,"long_term",1,true)) and string.find(name,"cell",1,true) then category="LongTermHolding"
+            elseif string.find(name,"overflow",1,true) and string.find(name,"cell",1,true) then category="OverflowHolding"
+            elseif string.find(name,"execution",1,true) then category="ExecutionRoom"
+            elseif string.find(name,"contact visit",1,true) then category="ContactVisit"
+            elseif string.find(name,"visiting_room",1,true) then category="VisitPrisoner"
+            elseif string.find(name,"visitng_room",1,true) or string.find(name,"visitor side",1,true) then category="VisitVisitor" end
+        end
         if not category and string.find(name,"cell",1,true) then
             if string.find(name,"death",1,true) then category="DeathRow"
             elseif string.find(name,"high",1,true) then category="HighSecurity"
@@ -535,15 +563,56 @@ function Nav.refreshCellPairs(map: Instance)
             local obj=target(marker);local dp=Nav.doorFloor(marker)
             local lowAccess=category=="LowSecurity" and string.find(string.lower(marker.Name),"low",1,true)~=nil
             local floorMatches=dp and math.abs(dp.Y-center.Y)<(if category=="LowSecurity" then 18 else 3)
-            if obj and (not used[obj] or category=="LowSecurity" or category=="HighSecurity" or category=="DeathRow") and floorMatches and (category~="LowSecurity" or lowAccess) then
+            -- the contact visit room has a visitor door too; inmates use the other one
+            local visitorDoor=category=="ContactVisit" and (string.find(string.lower(marker.Name),"vistiro",1,true) or string.find(string.lower(marker.Name),"visitor",1,true))
+            if obj and not visitorDoor and (not used[obj] or category=="LowSecurity" or category=="HighSecurity" or category=="DeathRow") and floorMatches and (category~="LowSecurity" or lowAccess) then
                 local edge=edgeDist(dp.X,dp.Z,poly)
                 local distance=flat(dp-center).Magnitude
                 local acceptable=if category=="LowSecurity" then edge<90 and distance<maxDoorRange else edge<2 and distance<maxDoorRange
                 if acceptable and distance<best then chosen=marker;best=distance end
             end
         end
+        -- v212: a cell whose own door isn't mapped (Supermax_Cell_10) uses the
+        -- nearest door of its kind on the same floor
+        if not chosen then
+            local family=if category=="Supermax" then "super max" elseif category=="Solitary" then "solitary" else nil
+            for _,marker in (if family then doors:GetChildren() else {}) do
+                local dp=Nav.doorFloor(marker)
+                if target(marker) and dp and math.abs(dp.Y-center.Y)<3 and string.find(string.lower(marker.Name),family,1,true) then
+                    local distance=flat(dp-center).Magnitude
+                    if distance<24 and distance<best then chosen=marker;best=distance end
+                end
+            end
+        end
         if chosen then register(zone,category,chosen,center) end
     end
+    -- v212: holding cells take a group; solitary / execution / visits one each
+    for _,pair in Nav.CellPairs do
+        if pair.category=="LongTermHolding" or pair.category=="OverflowHolding" then pair.capacity=math.max(pair.capacity or 1,4) end
+    end
+    -- v212: supermax cells sit behind a second (outer) barred door
+    for name,pair in Nav.CellPairs do
+        if pair.category~="Supermax" then continue end
+        local inner=doors:FindFirstChild(pair.door)
+        local ip=inner and Nav.doorFloor(inner)
+        if not ip then continue end
+        if string.find(string.lower(pair.door),"outer",1,true) then continue end
+        local bestOuter,bestD=nil,14
+        for _,marker in doors:GetChildren() do
+            local dp=Nav.doorFloor(marker)
+            if dp and string.find(string.lower(marker.Name),"outer",1,true) and math.abs(dp.Y-ip.Y)<3 then
+                local d=flat(dp-ip).Magnitude
+                if d<bestD then bestOuter,bestD=marker,d end
+            end
+        end
+        if bestOuter then pair.outer=bestOuter.Name end
+    end
+    local counts={}
+    for _,pair in Nav.CellPairs do counts[pair.category]=(counts[pair.category] or 0)+1 end
+    local parts={}
+    for category,n in counts do table.insert(parts,category.."="..n) end
+    table.sort(parts)
+    print("[PrisonNav] cell pairs: "..table.concat(parts," "))
 end
 
 local function importZones(map: Instance)
@@ -1104,7 +1173,13 @@ local function buildDestinations()
 	addDest("VISITING", byKey.VISITING_ROOM)
 	addDest("RELEASE", byKey.RELEASE_HALLWAU)
 	addDest("DRESS_OUT", byKey.DRESS_OUT_ZONE)
-	addDest("YARD", byArea.COMMON)
+	addDest("YARD", byArea.YARD or byArea.COMMON)
+	addDest("INDOOR_YARD", byArea.INDOOR_YARD or byArea.YARD or byArea.COMMON)
+	addDest("CAFETERIA", byArea.CAFETERIA or byArea.COMMON)
+	addDest("SOLITARY", byArea.SOLITARY)
+	addDest("SUPERMAX", byArea.SUPERMAX)
+	addDest("HOLDING", byArea.HOLDING)
+	addDest("DEATH_ROW", byArea.DEATH_ROW)
 	for name, pos in extraDest do
 		local id = Nav.nearestNode(pos, nil, true)
 		if id then

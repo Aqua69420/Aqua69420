@@ -807,10 +807,12 @@ local function togglePrisonMapper()
     if prisonPanel.Visible then prisonStatus.Text="Choose AREA, CELL, DOOR, MARKER, or WALK PATH." end
 end
 setMapperOverlayVisible(false)
+-- v212: no on-screen mapper button; F7 opens it for the developer only
+prisonToggle.Visible=false
 prisonToggle.MouseButton1Click:Connect(togglePrisonMapper)
 UserInputService.InputBegan:Connect(function(input,processed)
     if processed then return end
-    if input.KeyCode==Enum.KeyCode.F7 or input.KeyCode==Enum.KeyCode.P then togglePrisonMapper() end
+    if input.KeyCode==Enum.KeyCode.F7 and player.Name=="aquagaming22" then togglePrisonMapper() end
 end)
 
 mapper.OnClientEvent:Connect(function(action,a,b,c,d,e)

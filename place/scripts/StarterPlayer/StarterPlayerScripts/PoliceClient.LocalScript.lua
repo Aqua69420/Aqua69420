@@ -123,7 +123,7 @@ local panel = make("Frame", {
 	BackgroundTransparency = 1,
 	AnchorPoint = if topRight then Vector2.new(1, 0) else Vector2.new(0.5, 0),
 	Position = if topRight then UDim2.new(1, -12, 0, 4) else UDim2.new(0.5, 0, 0, 4),
-	Size = UDim2.fromOffset(230, 86),
+	Size = UDim2.fromOffset(250, 86),
 	Visible = false,
 }, gui)
 
@@ -141,7 +141,7 @@ make("UIListLayout", {
 }, starRow)
 
 local stars = {}
-for i = 1, 5 do
+for i = 1, 6 do -- v212: six stars (the sixth is the military response)
 	local holder = make("Frame", {
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(34, 34),
@@ -318,7 +318,7 @@ end
 local function refreshStars()
 	for i, st in stars do
 		local on = i <= hud.s
-		st.label.TextColor3 = if on then GOLD else Color3.fromRGB(45, 45, 45)
+		st.label.TextColor3 = if on then (if i == 6 then Color3.fromRGB(235, 40, 40) else GOLD) else Color3.fromRGB(45, 45, 45)
 		st.label.TextTransparency = if on then 0 else 0.35
 		st.stroke.Transparency = if on then 0 else 0.4
 	end

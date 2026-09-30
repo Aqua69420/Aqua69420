@@ -185,3 +185,35 @@ end
 UserInputService.LastInputTypeChanged:Connect(refreshMode)
 
 apply(false)
+
+-- v212: from the moment you're arrested until you're released there is no
+-- cell phone (arrest, transport, intake, booking, prison).
+local function inCustody(): boolean
+	if player:GetAttribute("BookingState") ~= nil or player:GetAttribute("CustodyPhase") ~= nil
+		or player:GetAttribute("SentenceEnd") ~= nil or player:GetAttribute("CustodyOwner") ~= nil then
+		return true
+	end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	return hum ~= nil and hum:GetAttribute("PoliceCuffed") == true
+end
+local function refreshCustody()
+	gui.Enabled = not inCustody()
+end
+player.AttributeChanged:Connect(function(name)
+	if name == "BookingState" or name == "CustodyPhase" or name == "SentenceEnd" or name == "CustodyOwner" then
+		refreshCustody()
+	end
+end)
+local function watchCharacter(char: Model)
+	local hum = char:WaitForChild("Humanoid", 10)
+	if hum then
+		hum:GetAttributeChangedSignal("PoliceCuffed"):Connect(refreshCustody)
+	end
+	refreshCustody()
+end
+if player.Character then
+	task.spawn(watchCharacter, player.Character)
+end
+player.CharacterAdded:Connect(watchCharacter)
+refreshCustody()
