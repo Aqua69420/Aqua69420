@@ -1,5 +1,5 @@
 --!nocheck
--- Facility Mapper (Studio plugin)  v1
+-- Facility Mapper (Studio plugin)  v2
 -- Maps the prison, Police HQ, City Jail, law offices and city markers in the
 -- same format the game's navigation already reads (the format of the original
 -- prison map):
@@ -32,15 +32,19 @@ local MAPPER_VERSION = 2
 ---------------------------------------------------------------------------
 -- definitions
 ---------------------------------------------------------------------------
-local FACILITY_TYPES = { "Prison", "PoliceHQ", "CityJail", "LawOffice", "City" }
-local DEFAULT_MODEL = { Prison = "CorrectionalFacility", PoliceHQ = "PoliceHQ", CityJail = "CityJail" }
+local FACILITY_TYPES = { "Prison", "PoliceHQ", "CityJail", "LawOffice", "Bank", "City" }
+local DEFAULT_MODEL = { Prison = "CorrectionalFacility", PoliceHQ = "PoliceHQ", CityJail = "CityJail", Bank = "Bank" }
 
 -- zone types: room = needs a door and is registered as a room/cell category;
 -- navIgnore = not a walkable nav area (sniper zones and the like)
 local ZONE_INFO = {
 	Hallway = {}, Lobby = {}, Walkway = {}, Room = {}, Stairs = {}, Office = {}, Outside = {},
 	Yard = {}, DayRoom = {}, BookingArea = {}, SallyPort = {}, ReleaseArea = {}, Garage = {},
-	Evidence = {}, LockerRoom = {}, ConferenceRoom = {},
+	Evidence = {}, LockerRoom = {}, ConferenceRoom = {}, BankLobby = {}, Impound = {},
+	-- street gang turf (city)
+	TerritoryEK = {}, TerritoryIS = {}, TerritoryDS = {}, TerritoryTL = {},
+	-- bank safe deposit vault
+	DepositVault = { room = true },
 	-- rooms (need a mapped door)
 	Interrogation = { room = true }, LegalVisit = { room = true }, Courtroom = { room = true },
 	MunicipalCourt = { room = true }, CourtHolding = { room = true }, HoldingCell = { room = true },
@@ -70,20 +74,27 @@ local ZONE_TYPES = {
 		"Lobby", "Hallway", "Stairs", "Office", "Room",
 	},
 	LawOffice = { "Lobby", "Office", "ConferenceRoom", "Hallway", "Stairs", "Room" },
-	City = { "Outside", "Room" },
+	Bank = { "DepositVault", "BankLobby", "Hallway", "Office", "Room" },
+	City = { "TerritoryEK", "TerritoryIS", "TerritoryDS", "TerritoryTL", "Impound", "Outside", "Room" },
 }
 local POINT_TYPES = {
-	Prison = { "PrisonPhone", "SniperPost", "Spotlight", "BailiffSpot", "CourtCam", "OfficerPost", "TurnInPoint" },
-	PoliceHQ = { "BookingDesk", "TurnInPoint", "VehicleDropoff", "FrontDesk", "BailiffSpot", "CourtCam", "DetectivePost", "OfficerPost", "HoldingPhone" },
+	Prison = { "PrisonPhone", "SniperPost", "Spotlight", "BailiffSpot", "CourtCam", "OfficerPost", "TurnInPoint", "DrugTestStation", "CommissaryWindow" },
+	PoliceHQ = { "BookingDesk", "TurnInPoint", "VehicleDropoff", "FrontDesk", "BailiffSpot", "CourtCam", "DetectivePost", "OfficerPost", "HoldingPhone", "MDTTerminal", "EvidenceLocker", "MugshotSpot", "PressPodium", "PoliceSpawn" },
 	CityJail = { "BookingDesk", "VehicleDropoff", "ReleasePoint", "JailPhone", "OfficerPost", "TurnInPoint" },
 	LawOffice = { "Reception", "WaitingArea" },
-	City = { "NewsStation", "CourthouseSteps", "BailBondsOffice", "PlateMakerSpot", "ChopShop", "ShadyDealer", "Safehouse" },
+	Bank = { "DepositTerminal", "BoxWall", "TellerDesk", "BankerDesk" },
+	City = {
+		"NewsStation", "CourthouseSteps", "BailBondsOffice", "BullionDealer", "PawnShop", "UndergroundMetalBuyer",
+		"PlateMakerSpot", "ChopShop", "ShadyDealer", "FixerSpot", "PrivateVaultSpot", "StashSpot", "Safehouse",
+		"Bar", "LiquorStore", "DrugCorner", "Hospital", "ImpoundLot", "DealershipDesk",
+	},
 }
 -- points that face a direction (placed facing where the camera looks)
 local AIMED_POINT = { SniperPost = true, Spotlight = true, CourtCam = true }
 local SEAT_ROLES = {
 	"JudgeSeat", "DefendantSeat", "DefenseSeat", "ProsecutorSeat", "WitnessSeat", "JurorSeat", "GallerySeat",
 	"SuspectSeat", "DetectiveSeat", "InmateVisitSeat", "LawyerVisitSeat", "LawyerSeat", "ClientSeat", "ReceptionSeat",
+	"ConferenceSeat", "BarSeat",
 }
 local DOOR_TYPES = { "Normal", "CellDoor", "Secure", "Gate", "Exit", "SallyPort", "Release" }
 local ACCESS = { "Staff", "Police", "Public", "Secure" }
@@ -133,12 +144,35 @@ local CHECKLIST = {
 		{ kind = "point", type = "Reception", min = 1 },
 		{ kind = "seat", type = "LawyerSeat", min = 1 }, { kind = "seat", type = "ClientSeat", min = 1 },
 	},
+	Bank = {
+		{ kind = "zone", type = "DepositVault", min = 1 },
+		{ kind = "point", type = "DepositTerminal", min = 1 },
+		{ kind = "point", type = "BoxWall", min = 1 },
+		{ kind = "point", type = "TellerDesk", min = 0, optional = true },
+	},
 	City = {
 		{ kind = "point", type = "NewsStation", min = 1 },
+		{ kind = "point", type = "BullionDealer", min = 1 },
+		{ kind = "point", type = "StashSpot", min = 3 },
+		{ kind = "point", type = "DrugCorner", min = 3 },
+		{ kind = "point", type = "Bar", min = 1 },
+		{ kind = "point", type = "Hospital", min = 1 },
+		{ kind = "point", type = "ImpoundLot", min = 1 },
+		{ kind = "point", type = "PrivateVaultSpot", min = 2 },
+		{ kind = "point", type = "FixerSpot", min = 2 },
+		{ kind = "point", type = "PawnShop", min = 0, optional = true },
+		{ kind = "point", type = "UndergroundMetalBuyer", min = 0, optional = true },
+		{ kind = "point", type = "LiquorStore", min = 0, optional = true },
+		{ kind = "point", type = "Safehouse", min = 0, optional = true },
+		{ kind = "zone", type = "TerritoryEK", min = 0, optional = true },
+		{ kind = "zone", type = "TerritoryIS", min = 0, optional = true },
+		{ kind = "zone", type = "TerritoryDS", min = 0, optional = true },
+		{ kind = "zone", type = "TerritoryTL", min = 0, optional = true },
 		{ kind = "point", type = "CourthouseSteps", min = 0, optional = true },
-		{ kind = "point", type = "PlateMakerSpot", min = 3, optional = true },
-		{ kind = "point", type = "ChopShop", min = 0, optional = true },
-		{ kind = "point", type = "BailBondsOffice", min = 0, optional = true },
+		{ kind = "point", type = "PlateMakerSpot", min = 3 },
+		{ kind = "point", type = "ShadyDealer", min = 1 },
+		{ kind = "point", type = "ChopShop", min = 1 },
+		{ kind = "point", type = "BailBondsOffice", min = 1 },
 	},
 }
 
