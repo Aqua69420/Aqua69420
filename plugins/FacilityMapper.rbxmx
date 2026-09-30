@@ -3,7 +3,7 @@
     <Properties>
       <string name="Name">FacilityMapper</string>
       <ProtectedString name="Source"><![CDATA[--!nocheck
--- Facility Mapper (Studio plugin)  v3
+-- Facility Mapper (Studio plugin)  v4
 -- Maps the prison, Police HQ, City Jail, law offices and city markers in the
 -- same format the game's navigation already reads (the format of the original
 -- prison map):
@@ -89,10 +89,10 @@ local ZONE_TYPES = {
 	City = { "TerritoryEK", "TerritoryIS", "TerritoryDS", "TerritoryTL", "Impound", "Outside", "Room" },
 }
 local POINT_TYPES = {
-	Prison = { "PrisonPhone", "SniperPost", "Spotlight", "BailiffSpot", "CourtCam", "OfficerPost", "TurnInPoint", "DrugTestStation", "CommissaryWindow" },
-	Courthouse = { "BailiffSpot", "CourtCam", "ClerkWindow", "MetalDetector", "VehicleDropoff", "TurnInPoint", "CourthouseSteps", "PressPodium", "OfficerPost" },
-	PoliceHQ = { "BookingDesk", "TurnInPoint", "VehicleDropoff", "FrontDesk", "BailiffSpot", "CourtCam", "DetectivePost", "OfficerPost", "HoldingPhone", "MDTTerminal", "EvidenceLocker", "MugshotSpot", "PressPodium", "PoliceSpawn" },
-	CityJail = { "BookingDesk", "VehicleDropoff", "ReleasePoint", "JailPhone", "OfficerPost", "TurnInPoint" },
+	Prison = { "BusBay", "PrisonPhone", "SniperPost", "Spotlight", "BailiffSpot", "CourtCam", "OfficerPost", "TurnInPoint", "DrugTestStation", "CommissaryWindow" },
+	Courthouse = { "BusDeparture", "BailiffSpot", "CourtCam", "ClerkWindow", "MetalDetector", "VehicleDropoff", "TurnInPoint", "CourthouseSteps", "PressPodium", "OfficerPost" },
+	PoliceHQ = { "BusDeparture", "BookingDesk", "TurnInPoint", "VehicleDropoff", "FrontDesk", "BailiffSpot", "CourtCam", "DetectivePost", "OfficerPost", "HoldingPhone", "MDTTerminal", "EvidenceLocker", "MugshotSpot", "PressPodium", "PoliceSpawn" },
+	CityJail = { "BusDeparture", "BookingDesk", "VehicleDropoff", "ReleasePoint", "JailPhone", "OfficerPost", "TurnInPoint" },
 	LawOffice = { "Reception", "WaitingArea" },
 	Bank = { "DepositTerminal", "BoxWall", "TellerDesk", "BankerDesk" },
 	City = {
@@ -111,11 +111,12 @@ local SEAT_ROLES = {
 local DOOR_TYPES = { "Normal", "CellDoor", "Secure", "Gate", "Exit", "SallyPort", "Release" }
 local ACCESS = { "Staff", "Police", "Public", "Secure" }
 local SECURITY = { "General", "Staff", "Secure", "Public" }
-local ROUTE_TYPES = { "Escort", "Stairs", "Patrol", "Vehicle", "Walk" }
+local ROUTE_TYPES = { "Escort", "Stairs", "BusUnloadLine", "Patrol", "Vehicle", "Walk" }
 
 -- what each facility needs before the matching game features can use it
 local CHECKLIST = {
 	Prison = {
+		{ kind = "point", type = "BusBay", min = 1 },
 		{ kind = "zone", type = "Interrogation", min = 1 },
 		{ kind = "zone", type = "Courtroom", min = 1 },
 		{ kind = "seat", type = "JudgeSeat", min = 1 }, { kind = "seat", type = "DefendantSeat", min = 1 },
@@ -142,6 +143,7 @@ local CHECKLIST = {
 		{ kind = "point", type = "BailiffSpot", min = 1 }, { kind = "point", type = "ClerkWindow", min = 1 },
 		{ kind = "point", type = "MetalDetector", min = 1 }, { kind = "point", type = "VehicleDropoff", min = 1 },
 		{ kind = "point", type = "CourthouseSteps", min = 1 },
+		{ kind = "point", type = "BusDeparture", min = 1 },
 		{ kind = "point", type = "CourtCam", min = 0, optional = true },
 		{ kind = "zone", type = "LegalVisit", min = 0, optional = true },
 		{ kind = "zone", type = "PressArea", min = 0, optional = true },
@@ -1555,7 +1557,7 @@ local HELP = {
 	Off = "Pick a tool. Colours: blue = rooms, green = areas, red = sniper zones, orange = doors, purple = routes, yellow = points, pink = seats.",
 	Zone = "Click the corners of the floor area, then Enter. Backspace removes a corner, Esc cancels. Rooms (blue) need a door on their edge.",
 	Door = "Click a door (or gate). The whole door model is linked. Set Door type / Access first.",
-	Route = "Click points along the walking path (e.g. up a staircase), then Enter.",
+	Route = "Click points along the walking path (e.g. up a staircase), then Enter. BusUnloadLine = the walk from the prison bus bay to intake.",
 	Point = "Click a spot. Aimed points (SniperPost, Spotlight, CourtCam) face where the camera looks - or use 'Point at camera'.",
 	Seat = "Click a Seat to give it the chosen role. JurorSeat numbers itself 1-12 in click order.",
 	Select = "Click a zone / door / route / point / seat to select it, then Delete or change the fields and Apply edits.",
