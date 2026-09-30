@@ -410,6 +410,36 @@ local function spawnHeli(player: Player, name: string): (boolean, string)
 	local a: Active = { model = model, body = body, seat = seat, owner = player }
 	active[player] = a
 
+	-- v231: tap-to-board prompts (climbing into the cabin was awkward on phones)
+	for _, s in model:GetDescendants() do
+		if s:IsA("VehicleSeat") or s:IsA("Seat") then
+			local isPilot = s == seat
+			local prompt = Instance.new("ProximityPrompt")
+			prompt.Name = "BoardHeli"
+			prompt.ActionText = if isPilot then "Fly" else "Ride"
+			prompt.ObjectText = h.name
+			prompt.HoldDuration = 0
+			prompt.MaxActivationDistance = 14
+			prompt.RequiresLineOfSight = false
+			prompt.KeyboardKeyCode = if isPilot then Enum.KeyCode.F else Enum.KeyCode.G
+			prompt.Parent = s
+			prompt.Triggered:Connect(function(who: Player)
+				local c = who.Character
+				local hum = c and c:FindFirstChildOfClass("Humanoid")
+				if not hum or hum.Health <= 0 or hum.SeatPart or s.Occupant then
+					return
+				end
+				if inCustody(who) then
+					return
+				end
+				(s :: any):Sit(hum)
+			end)
+			s:GetPropertyChangedSignal("Occupant"):Connect(function()
+				prompt.Enabled = s.Occupant == nil
+			end)
+		end
+	end
+
 	seat:GetPropertyChangedSignal("Occupant"):Connect(function()
 		local occ = seat.Occupant
 		local pilot = occ and Players:GetPlayerFromCharacter(occ.Parent)

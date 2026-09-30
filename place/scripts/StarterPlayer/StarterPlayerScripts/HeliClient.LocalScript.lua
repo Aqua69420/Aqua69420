@@ -17,6 +17,7 @@ local gui = Instance.new("ScreenGui")
 gui.Name = "HeliHud"
 gui.ResetOnSpawn = false
 gui.Enabled = false
+gui.DisplayOrder = 60 -- above the other HUDs so the UP/DOWN buttons always get the touch
 gui.Parent = player:WaitForChild("PlayerGui")
 
 local info = Instance.new("TextLabel")
@@ -44,12 +45,12 @@ local function holdButton(text: string, pos: UDim2, key: string)
 	local b = Instance.new("TextButton")
 	b.AnchorPoint = Vector2.new(1, 1)
 	b.Position = pos
-	b.Size = UDim2.fromOffset(70, 58)
+	b.Size = UDim2.fromOffset(86, 70)
 	b.BackgroundColor3 = Color3.fromRGB(40, 70, 110)
 	b.BackgroundTransparency = 0.15
 	b.TextColor3 = Color3.new(1, 1, 1)
 	b.Font = Enum.Font.GothamBlack
-	b.TextSize = 14
+	b.TextSize = 18
 	b.Text = text
 	b.Parent = gui
 	local bc = Instance.new("UICorner")
@@ -77,8 +78,36 @@ local function holdButton(text: string, pos: UDim2, key: string)
 	end)
 	return b
 end
-local upButton = holdButton("UP", UDim2.new(1, -20, 1, -230), "up")
-local downButton = holdButton("DOWN", UDim2.new(1, -20, 1, -165), "down")
+local upButton = holdButton("UP", UDim2.new(1, -20, 1, -250), "up")
+local downButton = holdButton("DOWN", UDim2.new(1, -20, 1, -172), "down")
+
+-- v231: the touch thumbstick (and gamepad stick) straight from the control
+-- module - a VehicleSeat doesn't always pick up the thumbstick on phones
+local controls: any = nil
+task.spawn(function()
+	local ok, mod = pcall(function()
+		return require(player:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule", 10) :: ModuleScript)
+	end)
+	if ok and mod then
+		local ok2, c = pcall(function()
+			return mod:GetControls()
+		end)
+		if ok2 then
+			controls = c
+		end
+	end
+end)
+local function stick(): Vector3
+	if controls then
+		local ok, v = pcall(function()
+			return controls:GetMoveVector()
+		end)
+		if ok and typeof(v) == "Vector3" then
+			return v
+		end
+	end
+	return Vector3.zero
+end
 
 local function keyDown(...: Enum.KeyCode): boolean
 	for _, k in { ... } do
@@ -125,6 +154,13 @@ local function fly(humanoid: Humanoid, seat: VehicleSeat)
 		end
 		if math.abs(steer) < 0.05 then
 			steer = if keyDown(Enum.KeyCode.A, Enum.KeyCode.Left) then -1 elseif keyDown(Enum.KeyCode.D, Enum.KeyCode.Right) then 1 else 0
+		end
+		if math.abs(throttle) < 0.05 and math.abs(steer) < 0.05 then
+			local mv = stick()
+			if mv.Magnitude > 0.1 then
+				throttle = math.clamp(-mv.Z, -1, 1)
+				steer = math.clamp(mv.X, -1, 1)
+			end
 		end
 		local lift = 0
 		if held.up or keyDown(Enum.KeyCode.E, Enum.KeyCode.ButtonR1) then

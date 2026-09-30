@@ -1386,6 +1386,21 @@ local closeBooking=make("TextButton",{
 },bookingFrame)
 make("UICorner",{CornerRadius=UDim.new(0,8)},closeBooking)
 closeBooking.Activated:Connect(function() bookingFrame.Visible=false end)
+-- v231: shrink the counsel panel to fit small (phone) screens - the bottom
+-- choices (Premier Counsel) used to hang off the screen and couldn't be tapped
+do
+	local scale=Instance.new("UIScale");scale.Parent=bookingFrame
+	local function fit()
+		local cam=workspace.CurrentCamera
+		if not cam then return end
+		local vp=cam.ViewportSize
+		scale.Scale=math.clamp(math.min((vp.Y-70)/470,(vp.X-20)/520),0.4,1)
+	end
+	fit()
+	workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(fit)
+	RunService.RenderStepped:Connect(function() if bookingFrame.Visible then fit() end end)
+end
+bookingFrame.Position=UDim2.fromScale(0.5,0.5)
 local counselChoices={
 	{"Public Defender",0},{"Local Attorney",10000},{"Experienced Defense Counsel",50000},
 	{"Criminal Defense Firm",250000},{"Elite Defense Team",1000000},
