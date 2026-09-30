@@ -174,6 +174,8 @@ lockpickFn.OnInvoke = function(action, player)
 		return LOCKPICK_PRICE
 	elseif action == "Has" then
 		return findLockpick(player) ~= nil
+	elseif action == "Give" then -- v212: the prison lockpick dealer (PrisonSociety) already took the money
+		return giveLockpick(player)
 	elseif action == "Buy" then
 		if not economy("Charge", player, LOCKPICK_PRICE) then
 			return false, "Come back with $" .. LOCKPICK_PRICE

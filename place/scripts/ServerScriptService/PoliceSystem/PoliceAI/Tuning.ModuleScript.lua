@@ -158,10 +158,10 @@ Tuning.Search = {
 Tuning.Vehicles = {
 	PursuitSpeed = 86, -- fallback; see PursuitSpeedByStars
 	-- player cars: Sports 95, Muscle 85, SUV/Sedan 75, Van 65. Higher heat = interceptor units.
-	PursuitSpeedByStars = { 90, 94, 98, 102, 106 }, -- v115: matches / beats player cars from 2-3 stars
+	PursuitSpeedByStars = { 94, 98, 102, 106, 110, 116 }, -- v215: interceptors outrun most player cars from 3 stars
 	ParallelSpeed = 92,
 	SearchSpeed = 42,
-	Accel = 42, -- player cars: 35
+	Accel = 48, -- player cars: 35
 	Brake = 78, -- player cars: 70
 	Grip = 90, -- lateral acceleration the cruiser corners at (studs/s^2)
 	FollowGap = 16, -- PRIMARY stays this close behind the suspect's trail
@@ -170,20 +170,21 @@ Tuning.Vehicles = {
 	CarSpacing = 26, -- cruisers don't bunch closer than this on the same line
 	DirectRange = 520, -- within this and with a fresh trail, units follow the suspect's exact line
 	ReplanInterval = 1.0,
-	CarsPerStar = { 3, 4, 6, 8, 10 }, -- v116: more units pile in
-	MaxPursuitCars = 14, -- across all incidents
-	ClaimRadius = 2200,
+	CarsPerStar = { 4, 6, 9, 12, 15, 18 }, -- v215: a real pursuit - units keep piling in
+	MaxPursuitCars = 24, -- across all incidents
+	ClaimRadius = 6000, -- v215: every free cruiser in the city answers an active pursuit
+	JoinAll = true, -- v215: claim every free patrol cruiser, not just the star quota
 	SpawnMin = 340,
 	SpawnMax = 850,
-	SpawnCooldown = 1.5,
-	SpawnBurst = 2, -- units dispatched at once while short-handed
-	InterceptDispatch = 14, -- seconds between side-street intercept units (2+ stars)
+	SpawnCooldown = 1.0,
+	SpawnBurst = 3, -- units dispatched at once while short-handed
+	InterceptDispatch = 8, -- seconds between side-street intercept units (2+ stars)
 	RoleRefresh = 1.5,
 	PlanInterval = 2.2, -- intercept / spike / roadblock opportunity search
 	StopSpeed = 3, -- suspect slower than this for StopTime = vehicle stop
 	StopTime = 2.2,
 	FallBehind = 420, -- PRIMARY this far behind while another car is much closer = hand over
-	MaxParallel = 2,
+	MaxParallel = 3, -- v215: more units run alongside / get ahead
 	DeployRadius = 320, -- suspect bails out: cruisers this close park and deploy their crews
 	MaxDeployCars = 3,
 }
@@ -203,10 +204,10 @@ Tuning.Contact = {
 
 Tuning.PIT = {
 	Enabled = true,
-	MinStars = 2,
+	MinStars = 1,
 	MinSpeed = 22,
 	Range = 55,
-	Cooldown = 7,
+	Cooldown = 5,
 	AlignTimeout = 5,
 	TapTime = 0.55,
 	RecoverTime = 1.6,
@@ -214,8 +215,8 @@ Tuning.PIT = {
 
 Tuning.Ram = {
 	Enabled = true,
-	MinStars = 3,
-	MaxSuspectSpeed = 45, -- rams a slowed / cornering suspect, not one flat out on a highway
+	MinStars = 2,
+	MaxSuspectSpeed = 55, -- rams a slowed / cornering suspect, not one flat out on a highway
 	Cooldown = 5,
 	Time = 0.6,
 }
@@ -229,31 +230,31 @@ Tuning.BoxIn = {
 Tuning.Spike = {
 	Enabled = true,
 	DispatchUnits = true, -- no spare car can get ahead? send one from a side street ahead
-	WheelFriction = 0.3, -- shredded tyres lose grip...
-	FlatSpeedCap = 32, -- ...and drag the car down to about this speed
+	WheelFriction = 0.22, -- shredded tyres lose grip...
+	FlatSpeedCap = 26, -- ...and drag the car down to about this speed
 	DragGain = 3,
 	MaxDragDecel = 85,
-	MinStars = 2,
-	MinLead = 180, -- the strip is never placed closer than this ahead of the suspect
+	MinStars = 1, -- v215: spike units wait ahead from the first star
+	MinLead = 160, -- the strip is never placed closer than this ahead of the suspect
 	MaxLead = 750,
 	SetupTime = 5, -- seconds the unit needs on scene before the suspect arrives
 	AbortDistance = 110, -- suspect this close before the strip is down = too late, abort
 	Timeout = 45,
-	Cooldown = 20,
-	FlatTire = 0.62, -- share of top speed lost with punctured tyres
-	FlatDuration = 120,
+	Cooldown = 12,
+	FlatTire = 0.7, -- share of top speed lost with punctured tyres
+	FlatDuration = 180,
 }
 
 Tuning.Roadblock = {
 	Enabled = true,
 	DispatchUnits = true,
-	MinStars = 3,
+	MinStars = 2,
 	MinLead = 260,
 	MaxLead = 900,
 	SetupTime = 7,
 	AbortDistance = 140,
 	Timeout = 55,
-	Cooldown = 30,
+	Cooldown = 20,
 	Breakable = true, -- parked roadblock cars can be shoved by a hard hit (false = immovable)
 	HoldForce = 45000,
 }

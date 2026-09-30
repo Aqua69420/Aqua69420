@@ -298,7 +298,19 @@ gunShot.OnServerEvent:Connect(function(player, tool, target)
 				-- delayed death happens after the 2-second creator tag expired.
 				victim:SetAttribute("LastDamagerUserId",player.UserId)
 				victim:SetAttribute("LastDamagedAt",os.time())
-				victim:TakeDamage(damage)
+				-- v215: someone in a car: the car takes the hit
+				if victim.SeatPart then
+					local vd = game:GetService("ServerStorage"):FindFirstChild("VehicleDamage")
+					if vd and vd:IsA("BindableFunction") then
+						local ok, left = pcall(vd.Invoke, vd, victim, damage)
+						if ok and type(left) == "number" then
+							damage = left
+						end
+					end
+				end
+				if damage > 0 then
+					victim:TakeDamage(damage)
+				end
 			end
 		end
 	end

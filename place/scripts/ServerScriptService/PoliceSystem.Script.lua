@@ -509,13 +509,13 @@ Config.TearGas = {
 -- They answer calls with lights and siren, pull up, and the officers get out.
 Config.PatrolCars = {
 	Enabled = true,
-	Base = 3,
-	PerPlayer = 0.75,
-	Max = 8,
+	Base = 5, -- v215: more cruisers on patrol to pick up pursuits
+	PerPlayer = 1,
+	Max = 12,
 	Officers = 2,
 	CruiseSpeed = 30,
 	RespondRadius = 900, -- cruisers this close to a crime answer it
-	Responders = { 1, 2, 2, 2, 2 }, -- cruisers sent per star (on top of foot patrols)
+	Responders = { 2, 3, 4, 5, 6, 7 }, -- cruisers sent per star (on top of foot patrols)
 }
 
 Config.Vehicles = {
@@ -523,7 +523,7 @@ Config.Vehicles = {
 	UseRoads = true, -- follow the road network when there is one (falls back to pathfinding)
 	Speed = 62,
 	StopDistance = 55, -- park this far from the last known position
-	MaxActive = 6,
+	MaxActive = 10, -- v215
 	ParkedLifetime = 45,
 	Types = {
 		Cruiser = { Capacity = 2, Size = Vector3.new(6.4, 4.8, 15), Body = Color3.fromRGB(18, 18, 20), Doors = Color3.fromRGB(236, 236, 236), Text = "POLICE", Lightbar = true, Wheel = 2.6 },
@@ -2016,6 +2016,18 @@ function Weapons:shoot(aim: Aim)
 			local victimPlayer=Players:GetPlayerFromCharacter(hum.Parent)
 			if victimPlayer and victimPlayer:GetAttribute("PoliceCritical")==true then
 				continue
+			end
+			-- v215: a suspect in a car: the car soaks up the rounds until it burns
+			if hum.SeatPart then
+				local vd=game:GetService("ServerStorage"):FindFirstChild("VehicleDamage")
+				if vd and vd:IsA("BindableFunction") then
+					local ok,left=pcall(vd.Invoke,vd,hum,amount)
+					if ok and type(left)=="number" then amount=left end
+				end
+				if amount<=0 then
+					if aim.onHit and hum==aim.hum then aim.onHit(hum,hitPart[hum]) end
+					continue
+				end
 			end
 			if s==Config.Weapons.Rubber or s==Config.Weapons.Beanbag then
 				hum.Health=math.max(1,hum.Health-amount)
@@ -8150,6 +8162,28 @@ local function markedDoorToward(fromPos: Vector3, goal: Vector3, maxRange: numbe
 	return best,bestPos
 end
 
+-- v215: a door leaf is a door-named part, or a door-named model that doesn't
+-- contain another door-named piece and isn't wider than a doorway
+PrisonFlow.leafCache=setmetatable({}, {__mode="k"})
+function PrisonFlow.isDoorLeaf(obj: Instance): boolean
+	local cached=PrisonFlow.leafCache[obj]
+	if cached~=nil then return cached end
+	local ok=true
+	if obj:IsA("Model") then
+		for _,d in obj:GetDescendants() do
+			if (d:IsA("Model") or (d:IsA("BasePart") and d.Parent~=obj)) and doorLikeName(d.Name) then ok=false;break end
+		end
+		if ok then
+			local okBox,_,size=pcall(obj.GetBoundingBox,obj)
+			if okBox and size and (math.max(size.X,size.Z)>9 or size.Y>14) then ok=false end
+		end
+	elseif obj:IsA("BasePart") then
+		ok=math.max(obj.Size.X,obj.Size.Z)<=9 and obj.Size.Y<=14
+	end
+	PrisonFlow.leafCache[obj]=ok
+	return ok
+end
+
 local function openPrisonDoorsNear(pos: Vector3, radius: number, secs: number)
 	if not prison or not openFor then return end
 	-- v104: the user's simple clicked DoorMarkers are authoritative even when
@@ -8160,7 +8194,10 @@ local function openPrisonDoorsNear(pos: Vector3, radius: number, secs: number)
 		if (obj:IsA("Model") or obj:IsA("BasePart")) and doorLikeName(obj.Name) then
 			local target: Instance=obj
 			if obj:IsA("BasePart") and obj.Parent and obj.Parent:IsA("Model") and doorLikeName(obj.Parent.Name) then target=obj.Parent end
-			if not seen[target] then
+			-- v215: never open a whole doorway assembly (frame + wall, e.g. YardADoor,
+			-- HSAccessDoor): only the door leaf inside it
+			if not PrisonFlow.isDoorLeaf(target) then target=nil end
+			if target and not seen[target] then
 				seen[target]=true
 				local p: Vector3?=nil
 				if target:IsA("BasePart") then p=target.Position elseif target:IsA("Model") then p=target:GetPivot().Position end
@@ -8648,7 +8685,7 @@ local inmateClothes={
 	["Death Row"]={shirt="514949843",pants="514951070"},
 	-- v212: the expanded prison's classes reuse the closest uniform
 	Maximum={shirt="514949888",pants="514951033"},
-	Supermax={shirt="514949843",pants="514951070"},
+	Supermax={shirt="514949809",pants="514951199"}, -- SuperInmateS / SuperInmateP
 }
 
 -- v196: the player's own clothing, captured before the first uniform goes on,
@@ -10519,6 +10556,48 @@ local function prisonExit(): (Vector3,Vector3,Instance?)
 	return pos-dir*5,pos+dir*18,nil
 end
 
+-- v215: the public way out - release hallway, the lobby, the glass front doors.
+-- Built from the mapped zones (Release_Hallwau_2, Lobby); nil if they're missing.
+function PrisonFlow.frontExit(): any?
+	local map=prisonMapRoot()
+	local zones=map and map:FindFirstChild("Zones")
+	if not zones then return nil end
+	local function center(name: string): Vector3?
+		local z=zones:FindFirstChild(name);local cp=z and z:FindFirstChild("ControlPoints")
+		if not cp then return nil end
+		local sum,n,maxZ=Vector3.zero,0,-math.huge
+		for _,v in cp:GetChildren() do
+			local p=if v:IsA("Vector3Value") then v.Value elseif v:IsA("BasePart") then v.Position else nil
+			if p then sum+=p;n+=1;maxZ=math.max(maxZ,p.Z) end
+		end
+		return if n>0 then sum/n else nil
+	end
+	local hall=center("Release_Hallwau_2");local lobby=center("Lobby")
+	if not hall or not lobby then return nil end
+	-- the lobby's glass front doors: see-through panels in the north wall
+	local lz=zones:FindFirstChild("Lobby");local maxZ=-math.huge;local minX,maxX=math.huge,-math.huge
+	for _,v in lz.ControlPoints:GetChildren() do
+		local p=if v:IsA("Vector3Value") then v.Value elseif v:IsA("BasePart") then v.Position else nil
+		if p then maxZ=math.max(maxZ,p.Z);minX=math.min(minX,p.X);maxX=math.max(maxX,p.X) end
+	end
+	local glass={};local gx,gn=0,0
+	if prison then
+		for _,d in prison:GetChildren() do
+			if d:IsA("BasePart") and d.Transparency>=0.5 and d.CanCollide and math.abs(d.Position.Z-maxZ)<2
+				and d.Position.X>=minX and d.Position.X<=maxX and d.Size.Y>6 then
+				table.insert(glass,d);gx+=d.Position.X;gn+=1
+			end
+		end
+	end
+	local doorX=if gn>0 then gx/gn else (minX+maxX)/2
+	local y=lobby.Y
+	return {stages={
+		{label="release hallway",pos=Vector3.new(hall.X,y,hall.Z)},
+		{label="lobby",pos=Vector3.new(doorX,y,maxZ-5)},
+		{label="front doors",pos=Vector3.new(doorX,y,maxZ+10),open=glass},
+	}}
+end
+
 -- v205: where a released inmate is driven: a spawn of the team they return to,
 -- else a neutral spawn, else any enabled spawn outside the prison.
 function PrisonFlow.releaseSpawn(team: Team?): Vector3?
@@ -10548,9 +10627,15 @@ function PrisonFlow.releaseRide(player: Player, team: Team?)
 	-- pull up on the nearest mapped road, not on the spot (the kerb, a fence)
 	local pickup=root.Position+root.CFrame.RightVector*8
 	local bestD=math.huge
-	for _,node in RoadGraph.nodesNear(root.Position,120) do
+	for _,node in RoadGraph.nodesNear(root.Position,260) do -- v215: the front door is further from the road than the old exit
 		local p=RoadGraph.nodePos(node)
 		if p and outsidePrison(p,nil) and Util.flat(p-root.Position).Magnitude<bestD then pickup,bestD=p,Util.flat(p-root.Position).Magnitude end
+	end
+	if bestD==math.huge then
+		for _,node in RoadGraph.nodesNear(root.Position,260) do
+			local p=RoadGraph.nodePos(node)
+			if p and Util.flat(p-root.Position).Magnitude<bestD then pickup,bestD=p,Util.flat(p-root.Position).Magnitude end
+		end
 	end
 	local ground=Util.groundAt(pickup,30,80)
 	if ground then pickup=Vector3.new(pickup.X,ground.Y,pickup.Z) end
@@ -10679,10 +10764,21 @@ release = function(player: Player, how: string)
 		end
 		return false
 	end
-	-- First reach the mapped inside face of the perimeter exit, then cross it.
-	if not escortUntil(inside,"inside exit",false) then releaseBusy[player]=nil;return end
-	if exitDoor then pcall(openFor,exitDoor,35) end
-	if not escortUntil(outside,"outside gate",false) then releaseBusy[player]=nil;return end
+	-- v215: out the front: release hallway (Release 1/2/3) -> Main Lobby door ->
+	-- lobby -> the glass front doors. Falls back to the old intake-door exit.
+	local front=PrisonFlow.frontExit()
+	if front then
+		for _,stage in front.stages do
+			if stage.open then for _,d in stage.open do pcall(openFor,d,30) end end
+			inside=stage.pos -- escortUntil opens the doors around `inside` each attempt
+			if not escortUntil(stage.pos,stage.label,false) then releaseBusy[player]=nil;return end
+		end
+	else
+		-- First reach the mapped inside face of the perimeter exit, then cross it.
+		if not escortUntil(inside,"inside exit",false) then releaseBusy[player]=nil;return end
+		if exitDoor then pcall(openFor,exitDoor,35) end
+		if not escortUntil(outside,"outside gate",false) then releaseBusy[player]=nil;return end
+	end
 
 	-- v211: no long walk to the public road - the release cruiser picks the
 	-- inmate up right outside the gate and drives them out the prison road.
@@ -11712,6 +11808,15 @@ function PL.buildRig(look: Model?): Model?
 			end
 		end
 	end
+	-- v215: every NPC gets their own skin tone (independent of gang or class)
+	do
+		local tones={Color3.fromRGB(255,224,196),Color3.fromRGB(241,194,158),Color3.fromRGB(224,172,105),Color3.fromRGB(198,134,66),
+			Color3.fromRGB(161,110,75),Color3.fromRGB(141,85,36),Color3.fromRGB(111,70,38),Color3.fromRGB(86,53,32),Color3.fromRGB(60,38,24)}
+		local tone=tones[math.random(1,#tones)]
+		local bc=rig:FindFirstChildOfClass("BodyColors") or Instance.new("BodyColors")
+		bc.HeadColor3=tone;bc.TorsoColor3=tone;bc.LeftArmColor3=tone;bc.RightArmColor3=tone;bc.LeftLegColor3=tone;bc.RightLegColor3=tone
+		bc.Parent=rig
+	end
 	PL.animate(rig)
 	local rigHum=rig:FindFirstChildOfClass("Humanoid")
 	if rigHum then
@@ -12670,8 +12775,29 @@ function Justice.init()
 			if sentenceEnd[player] then player:SetAttribute("CustodyRespawnGraceUntil",Workspace:GetServerTimeNow()+6) end
 			task.wait(0.15)
 			if not player.Parent or player.Character ~= char then return end
-			restorePrisonRespawn(player,char)
+			local restored=restorePrisonRespawn(player,char)
 			if custody[player] and not criticalCustody[player] then recoverCustodyRespawn(player) end
+			print(("[CustodyDiag] RESPAWN %s custody=%s critical=%s sentence=%s booking=%s phase=%s restored=%s recovery=%s"):format(
+				player.Name,tostring(custody[player]),tostring(criticalCustody[player]),tostring(sentenceEnd[player]~=nil),
+				tostring(player:GetAttribute("BookingState")),tostring(player:GetAttribute("CustodyPhase")),tostring(restored),tostring(custodyRecovery[player]~=nil)))
+			-- v215 watchdog: a prisoner / detainee must never keep a public spawn
+			task.delay(4,function()
+				if not player.Parent or player.Character~=char then return end
+				local _,h,r=Util.charInfo(player)
+				if not h or not r or not outsidePrison(r.Position,nil) then return end
+				if custody[player] and not criticalCustody[player] then
+					warn("[CustodyDiag] RESPAWN WATCHDOG: detainee "..player.Name.." still outside - restarting intake recovery")
+					custodyRecovery[player]=nil
+					recoverCustodyRespawn(player)
+				elseif sentenceEnd[player] then
+					warn("[CustodyDiag] RESPAWN WATCHDOG: inmate "..player.Name.." still outside - back to the assigned cell")
+					if player:GetAttribute("BookingState")~="Housed" then player:SetAttribute("BookingState","Housed") end
+					if not restorePrisonRespawn(player,char) then
+						local room=PrisonFlow.rooms[player]
+						if room and room.pos then r.CFrame=CFrame.new(room.pos+Vector3.new(0,3,0)) end
+					end
+				end
+			end)
 			if player:GetAttribute("PrisonClothesIssued")==true then
 				PrisonFlow.applyInmateClothes(player,tostring(player:GetAttribute("SecurityClass") or "Medium"))
 			end

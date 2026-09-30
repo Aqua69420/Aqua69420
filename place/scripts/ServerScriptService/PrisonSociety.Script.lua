@@ -36,7 +36,7 @@ local GANG_ORDER = { "EK", "IS", "DS", "TL" }
 local UNAFFILIATED_CHANCE = 0.25
 local DEALER_CHANCE = 0.22
 
-local PRICES = { Shiv = 250, Pills = 120 }
+local PRICES = { Shiv = 250, Pills = 120, Lockpick = 25000 } -- v215: one inmate sells lockpicks, at a price
 local FIST_DAMAGE = 10
 local SHIV_DAMAGE = 24
 local NPC_FIST_DAMAGE = 7
@@ -1170,11 +1170,31 @@ DialogueRE.OnServerEvent:Connect(function(player, token, choice)
 		s.stage = "shop"
 		s.expires = os.clock() + 40
 		local discount = if mood == "friendly" then 0.8 else 1
-		sendDialogue(player, s, if discount < 1 then "For you? Friends price." else "Cash only. No refunds.", {
+		local wares = {
 			{ id = "buy_shiv", text = ("Shiv - $%d"):format(math.floor(PRICES.Shiv * discount)) },
 			{ id = "buy_pills", text = ("Prison Pills - $%d"):format(math.floor(PRICES.Pills * discount)) },
-			{ id = "back", text = "Nah, never mind" },
-		})
+		}
+		if n.model:GetAttribute("LockpickDealer") then
+			table.insert(wares, { id = "buy_lockpick", text = ("Lockpick - $%d"):format(math.floor(PRICES.Lockpick * discount)) })
+		end
+		table.insert(wares, { id = "back", text = "Nah, never mind" })
+		sendDialogue(player, s, if discount < 1 then "For you? Friends price." else "Cash only. No refunds.", wares)
+	elseif choice == "buy_lockpick" and n.model:GetAttribute("LockpickDealer") and s.stage == "shop" then
+		local price = math.floor(PRICES.Lockpick * (if mood == "friendly" then 0.8 else 1))
+		local lockpicks = ServerStorage:FindFirstChild("Lockpicks")
+		if not lockpicks then
+			reply(player, s, "Fresh out. Come back later.", 0, nil, false)
+		elseif economy("Charge", player, price) then
+			pcall(lockpicks.Invoke, lockpicks, "Give", player)
+			local tool = player:FindFirstChildOfClass("Backpack") and player.Backpack:FindFirstChild("Lockpick")
+			if tool then
+				tool:SetAttribute("Contraband", true)
+			end
+			addRep(player, n.gang, 5)
+			reply(player, s, "Pick any door in here. You didn't get it from me.", 0, nil, false)
+		else
+			reply(player, s, ("$%d. Not a dollar less."):format(price), 0, nil, false)
+		end
 	elseif (choice == "buy_shiv" or choice == "buy_pills") and n.dealer and s.stage == "shop" then
 		local item = if choice == "buy_shiv" then "Shiv" else "Pills"
 		local price = math.floor(PRICES[item] * (if mood == "friendly" then 0.8 else 1))
@@ -1213,6 +1233,8 @@ task.spawn(function()
 				local charges = n.model:GetAttribute("Charges")
 				if type(charges) == "string" and math.random() < 0.15 then
 					line = pick({ "They got me on " .. string.lower(charges) .. ". Can you believe that?", "In for " .. string.lower(charges) .. ". Framed, obviously." })
+				elseif n.model:GetAttribute("LockpickDealer") and math.random() < 0.3 then
+					line = pick({ "Every door in here has a weakness.", "Need to get somewhere you shouldn't? Talk to me.", "Picks aren't cheap. Freedom never is." })
 				elseif n.dealer and math.random() < 0.4 then
 					line = pick(LINES.dealer)
 				elseif n.gang and math.random() < 0.35 then
@@ -1282,6 +1304,33 @@ task.spawn(function()
 						end)
 					end
 				end
+			end
+		end
+	end
+end)
+
+-- v215: there's always exactly one inmate who can get you a lockpick
+task.spawn(function()
+	while true do
+		task.wait(10)
+		local current = nil
+		local pool = {}
+		for model, n in npcs do
+			if model:GetAttribute("LockpickDealer") then
+				current = n
+			elseif n.hum.Health > 0 then
+				table.insert(pool, n)
+			end
+		end
+		if not current and #pool > 0 then
+			local n = pick(pool)
+			n.dealer = true
+			n.model:SetAttribute("Dealer", true)
+			n.model:SetAttribute("LockpickDealer", true)
+			setupPrompt(n)
+			local prompt = n.root:FindFirstChild("SocietyTalk")
+			if prompt then
+				prompt.ObjectText = n.name .. " (connected)"
 			end
 		end
 	end

@@ -133,7 +133,18 @@ local function drive(humanoid, seat)
 		local tire = tonumber(seat:GetAttribute("TireDamage")) or 0
 		local liveTop = topSpeed * (1 - math.clamp(tire, 0, 0.9))
 		if tire > 0 and speed > 4 then
-			steer = math.clamp(steer + math.sin(os.clock() * 7.3) * 0.22 * tire, -1, 1)
+			-- v215: shredded tyres fight you: a hard pull to one side, a violent
+			-- shimmy, and slides that come and go
+			local pull = tonumber(seat:GetAttribute("TirePull")) or 1
+			local t = os.clock()
+			local shimmy = math.sin(t * 9.1) * 0.35 + math.sin(t * 3.7) * 0.25
+			local slide = if math.sin(t * 1.3) > 0.75 then pull * 0.5 else 0
+			steer = math.clamp(steer + (pull * 0.3 + shimmy + slide) * tire, -1, 1)
+			throttle *= 1 - 0.35 * tire -- the rims bite: sluggish acceleration
+		end
+		-- a burning / destroyed car doesn't drive
+		if seat:GetAttribute("VehicleDestroyed") then
+			throttle, liveTop = 0, 0
 		end
 
 		-- Steering: full lock when slow, tighter at speed.

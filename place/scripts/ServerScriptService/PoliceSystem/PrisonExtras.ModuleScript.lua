@@ -56,7 +56,12 @@ X.BLOCK_AREA = {
 }
 X.CLASSES = { "Low", "Medium", "High", "Maximum", "Supermax", "Death Row" }
 X.NPC_COUNT = { Low = 8, Medium = 10, High = 3, Maximum = 3, Supermax = 4, ["Death Row"] = 1 }
-X.START_FILL = 0.5 -- the rest arrive through intake (city arrests) -- share of NPC_COUNT spawned at server start; arrests bring in the rest
+X.START_FILL = 0.5 -- the rest arrive through intake (city arrests)
+-- v215: a mixed prison at server start (the rest arrive through intake)
+X.START = { Low = 5, Medium = 5, High = 2, Maximum = 1, Supermax = 2, ["Death Row"] = 1 }
+X.START_SOLITARY = { 1, 2 } -- this many of them begin in solitary
+-- intake leans towards the general population
+X.ARREST_WEIGHT = { Low = 1.6, Medium = 1.4, High = 0.8, Maximum = 0.5, Supermax = 0.4, ["Death Row"] = 0.15 } -- share of NPC_COUNT spawned at server start; arrests bring in the rest
 X.SENTENCE = {
 	Low = { 240, 480 },
 	Medium = { 420, 900 },
@@ -289,7 +294,7 @@ function X.claimCell(class: string): any?
 	-- share an open (dorm) cell first
 	for _, r in rooms do
 		local n = npcCount(r.cell)
-		if n > 0 and r.open and n < math.min(2, r.capacity) then
+		if n > 0 and r.open and n < math.min(3, r.capacity) then
 			setNpcCount(r.cell, n + 1)
 			return r
 		end
@@ -595,7 +600,7 @@ function X.rollArrestClass(): string?
 	for _, class in X.CLASSES do
 		local missing = (X.NPC_COUNT[class] or 0) - X.population(class)
 		if missing > 0 then
-			local w = missing * (if class == "Death Row" or class == "Supermax" then 0.4 else 1)
+			local w = missing * (X.ARREST_WEIGHT[class] or 1)
 			total += w
 			table.insert(pool, { class, w })
 		end
@@ -715,7 +720,20 @@ function X.moveClass(class: string, from: string?, to: string)
 					C.openPrisonDoorsNear(rec.root.Position, 8, 4)
 				end
 			end
-			if ready >= #members then
+			-- v215: player inmates are walked into the line as well
+			for j, plr in plist do
+				local _, hum, root = C.Util.charInfo(plr)
+				if hum and root then
+					local slot = cop.root.Position + back * (3 + 2.4 * (#members + j))
+					if flat(root.Position - slot).Magnitude < 5 then
+						ready += 1
+					else
+						hum:MoveTo(slot)
+						C.openPrisonDoorsNear(root.Position, 8, 4)
+					end
+				end
+			end
+			if ready >= #members + #plist then
 				break
 			end
 			task.wait(0.4)
@@ -764,13 +782,24 @@ function X.moveClass(class: string, from: string?, to: string)
 					stuckSince[rec] = nil
 				end
 			end
+			-- v215: the CO takes player inmates along too: they're walked in line and a
+			-- straggler who wanders off is brought back into the column
 			for _, plr in plist do
 				local _, hum, root = C.Util.charInfo(plr)
 				if hum and root and plr:GetAttribute("CustodyOwner") == "INCARCERATED" then
 					slot += 1
 					local target = trail[math.max(1, #trail - slot * 2)]
-					if flat(root.Position - target).Magnitude > 14 then
+					local d = flat(root.Position - target).Magnitude
+					if d > 5 then
 						hum:MoveTo(target)
+						stuckSince[plr] = stuckSince[plr] or os.clock()
+						if d > 28 or os.clock() - stuckSince[plr] > 8 then
+							root.CFrame = CFrame.new(target + Vector3.new(0, 3, 0))
+							stuckSince[plr] = nil
+							notice(plr, "Stay in line")
+						end
+					else
+						stuckSince[plr] = nil
 					end
 					C.openPrisonDoorsNear(root.Position, 8, 4)
 				end
@@ -783,9 +812,35 @@ function X.moveClass(class: string, from: string?, to: string)
 			end
 		end
 		for _, plr in plist do
+			local _, hum, root = C.Util.charInfo(plr)
 			if to == "CELL" then
-				notice(plr, "Return to your cell - lockdown")
+				-- walked back into their own cell and locked in
+				local room = C.PL.playerRoom(plr)
+				if room and hum and root then
+					notice(plr, "Lockdown - back in your cell")
+					task.spawn(function()
+						if not room.open then
+							C.openMarkedDoor(room.door, 16)
+						end
+						local t0 = os.clock()
+						while os.clock() - t0 < 12 and not C.PrisonNav.isInsideCell(room, root.Position) do
+							hum:MoveTo(room.pos)
+							task.wait(0.4)
+						end
+						if not C.PrisonNav.isInsideCell(room, root.Position) then
+							root.CFrame = CFrame.new(room.pos + Vector3.new(0, 3, 0))
+						end
+						task.wait(0.5)
+						if not room.open then
+							pcall(C.PrisonFlow.closeCell, room)
+						end
+						C.PL.freeState[plr] = nil
+					end)
+				end
 			else
+				if root and flat(root.Position - dest).Magnitude > 45 then
+					root.CFrame = CFrame.new(dest + Vector3.new(math.random(-5, 5), 3, math.random(-5, 5)))
+				end
 				notice(plr, ("%s time in the %s"):format(if to == "CAFETERIA" then "Chow" else "Free", pretty(to)))
 			end
 		end
@@ -802,7 +857,36 @@ function X.moveClass(class: string, from: string?, to: string)
 	end
 end
 
+-- v215: each class's day, published for the prisoners' schedule panel
+function X.publishSchedule()
+	local HttpService = game:GetService("HttpService")
+	local blocks = table.clone(C.Config.PrisonSchedule.Blocks)
+	table.sort(blocks, function(a, b)
+		return a.Start < b.Start
+	end)
+	for _, class in X.CLASSES do
+		local rows = {}
+		for _, b in blocks do
+			local loc = X.locationFor(class, b.Name)
+			local where = pretty(loc)
+			if b.Name == "Yard" and class == "High" then
+				where = "yard / indoor yard (alternating)"
+			elseif loc == "CELL" then
+				where = if b.Name == "Chow" then "meal in your cell" elseif b.Name == "Count" then "count - in your cell" else "in your cell"
+			elseif loc == "BLOCK" then
+				where = "cellblock time"
+			end
+			table.insert(rows, { s = b.Start, f = b.Finish, b = b.Name, w = where })
+		end
+		local ok, json = pcall(HttpService.JSONEncode, HttpService, rows)
+		if ok then
+			remotes:SetAttribute("Regimen_" .. class, json)
+		end
+	end
+end
+
 function X.startRegimen()
+	X.publishSchedule()
 	local block = X.block()
 	for _, class in X.CLASSES do
 		X.classLoc[class] = X.locationFor(class, block)
@@ -833,13 +917,35 @@ end
 function X.startPopulation()
 	task.spawn(function()
 		task.wait(5)
-		for _, class in X.CLASSES do
-			local want = math.max(1, math.floor((X.NPC_COUNT[class] or 0) * X.START_FILL + 0.5))
-			for _ = 1, want do
-				pcall(X.spawnInmate, class)
-				task.wait(0.8)
+		-- interleave the classes so the first arrivals are already a mix
+		local left = table.clone(X.START)
+		local any = true
+		while any do
+			any = false
+			for _, class in X.CLASSES do
+				if (left[class] or 0) > 0 then
+					left[class] -= 1
+					any = true
+					pcall(X.spawnInmate, class)
+					task.wait(0.6)
+				end
 			end
 		end
+		-- one or two start the day in solitary
+		task.delay(20, function()
+			local pool = {}
+			for _, rec in X.npcs do
+				if (rec.class == "Low" or rec.class == "Medium" or rec.class == "High") and recAlive(rec) then
+					table.insert(pool, rec)
+				end
+			end
+			local n = math.random(X.START_SOLITARY[1], X.START_SOLITARY[2])
+			for _ = 1, math.min(n, #pool) do
+				local i = math.random(1, #pool)
+				local rec = table.remove(pool, i)
+				task.spawn(X.solitaryNpc, rec, "serving a solitary term")
+			end
+		end)
 		local counts = {}
 		for _, class in X.CLASSES do
 			table.insert(counts, class .. "=" .. X.population(class))

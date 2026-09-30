@@ -721,3 +721,123 @@ task.spawn(function()
 		end
 	end
 end)
+
+---------------------------------------------------------------------------
+-- v215: the prison schedule (only while you're serving a sentence)
+---------------------------------------------------------------------------
+local HttpService = game:GetService("HttpService")
+local Lighting = game:GetService("Lighting")
+
+local sched = make("Frame", {
+	Name = "Schedule",
+	AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.new(1, -10, 0, 150),
+	Size = UDim2.fromOffset(250, 30),
+	AutomaticSize = Enum.AutomaticSize.Y,
+	BackgroundColor3 = DARK,
+	BackgroundTransparency = 0.2,
+	Visible = false,
+}, gui)
+corner(sched, 8)
+make("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, sched)
+make("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }, sched)
+local schedHeader = make("TextButton", {
+	LayoutOrder = 0,
+	Size = UDim2.new(1, 0, 0, 18),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 14,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextColor3 = Color3.fromRGB(240, 200, 90),
+	Text = "PRISON SCHEDULE",
+}, sched)
+local schedNow = make("TextLabel", {
+	LayoutOrder = 1,
+	Size = UDim2.new(1, 0, 0, 30),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamMedium,
+	TextSize = 13,
+	TextWrapped = true,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "",
+}, sched)
+local schedRows: { TextLabel } = {}
+local schedCollapsed = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+local function clockText(h: number): string
+	local hh = math.floor(h) % 24
+	local mm = math.floor((h - math.floor(h)) * 60 + 0.5)
+	if mm == 60 then
+		hh, mm = (hh + 1) % 24, 0
+	end
+	return ("%02d:%02d"):format(hh, mm)
+end
+
+local function readSchedule(): { any }?
+	local class = player:GetAttribute("SecurityClass")
+	if type(class) ~= "string" then
+		return nil
+	end
+	local raw = remotes:GetAttribute("Regimen_" .. class)
+	if type(raw) ~= "string" then
+		return nil
+	end
+	local ok, rows = pcall(HttpService.JSONDecode, HttpService, raw)
+	return if ok then rows else nil
+end
+
+local function refreshSchedule()
+	local serving = player:GetAttribute("SentenceEnd") ~= nil and player:GetAttribute("CustodyOwner") == "INCARCERATED"
+	local rows = if serving then readSchedule() else nil
+	sched.Visible = rows ~= nil
+	if not rows then
+		return
+	end
+	local hour = Lighting.ClockTime
+	local current: any = nil
+	for _, r in rows do
+		if hour >= r.s and hour < r.f then
+			current = r
+		end
+	end
+	schedHeader.Text = ("PRISON SCHEDULE · %s  %s"):format(tostring(player:GetAttribute("SecurityClass")), if schedCollapsed then "▸" else "▾")
+	if current then
+		local left = (current.f - hour) * 60 -- in-game minutes
+		schedNow.Text = ("%s  NOW: %s - %s (%d min left)"):format(clockText(hour), current.b, current.w, math.max(0, math.floor(left)))
+	else
+		schedNow.Text = clockText(hour)
+	end
+	for i, r in rows do
+		local row = schedRows[i]
+		if not row then
+			row = make("TextLabel", {
+				LayoutOrder = 10 + i,
+				Size = UDim2.new(1, 0, 0, 16),
+				BackgroundTransparency = 1,
+				Font = Enum.Font.Gotham,
+				TextSize = 12,
+				TextXAlignment = Enum.TextXAlignment.Left,
+			}, sched)
+			schedRows[i] = row
+		end
+		row.Visible = not schedCollapsed
+		row.Text = ("%s-%s  %s: %s"):format(clockText(r.s), clockText(r.f), r.b, r.w)
+		row.TextColor3 = if r == current then Color3.fromRGB(255, 220, 110) else Color3.fromRGB(190, 190, 195)
+		row.Font = if r == current then Enum.Font.GothamBold else Enum.Font.Gotham
+	end
+	for i = #rows + 1, #schedRows do
+		schedRows[i].Visible = false
+	end
+end
+
+schedHeader.Activated:Connect(function()
+	schedCollapsed = not schedCollapsed
+	refreshSchedule()
+end)
+task.spawn(function()
+	while true do
+		pcall(refreshSchedule)
+		task.wait(1)
+	end
+end)

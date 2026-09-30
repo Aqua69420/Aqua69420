@@ -258,6 +258,7 @@ function Roadside.puncture(model: Model?, seat: BasePart?)
 	local token = (tonumber(seat:GetAttribute("TireDamageToken")) or 0) + 1
 	seat:SetAttribute("TireDamageToken", token)
 	seat:SetAttribute("TireDamage", S.FlatTire) -- CarDriveClient: lower top speed + wobble
+	seat:SetAttribute("TirePull", if math.random() < 0.5 then -1 else 1) -- v215: which way the wreckage pulls
 	if not model then
 		return
 	end

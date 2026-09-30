@@ -620,7 +620,9 @@ local function chooseTripDestination(state,tried)
 			if not seen[i] then
 				seen[i]=true
 				table.insert(queue,i)
-				if not tried[i] and not restrictedRoads[i] then
+				-- v215: never a dead end as a destination - cars that end a trip where
+				-- they can't continue sit there and the whole city piles up behind them
+				if not tried[i] and not restrictedRoads[i] and #(graph[i] or {})>0 then
 					local r=network[i]
 					local classWeight=(r.roadType=="Primary" and 1.3) or (r.roadType=="Secondary" and 1.1) or 0.75
 					local congestion=roadOccupancy[r.name] or 0
@@ -814,14 +816,14 @@ local function updateTraffic(state,now,dt)
 			if moved<2.5 and state.dwellUntil<=now then
 				state.stillSince=state.stillSince or now
 				local still=now-state.stillSince
-				if still>25 and not state.stillRerouted then
+				if still>12 and not state.stillRerouted then
 					-- Pick a new trip from here; planTrip may turn the car around.
 					state.stillRerouted=true
 					driver.route=nil;driver.nextConnection=nil;driver.tripComplete=true
 					state.dwellUntil=now+1
 					state.passingParked=nil;state.parkedBlockSince=nil
 				end
-				if still>90 then
+				if still>40 then
 					-- Recycle only out of sight (or after a very long hold) so the
 					-- refill loop respawns it elsewhere in the city.
 					local nearestPlayer=math.huge
@@ -829,7 +831,7 @@ local function updateTraffic(state,now,dt)
 						local root=plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
 						if root and root:IsA("BasePart") then nearestPlayer=math.min(nearestPlayer,(root.Position-current).Magnitude) end
 					end
-					if nearestPlayer>180 or still>180 then
+					if nearestPlayer>150 or still>150 then
 						driverHumanoid.Health=0
 						return false
 					end
@@ -912,6 +914,43 @@ spawnCar=function()
 	-- traffic simulation relinquishes the model, GTA is reported, and CarServer
 	-- converts the same physical car into normal player-drive physics.
 	seat.Disabled=false
+	-- v215: press E at the driver's door to pull the driver out and take the car
+	local jack=Instance.new("ProximityPrompt")
+	jack.Name="Carjack"
+	jack.ActionText="Carjack"
+	jack.ObjectText="Car"
+	jack.KeyboardKeyCode=Enum.KeyCode.E
+	jack.HoldDuration=0.4
+	jack.MaxActivationDistance=9
+	jack.RequiresLineOfSight=false
+	jack.Parent=seat
+	jack.Triggered:Connect(function(player)
+		if car:GetAttribute("TrafficStolen") or seat.Occupant then return end
+		local char=player.Character
+		local hum=char and char:FindFirstChildOfClass("Humanoid")
+		if not hum or hum.Health<=0 or hum.SeatPart then return end
+		-- the driver is thrown out onto the street and runs off
+		local npc=nil
+		for _,c in car:GetChildren() do
+			if c:IsA("Model") and c:FindFirstChildOfClass("Humanoid") then npc=c;break end
+		end
+		if npc then
+			local door=seat.CFrame*CFrame.new(-4.5,0,0)
+			local runner=npc:Clone()
+			for _,d in runner:GetDescendants() do if d:IsA("BasePart") then d.Anchored=false;d.CanCollide=(d.Name=="HumanoidRootPart" or d.Name=="Torso") end end
+			runner.Parent=workspace
+			runner:PivotTo(CFrame.new(door.Position+Vector3.new(0,2,0)))
+			local rh=runner:FindFirstChildOfClass("Humanoid")
+			if rh then
+				pcall(function() rh.EvaluateStateMachine=true end)
+				rh.WalkSpeed=18;rh.AutoRotate=true
+				rh:MoveTo(door.Position+(door.Position-seat.Position).Unit*40)
+			end
+			game:GetService("Debris"):AddItem(runner,8)
+		end
+		seat:Sit(hum)
+		jack:Destroy()
+	end)
 
 	local driverNpc=pedPool[math.random(1,#pedPool)]:Clone()
 	local driverHumanoid=driverNpc:FindFirstChildOfClass("Humanoid")

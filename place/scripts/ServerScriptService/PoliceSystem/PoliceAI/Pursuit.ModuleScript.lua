@@ -79,7 +79,7 @@ end
 
 local function speedFor(inc: any): number
 	local V = Tuning.Vehicles
-	local stars = math.clamp(inc.pursuit.stars or 1, 1, 5)
+	local stars = math.clamp(inc.pursuit.stars or 1, 1, if V.PursuitSpeedByStars then #V.PursuitSpeedByStars else 5)
 	return (V.PursuitSpeedByStars and V.PursuitSpeedByStars[stars]) or V.PursuitSpeed
 end
 
@@ -1216,13 +1216,14 @@ end
 local function fleet(inc: any, now: number)
 	local V = Tuning.Vehicles
 	local k = inc.knowledge
-	local stars = math.clamp(inc.pursuit.stars or 1, 1, 5)
+	local stars = math.clamp(inc.pursuit.stars or 1, 1, #V.CarsPerStar)
 	local desired = V.CarsPerStar[stars] or 3
 	local have = 0
 	for _ in inc.cars do
 		have += 1
 	end
-	if have < desired and now >= (inc.claimAt or 0) then
+	-- v215: every free cruiser within range joins, above the star quota
+	if (have < desired or V.JoinAll) and now >= (inc.claimAt or 0) then
 		inc.claimAt = now + 1
 		local list = {}
 		for van in Van.all do
@@ -1234,7 +1235,7 @@ local function fleet(inc: any, now: number)
 			return flat(a.body.Position - k.pos).Magnitude < flat(b.body.Position - k.pos).Magnitude
 		end)
 		for _, van in list do
-			if have >= desired or Pursuit.total() >= V.MaxPursuitCars then
+			if (have >= desired and not V.JoinAll) or Pursuit.total() >= V.MaxPursuitCars then
 				break
 			end
 			Pursuit.claim(inc, van)
