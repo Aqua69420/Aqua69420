@@ -12595,6 +12595,18 @@ startPrisonLife = function()
 				escortCop=escortCop,nameEscort=nameEscort,custody=custody,sentenceEnd=sentenceEnd,
 				housingAssignment=housingAssignment,releaseBusy=releaseBusy,
 				release=function(p,how) return release(p,how) end,resetExecutedPlayer=resetExecutedPlayer,
+				-- v219: an executed player is a brand-new free player: wipe, drop every
+				-- custody flag (no "processing" left over), uncuff, respawn outside.
+				finishExecution=function(p)
+					resetExecutedPlayer(p)
+					clearJusticeState(p)
+					releaseBusy[p]=nil
+					pcall(uncuff,p)
+					for _,name in {"DeathRowExecutionStarted","DeathRowGasExposure","DeathRowExecutionComplete","Solitary","PoliceCuffed","Executing"} do p:SetAttribute(name,nil) end
+					pcall(tell,p,"Released","executed")
+					print("[DeathRow] "..p.Name.." executed - profile reset, released as a new player")
+					task.delay(1,function() if p.Parent then pcall(respawn,p) end end)
+				end,
 				inmateClothes=inmateClothes,Van=Van,RoadGraph=RoadGraph,outsidePrison=outsidePrison,
 				custodyTransportGhost=custodyTransportGhost,prisonExit=prisonExit,prison=prison,
 			})

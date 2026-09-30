@@ -289,7 +289,121 @@ local function refreshLive()
 	caption.Text = ("THE STATE vs %s  ·  %s"):format(string.upper(tostring(live.name)), string.upper(tostring(live.method)))
 end
 
+-- v219: lethal injection as the condemned player feels it: the sedative blurs
+-- the screen (fuzzy, then very fuzzy), the paralytic locks everything up and
+-- drains the colour, the potassium chloride fades it all to black.
+local injectionFx: { Instance } = {}
+local function clearInjection()
+	for _, fx in injectionFx do
+		if fx.Parent then
+			fx:Destroy()
+		end
+	end
+	table.clear(injectionFx)
+end
+player.CharacterAdded:Connect(clearInjection)
+local TweenService = game:GetService("TweenService")
+local function injectionStage(n: number)
+	local lighting = game:GetService("Lighting")
+	local blur = lighting:FindFirstChild("InjectionBlur") :: BlurEffect?
+	if not blur then
+		blur = Instance.new("BlurEffect")
+		blur.Name = "InjectionBlur"
+		blur.Size = 0
+		blur.Parent = lighting
+		table.insert(injectionFx, blur)
+	end
+	local cc = lighting:FindFirstChild("InjectionCC") :: ColorCorrectionEffect?
+	if not cc then
+		cc = Instance.new("ColorCorrectionEffect")
+		cc.Name = "InjectionCC"
+		cc.Parent = lighting
+		table.insert(injectionFx, cc)
+	end
+	local pg = player:FindFirstChildOfClass("PlayerGui")
+	local screen = pg and pg:FindFirstChild("InjectionScreen") :: ScreenGui?
+	if not screen and pg then
+		screen = Instance.new("ScreenGui")
+		screen.Name = "InjectionScreen"
+		screen.IgnoreGuiInset = true
+		screen.DisplayOrder = 50
+		screen.ResetOnSpawn = true
+		screen.Parent = pg
+		table.insert(injectionFx, screen)
+		local black = Instance.new("Frame")
+		black.Name = "Black"
+		black.Size = UDim2.fromScale(1, 1)
+		black.BackgroundColor3 = Color3.new(0, 0, 0)
+		black.BackgroundTransparency = 1
+		black.BorderSizePixel = 0
+		black.Parent = screen
+		local text = Instance.new("TextLabel")
+		text.Name = "Thought"
+		text.AnchorPoint = Vector2.new(0.5, 0.5)
+		text.Position = UDim2.fromScale(0.5, 0.62)
+		text.Size = UDim2.new(0.8, 0, 0, 40)
+		text.BackgroundTransparency = 1
+		text.Font = Enum.Font.GothamMedium
+		text.TextSize = 22
+		text.TextColor3 = Color3.fromRGB(230, 230, 230)
+		text.TextTransparency = 1
+		text.ZIndex = 2
+		text.Parent = screen
+	end
+	local black = screen and screen:FindFirstChild("Black") :: Frame?
+	local thought = screen and screen:FindFirstChild("Thought") :: TextLabel?
+	local function say(t: string)
+		if thought then
+			thought.Text = t
+			thought.TextTransparency = 1
+			TweenService:Create(thought, TweenInfo.new(0.8), { TextTransparency = 0.1 }):Play()
+			task.delay(3.5, function()
+				if thought.Parent and thought.Text == t then
+					TweenService:Create(thought, TweenInfo.new(1), { TextTransparency = 1 }):Play()
+				end
+			end)
+		end
+	end
+	if n == 1 then
+		say("Your eyelids get heavy...")
+		TweenService:Create(blur, TweenInfo.new(3), { Size = 8 }):Play()
+		TweenService:Create(cc, TweenInfo.new(3), { Saturation = -0.25, Brightness = -0.05 }):Play()
+		task.delay(3.5, function()
+			if blur.Parent then
+				TweenService:Create(blur, TweenInfo.new(3.5), { Size = 24 }):Play()
+				TweenService:Create(cc, TweenInfo.new(3.5), { Saturation = -0.5, Brightness = -0.12, Contrast = -0.2 }):Play()
+			end
+		end)
+	elseif n == 2 then
+		say("You can't move. You can't breathe.")
+		TweenService:Create(blur, TweenInfo.new(2), { Size = 40 }):Play()
+		TweenService:Create(cc, TweenInfo.new(4), { Saturation = -0.9, Brightness = -0.25, Contrast = -0.3 }):Play()
+		if black then
+			TweenService:Create(black, TweenInfo.new(5), { BackgroundTransparency = 0.45 }):Play()
+		end
+	elseif n == 3 then
+		say("...")
+		TweenService:Create(blur, TweenInfo.new(4), { Size = 56 }):Play()
+		TweenService:Create(cc, TweenInfo.new(5), { Saturation = -1, Brightness = -0.5 }):Play()
+		if black then
+			TweenService:Create(black, TweenInfo.new(6), { BackgroundTransparency = 0 }):Play()
+		end
+	end
+end
+
 ExecRE.OnClientEvent:Connect(function(kind: string, info: any)
+	if kind == "injection" and type(info) == "table" then
+		if not info.viewer then
+			-- sent only to the condemned player
+			injectionStage(tonumber(info.stage) or 1)
+		elseif live then
+			caption.Text = ("LETHAL INJECTION  ·  DRUG %d OF 3: %s"):format(tonumber(info.stage) or 1, string.upper(tostring(info.drug)))
+		end
+		return
+	end
+	if kind == "ended" then
+		task.delay(4, clearInjection)
+	end
 	if kind == "live" or kind == "executing" then
 		live = info
 		refreshLive()

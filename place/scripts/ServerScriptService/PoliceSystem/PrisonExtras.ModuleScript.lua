@@ -1065,6 +1065,230 @@ function X.discipline(target: any, reason: any): boolean
 	return false
 end
 
+
+---------------------------------------------------------------------------
+-- v220 CO SWEEP: an inmate (player or NPC) caught somewhere they shouldn't be
+-- for the current schedule block is walked back by a CO. Players who keep
+-- wandering off, or swing at the CO, go to solitary.
+---------------------------------------------------------------------------
+X.SWEEP_GRACE_PLAYER = 15
+X.SWEEP_GRACE_NPC = 25
+X.outSince = {} :: { [any]: number }
+X.returning = {} :: { [any]: boolean }
+X.strikes = {} :: { [Player]: { n: number, at: number } }
+
+function X.inPlace(pos: Vector3, class: string, want: string, room: any?): boolean
+	if room and C.PrisonNav.isInsideCell(room, pos) then
+		-- in their own cell is always fine except when they should be out at chow/yard
+		return want == "CELL" or want == "BLOCK"
+	end
+	if want == "CELL" then
+		return false
+	end
+	local area = X.areaFor(class, want)
+	local z = C.PrisonNav.zoneAt(pos, 1.5)
+	if z and area and z.area == area then
+		return true
+	end
+	local pt = X.pointIn(class, want)
+	return pt ~= nil and flat(pt - pos).Magnitude < 35 and math.abs(pt.Y - pos.Y) < 8
+end
+
+local function sweepEligible(plr: Player): boolean
+	local class = plr:GetAttribute("SecurityClass")
+	return plr:GetAttribute("CustodyOwner") == "INCARCERATED" and type(class) == "string" and C.sentenceEnd[plr] ~= nil
+		and not C.releaseBusy[plr] and not plr:GetAttribute("Solitary") and not plr:GetAttribute("Visiting")
+		and not plr:GetAttribute("DeathRowExecutionStarted") and not X.moving[class] and not X.inSolitary[plr]
+end
+
+function X.returnPlayer(plr: Player, class: string, want: string)
+	X.returning[plr] = true
+	local ok, err = pcall(function()
+		local _, hum, root = C.Util.charInfo(plr)
+		if not hum or not root then
+			return
+		end
+		local room = C.PL.playerRoom(plr)
+		local dest = if want == "CELL" then (room and C.PrisonFlow.approach(room)) else X.pointIn(class, want)
+		if not dest then
+			return
+		end
+		local strike = X.strikes[plr]
+		if strike and os.clock() - strike.at > 240 then
+			strike = nil
+		end
+		strike = { n = (strike and strike.n or 0) + 1, at = os.clock() }
+		X.strikes[plr] = strike
+		if strike.n >= 3 then
+			notice(plr, "You keep wandering off - a CO is taking you to solitary")
+			X.strikes[plr] = nil
+			task.spawn(X.solitaryPlayer, plr, "out of place, ignoring orders")
+			return
+		end
+		notice(plr, ("CO: You're out of place. Back to the %s - NOW. (warning %d/2)"):format(pretty(want), strike.n))
+		local side = flat(root.CFrame.RightVector)
+		local cop = C.nameEscort(C.escortCop(root.Position + side * 4, -side), "CORRECTIONAL OFFICER")
+		if not cop then
+			return
+		end
+		cop.cfg.WalkSpeed = 9
+		setLabel(cop, "BACK TO YOUR " .. string.upper(pretty(want)) .. "!")
+		-- swinging at the CO is a trip to solitary
+		local last = cop.hum.Health
+		local hit = false
+		local conn = cop.hum.HealthChanged:Connect(function(h)
+			if h < last then
+				local _, _, r = C.Util.charInfo(plr)
+				if r and flat(r.Position - cop.root.Position).Magnitude < 8 then
+					hit = true
+				end
+			end
+			last = h
+		end)
+		local trail = { cop.root.Position }
+		local done = false
+		task.spawn(function()
+			pcall(function()
+				C.PrisonNav.travel(cop, dest, { alive = function()
+					return cop.alive and not done and not hit
+				end, maxTime = 90, label = "CO RETURN " .. plr.Name })
+			end)
+			done = true
+		end)
+		local deadline = os.clock() + 95
+		local stuck: number? = nil
+		while not done and not hit and os.clock() < deadline and cop.alive and plr.Parent do
+			local _, h2, r2 = C.Util.charInfo(plr)
+			if not h2 or not r2 or not sweepEligible(plr) then
+				break
+			end
+			local head = cop.root.Position
+			if (trail[#trail] - head).Magnitude > 1.5 then
+				table.insert(trail, head)
+			end
+			local target = trail[math.max(1, #trail - 2)]
+			local d = flat(r2.Position - target).Magnitude
+			if d > 5 then
+				h2:MoveTo(target)
+				stuck = stuck or os.clock()
+				if d > 28 or os.clock() - (stuck :: number) > 8 then
+					r2.CFrame = CFrame.new(target + Vector3.new(0, 3, 0))
+					stuck = nil
+				end
+			else
+				stuck = nil
+			end
+			C.openPrisonDoorsNear(r2.Position, 8, 4)
+			task.wait(0.3)
+		end
+		conn:Disconnect()
+		if hit then
+			notice(plr, "Assaulting a correctional officer - SOLITARY")
+			cop:despawn("assaulted")
+			task.spawn(X.solitaryPlayer, plr, "assaulted a correctional officer")
+			return
+		end
+		local _, h3, r3 = C.Util.charInfo(plr)
+		if h3 and r3 and sweepEligible(plr) then
+			if want == "CELL" and room then
+				if not room.open then
+					C.openMarkedDoor(room.door, 14)
+				end
+				local t0 = os.clock()
+				while os.clock() - t0 < 10 and not C.PrisonNav.isInsideCell(room, r3.Position) do
+					h3:MoveTo(room.pos)
+					task.wait(0.4)
+				end
+				if not C.PrisonNav.isInsideCell(room, r3.Position) then
+					r3.CFrame = CFrame.new(room.pos + Vector3.new(0, 3, 0))
+				end
+				task.wait(0.5)
+				if not room.open then
+					pcall(C.PrisonFlow.closeCell, room)
+				end
+			elseif flat(r3.Position - dest).Magnitude > 30 then
+				r3.CFrame = CFrame.new(dest + Vector3.new(math.random(-4, 4), 3, math.random(-4, 4)))
+			end
+		end
+		cop:despawn("inmate returned")
+	end)
+	if not ok then
+		warn("[PrisonExtras] CO return " .. plr.Name .. ": " .. tostring(err))
+	end
+	X.outSince[plr] = nil
+	X.returning[plr] = nil
+end
+
+function X.returnNpc(rec: any, want: string)
+	X.returning[rec] = true
+	pcall(function()
+		print(("[PrisonExtras] CO SWEEP npc %s -> %s"):format(rec.model.Name, want))
+		if want == "CELL" then
+			rec.inCell = false
+			X.enterCell(rec)
+		else
+			if rec.inCell then
+				X.leaveCell(rec)
+			end
+			local pt = X.pointIn(rec.class, want)
+			if pt and not C.PL.walk(rec.model, rec.hum, rec.root, pt, 25) then
+				rec.model:PivotTo(CFrame.new(pt + Vector3.new(0, 3, 0)))
+			end
+		end
+	end)
+	X.outSince[rec] = nil
+	X.returning[rec] = nil
+end
+
+function X.startSweep()
+	task.spawn(function()
+		while C.prison and C.prison.Parent do
+			task.wait(4)
+			local now = os.clock()
+			for _, plr in Players:GetPlayers() do
+				if sweepEligible(plr) and not X.returning[plr] then
+					local class = plr:GetAttribute("SecurityClass") :: string
+					local want = X.classLoc[class] or X.locationFor(class, X.block())
+					local _, _, root = C.Util.charInfo(plr)
+					if root and not X.inPlace(root.Position, class, want, C.PL.playerRoom(plr)) then
+						X.outSince[plr] = X.outSince[plr] or now
+						if now - X.outSince[plr] > X.SWEEP_GRACE_PLAYER then
+							print(("[PrisonExtras] CO SWEEP player %s out of place (want %s)"):format(plr.Name, want))
+							task.spawn(X.returnPlayer, plr, class, want)
+						end
+					else
+						X.outSince[plr] = nil
+					end
+				elseif not X.returning[plr] then
+					X.outSince[plr] = nil
+				end
+			end
+			for model, rec in X.npcs do
+				if not recAlive(rec) or not model.Parent or X.returning[rec] then
+					continue
+				end
+				-- a line-up that died half way never clears LineUp: unstick it
+				if model:GetAttribute("LineUp") and not X.moving[rec.class] then
+					model:SetAttribute("LineUp", nil)
+				end
+				if busy(rec) or X.moving[rec.class] then
+					X.outSince[rec] = nil
+					continue
+				end
+				local want = X.classLoc[rec.class] or X.locationFor(rec.class, X.block())
+				if (want == "CELL" and not rec.room) or X.inPlace(rec.root.Position, rec.class, want, rec.room) then
+					X.outSince[rec] = nil
+				else
+					X.outSince[rec] = X.outSince[rec] or now
+					if now - X.outSince[rec] > X.SWEEP_GRACE_NPC then
+						task.spawn(X.returnNpc, rec, want)
+					end
+				end
+			end
+		end
+	end)
+end
+
 ---------------------------------------------------------------------------
 -- executions
 ---------------------------------------------------------------------------
@@ -1184,7 +1408,8 @@ local function buildProps(job: any)
 		label.Parent = gui
 		job.monitorLabel = label
 		job.monitor = monitor
-		job.standAt = (base * CFrame.new(2.2, 0, 0.5)).Position
+		-- v219: stand clear of the gurney (it is 2.8 wide) by the IV pole
+		job.standAt = (base * CFrame.new(3.8, 0, 0.6)).Position
 	else -- gas chamber
 		local seat = Instance.new("Seat")
 		seat.Name = "ChairSeat"
@@ -1329,6 +1554,14 @@ local function carryOut(job: any)
 		light.Brightness = 0
 	elseif job.method == "Lethal injection" then
 		if exe and exe.alive and job.standAt then
+			-- v219: the executioner never shoves the strapped-down inmate
+			if exe.model then
+				for _, d in exe.model:GetDescendants() do
+					if d:IsA("BasePart") then
+						d.CanCollide = false
+					end
+				end
+			end
 			local t0 = os.clock()
 			while exe.alive and flat(exe.root.Position - job.standAt).Magnitude > 2.5 and os.clock() - t0 < 8 do
 				exe:moveTo(job.standAt, false)
@@ -1338,6 +1571,9 @@ local function carryOut(job: any)
 				task.wait(0.3)
 			end
 			exe:stop()
+			if exe.alive and flat(exe.root.Position - job.standAt).Magnitude > 2.5 and exe.model then
+				exe.model:PivotTo(CFrame.lookAt(job.standAt + Vector3.new(0, 3, 0), Vector3.new(root.Position.X, job.standAt.Y + 3, root.Position.Z)))
+			end
 			pcall(function()
 				exe:face(root.Position)
 			end)
@@ -1359,9 +1595,31 @@ local function carryOut(job: any)
 			beam.FaceCamera = true
 			beam.Parent = job.bag
 		end
-		local bpm = 84
-		for i = 1, 14 do
-			bpm = math.max(0, math.floor(bpm * 0.8 - 2))
+		-- v219: the three-drug protocol. Each drug changes the IV bag colour; the
+		-- condemned player's own screen blurs (1: sedative), locks up (2: paralytic)
+		-- and fades out as the heart stops (3: potassium chloride).
+		local function stage(n: number, drug: string, color: Color3, line: string)
+			if job.bag then
+				job.bag.Color = color
+			end
+			if exe and exe.alive then
+				pcall(function()
+					exe:face(root.Position)
+				end)
+			end
+			local head = exe and exe.alive and exe.model and exe.model:FindFirstChild("Head")
+			if head then
+				pcall(function()
+					game:GetService("Chat"):Chat(head, line, Enum.ChatColor.White)
+				end)
+			end
+			if job.player then
+				ExecRE:FireClient(job.player, "injection", { stage = n, drug = drug })
+			end
+			broadcast("injection", { stage = n, drug = drug, viewer = true })
+			print(("[PrisonExtras] LETHAL INJECTION %s stage %d: %s"):format(job.name, n, drug))
+		end
+		local function monitor(bpm: number)
 			if job.monitorLabel then
 				job.monitorLabel.Text = if bpm > 0 then ("♥ %d BPM"):format(bpm) else "— FLATLINE —"
 				job.monitorLabel.TextColor3 = if bpm > 0 then Color3.fromRGB(60, 255, 90) else Color3.fromRGB(255, 70, 70)
@@ -1369,10 +1627,30 @@ local function carryOut(job: any)
 			if job.monitor then
 				sound(job.monitor, "rbxasset://sounds/electronicpingshort.wav", 0.6, if bpm > 0 then 1.4 else 0.9, false)
 			end
-			if hum.Health > 0 then
-				hum.Health = math.max(0, hum.Health - hum.MaxHealth / 12)
+		end
+		-- 1. sodium thiopental: unconscious
+		stage(1, "Sodium thiopental", Color3.fromRGB(245, 245, 200), "Administering the first drug.")
+		for _, bpm in { 88, 80, 72, 66, 62, 60, 58 } do
+			monitor(bpm)
+			task.wait(1.1)
+		end
+		-- 2. pancuronium bromide: paralysed, breathing stops
+		stage(2, "Pancuronium bromide", Color3.fromRGB(200, 225, 255), "Second drug. Respiration is stopping.")
+		for _, bpm in { 56, 54, 50, 46, 42, 40 } do
+			monitor(bpm)
+			task.wait(1.1)
+		end
+		-- 3. potassium chloride: the heart stops
+		stage(3, "Potassium chloride", Color3.fromRGB(255, 205, 205), "Third drug.")
+		for _, bpm in { 34, 22, 12, 4, 0, 0, 0 } do
+			monitor(bpm)
+			if bpm == 0 and hum.Health > 0 then
+				hum.Health = 0
 			end
 			task.wait(1)
+		end
+		if hum.Health > 0 then
+			hum.Health = 0
 		end
 	else
 		-- gas chamber: the executioner steps out, the door seals, pellets drop
@@ -1510,12 +1788,12 @@ local function runExecution(job: any)
 		end
 		cleanup(job)
 		if job.player and job.player.Parent then
-			C.resetExecutedPlayer(job.player)
-			job.player:SetAttribute("SentenceSeconds", 0)
-			job.player:SetAttribute("BookingState", "Executed")
-			job.player:SetAttribute("CustodyPhase", "Executed")
-			job.player:SetAttribute("DeathRowExecutionComplete", true)
-			pcall(C.tell, job.player, "Released", "executed")
+			if C.finishExecution then
+				C.finishExecution(job.player)
+			else
+				C.resetExecutedPlayer(job.player)
+				pcall(C.tell, job.player, "Released", "executed")
+			end
 		elseif job.rec then
 			job.rec.gone = true
 			X.forget(job.rec)
@@ -2158,6 +2436,7 @@ function X.init(ctx: any)
 		end
 	end)
 	X.startRegimen()
+	X.startSweep()
 	X.startPopulation()
 	print("[PrisonExtras] regimen, solitary, executions and visits online")
 end
