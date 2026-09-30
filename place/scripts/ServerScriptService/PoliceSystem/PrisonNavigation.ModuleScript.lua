@@ -2215,6 +2215,37 @@ function Nav.localTravel(cop: any, goal: Vector3, o: any?): (boolean, string?)
 		end
 		return ok,why
 	end
+	-- v218: a short leg the pair can't physically walk (a door frame clipping the
+	-- body sweep, a cell wall overlapping the start volume) no longer stalls the
+	-- escort for a minute: step both through to the leg's goal and carry on.
+	local snapped=false
+	local function snapThrough(why: string?): boolean
+		if snapped then return false end
+		local d=flat(goal-leaderRoot.Position)
+		if d.Magnitude>18 or math.abs(goal.Y-leaderRoot.Position.Y)>7 then return false end
+		snapped=true
+		if not prisoner then
+			-- a lone officer hung on a cell's door frame (leaving a cell he locked a prisoner in)
+			if not o.directDoor then snapped=false;return false end
+			print(("[PrisonNav] OFFICER SNAP through %s (%s)"):format(o.directDoor.Name,tostring(why)))
+			cop.root.AssemblyLinearVelocity=Vector3.zero
+			cop.root.CFrame=CFrame.lookAt(goal,goal+(if d.Magnitude>0.1 then d.Unit else Vector3.zAxis))
+			clearPath(lead)
+			return true
+		end
+		if not prisoner.Parent then return false end
+		local dir=if d.Magnitude>0.1 then d.Unit else flat(cop.root.CFrame.LookVector).Unit
+		if o.keepDoor then pcall(o.keepDoor) end
+		print(("[PrisonNav] ESCORT SNAP through %s (%s)"):format(o.directDoor and o.directDoor.Name or "leg",tostring(why)))
+		prisoner.AssemblyLinearVelocity=Vector3.zero
+		prisoner.CFrame=CFrame.lookAt(goal,goal+dir)
+		cop.root.AssemblyLinearVelocity=Vector3.zero
+		cop.root.CFrame=CFrame.lookAt(goal-dir*(o.formationGap or 2.8),goal)
+		table.insert(trail,goal)
+		clearPath(lead);clearPath(rear)
+		return true
+	end
+	local rearSnaps=0
 	while alive() and cop.alive and cop.root.Parent and os.clock()<deadline do
 		if prisoner and (hum.Health<=0 or o.escortee.Character~=char) then return finish(false,"prisoner lost") end
 		if o.keepDoor and os.clock()-lastDoor>1 then lastDoor=os.clock();pcall(o.keepDoor) end
@@ -2252,7 +2283,10 @@ function Nav.localTravel(cop: any, goal: Vector3, o: any?): (boolean, string?)
 				else leaderHum:MoveTo(p) end
 				if not prisoner then cop.moving=true end
 			end,function() leaderHum:MoveTo(leaderRoot.Position) end)
-			if why then return finish(false,why) end
+			if why then
+				if snapThrough(why) then return finish(true) end
+				return finish(false,why)
+			end
 		else
 			leaderHum:MoveTo(leaderRoot.Position);lead.progressAt=os.clock()
 		end
@@ -2266,7 +2300,19 @@ function Nav.localTravel(cop: any, goal: Vector3, o: any?): (boolean, string?)
 				cop.hum.WalkSpeed=math.clamp(8+(followGap-1)*0.6,6,10)
 				cop.moving=true;cop.hum:MoveTo(p)
 			end,function() cop:stop() end)
-			if why then return finish(false,"officer following: "..why) end
+			if why then
+				-- v218: the officer behind got hung on a door frame: put him back
+				-- behind the prisoner instead of abandoning the whole leg
+				if rearSnaps<3 and follow then
+					rearSnaps+=1
+					local look=flat(leaderRoot.Position-follow)
+					cop.root.AssemblyLinearVelocity=Vector3.zero
+					cop.root.CFrame=if look.Magnitude>0.1 then CFrame.lookAt(follow,follow+look) else CFrame.new(follow)
+					clearPath(rear);rear.failures=0;rear.progressAt=os.clock();rear.invalid=false
+				else
+					return finish(false,"officer following: "..why)
+				end
+			end
 			cop:updateAnim()
 			if reached and (o.continueMotion or settled or followGap<1) then
 				if (goal-leaderRoot.Position).Magnitude<math.max(2,o.arrivalRadius or 2) then return finish(true) end

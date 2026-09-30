@@ -996,11 +996,15 @@ spawnCar=function()
 		if driverNpc.Parent then driverNpc:Destroy() end
 		local report=ServerStorage:FindFirstChild("ReportCrime")
 		if report and report:IsA("BindableFunction") then pcall(function() report:Invoke(player,"Grand theft auto",1) end) end
-		local adopt=ServerStorage:FindFirstChild("AdoptStolenCar")
-		if adopt and adopt:IsA("BindableFunction") then
-			local ok,result=pcall(function() return adopt:Invoke(player,car) end)
-			if not ok or not result then warn("[CivilianTrafficServer] failed to hand stolen traffic car to CarServer: "..tostring(result)) end
-		end
+		-- v218: hand over after this Occupant event finishes (rebuilding the car's
+		-- joints inside the event fought the new SeatWeld and left the car undrivable)
+		task.defer(function()
+			local adopt=ServerStorage:FindFirstChild("AdoptStolenCar")
+			if adopt and adopt:IsA("BindableFunction") and car.Parent then
+				local ok,result=pcall(function() return adopt:Invoke(player,car) end)
+				if not ok or not result then warn("[CivilianTrafficServer] failed to hand stolen traffic car to CarServer: "..tostring(result)) end
+			end
+		end)
 	end)
 
 	local cleanedUp=false

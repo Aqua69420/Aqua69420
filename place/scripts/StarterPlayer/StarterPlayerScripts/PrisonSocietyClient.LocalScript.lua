@@ -363,6 +363,44 @@ optionGrid.Parent = optionFrame
 local currentToken: number? = nil
 local timerEnd: number? = nil
 local timerTotal = 1
+local forcedChoice = false
+local sceneButtons: { TextButton } = {}
+
+-- v218: forced-choice scenes - a big countdown under the line, no way out
+local countdown = Instance.new("TextLabel")
+countdown.Size = UDim2.new(1, 0, 0, 18)
+countdown.BackgroundTransparency = 1
+countdown.Font = Enum.Font.GothamBlack
+countdown.TextSize = 14
+countdown.TextColor3 = Color3.fromRGB(255, 90, 80)
+countdown.TextXAlignment = Enum.TextXAlignment.Left
+countdown.LayoutOrder = 3
+countdown.Visible = false
+countdown.Parent = box
+
+local TONES = {
+	calm = Color3.fromRGB(45, 95, 70),
+	bold = Color3.fromRGB(40, 70, 130),
+	risky = Color3.fromRGB(150, 100, 25),
+	hostile = Color3.fromRGB(135, 35, 35),
+}
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed or not forcedChoice or not box.Visible then
+		return
+	end
+	local keys = { Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three, Enum.KeyCode.Four }
+	for i, k in keys do
+		if input.KeyCode == k and sceneButtons[i] then
+			local b = sceneButtons[i]
+			local token = b:GetAttribute("Token")
+			local id = b:GetAttribute("OptionId")
+			if currentToken == token then
+				DialogueRE:FireServer(token, id)
+			end
+		end
+	end
+end)
 
 local function layoutBox()
 	local vp = workspace.CurrentCamera.ViewportSize
@@ -378,12 +416,19 @@ DialogueRE.OnClientEvent:Connect(function(data)
 			c:Destroy()
 		end
 	end
+	table.clear(sceneButtons)
 	if type(data) ~= "table" then
 		box.Visible = false
 		currentToken = nil
 		timerEnd = nil
+		forcedChoice = false
+		countdown.Visible = false
 		return
 	end
+	forcedChoice = data.forced == true
+	countdown.Visible = forcedChoice
+	timerBar.BackgroundColor3 = if forcedChoice then Color3.fromRGB(230, 60, 50) else Color3.fromRGB(230, 170, 40)
+	timerBar.LayoutOrder = if forcedChoice then 3 else 3
 	layoutBox()
 	currentToken = data.token
 	title.Text = ("%s  ·  %s"):format(tostring(data.name), tostring(data.gang))
@@ -404,13 +449,19 @@ DialogueRE.OnClientEvent:Connect(function(data)
 	for i, opt in data.options or {} do
 		local b = Instance.new("TextButton")
 		b.LayoutOrder = i
-		b.BackgroundColor3 = if opt.id == "trash" then Color3.fromRGB(120, 35, 35)
+		b.BackgroundColor3 = if opt.tone and TONES[opt.tone] then TONES[opt.tone]
+			elseif opt.id == "trash" then Color3.fromRGB(120, 35, 35)
 			elseif opt.id == "leave" or opt.id == "back" then Color3.fromRGB(55, 55, 62)
 			else Color3.fromRGB(40, 70, 110)
 		b.TextColor3 = Color3.new(1, 1, 1)
 		b.Font = Enum.Font.GothamMedium
 		b.TextScaled = true
-		b.Text = tostring(opt.text)
+		b.Text = if forcedChoice then ("%d. %s"):format(i, tostring(opt.text)) else tostring(opt.text)
+		b:SetAttribute("Token", data.token)
+		b:SetAttribute("OptionId", opt.id)
+		if forcedChoice then
+			table.insert(sceneButtons, b)
+		end
 		b.Parent = optionFrame
 		corner(b, 6)
 		local limit = Instance.new("UITextSizeConstraint")
@@ -439,7 +490,10 @@ task.spawn(function()
 		punchButton.Visible = isMobile() and canPunch()
 		if timerEnd and box.Visible then
 			local left = math.max(0, timerEnd - os.clock())
-			timerBar.Size = UDim2.new(left / timerTotal, 0, 0, 4)
+			timerBar.Size = UDim2.new(left / timerTotal, 0, 0, if forcedChoice then 6 else 4)
+			if forcedChoice then
+				countdown.Text = ("CHOOSE  -  %.1fs  (no backing out)"):format(left)
+			end
 		end
 	end
 end)

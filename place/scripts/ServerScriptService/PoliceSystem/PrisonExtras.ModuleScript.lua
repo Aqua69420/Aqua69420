@@ -881,7 +881,7 @@ function X.publishSchedule()
 		end
 		local ok, json = pcall(HttpService.JSONEncode, HttpService, rows)
 		if ok then
-			remotes:SetAttribute("Regimen_" .. class, json)
+			pcall(remotes.SetAttribute, remotes, "Regimen_" .. (string.gsub(class, "%W", "")), json)
 		end
 	end
 end

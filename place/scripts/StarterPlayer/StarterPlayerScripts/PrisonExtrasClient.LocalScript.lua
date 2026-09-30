@@ -373,11 +373,18 @@ local function refreshVisits()
 			v.Activated:Connect(function()
 				VisitRE:FireServer("request", e.name, false)
 			end)
+			v.Text = "GLASS VISIT"
 			if e.contact then
-				local c = textButton(row, "CONTACT", Color3.fromRGB(120, 70, 30), { Position = UDim2.new(0.5, 0, 0, 26), Size = UDim2.new(0.45, -6, 0, 22) })
+				local c = textButton(row, "CONTACT VISIT", Color3.fromRGB(150, 80, 25), { Position = UDim2.new(0.5, 0, 0, 26), Size = UDim2.new(0.5, -6, 0, 22) })
 				c.Activated:Connect(function()
 					VisitRE:FireServer("request", e.name, true)
+					if visitsStatus then
+						visitsStatus.Text = "Contact visit requested - waiting for " .. tostring(e.display)
+					end
 				end)
+			else
+				local c = textButton(row, "NO CONTACT (" .. tostring(e.class) .. ")", Color3.fromRGB(70, 70, 76), { Position = UDim2.new(0.5, 0, 0, 26), Size = UDim2.new(0.5, -6, 0, 22) })
+				c.AutoButtonColor = false
 			end
 		else
 			local w = make("TextLabel", {
@@ -779,7 +786,7 @@ local function readSchedule(): { any }?
 	if type(class) ~= "string" then
 		return nil
 	end
-	local raw = remotes:GetAttribute("Regimen_" .. class)
+	local raw = remotes:GetAttribute("Regimen_" .. (string.gsub(class, "%W", "")))
 	if type(raw) ~= "string" then
 		return nil
 	end

@@ -38,6 +38,29 @@ local function carOf(hum: Humanoid): Model?
 	if model:GetAttribute("TrafficActive") == true then
 		return nil
 	end
+	-- v218: only a real vehicle. A chair (or the execution chair) inside a
+	-- building used to make the WHOLE building the "car" - taking damage while
+	-- seated there wrecked and deleted the correctional facility.
+	local isCar = model:FindFirstChild("Owner") ~= nil
+		or model:GetAttribute("StolenVehicle") == true
+		or model:GetAttribute("CarName") ~= nil
+		or seat:IsA("VehicleSeat")
+	if not isCar then
+		return nil
+	end
+	local ok, size = pcall(model.GetExtentsSize, model)
+	if not ok or size.Magnitude > 80 then
+		return nil
+	end
+	local parts = 0
+	for _, d in model:GetDescendants() do
+		if d:IsA("BasePart") then
+			parts += 1
+			if parts > 800 then
+				return nil
+			end
+		end
+	end
 	return model
 end
 
@@ -113,7 +136,7 @@ local function wreck(car: Model)
 		blast.Position = core.Position
 		blast.BlastRadius = 14
 		blast.BlastPressure = 250000
-		blast.DestroyJointRadiusPercent = 1
+		blast.DestroyJointRadiusPercent = 0 -- never break the map around the wreck
 		blast.Parent = Workspace
 		for _, d in car:GetDescendants() do
 			if d:IsA("BasePart") then

@@ -7598,7 +7598,7 @@ local function loadFacilities()
 				center = (mn + mx) / 2,
 				cells = cells,
 				intake = intake,
-				gates = (model:FindFirstChild("GATE1") or model:FindFirstChild("GATE2")) and model or model:FindFirstChild("PrisonGates"),
+				gates = (model:FindFirstChild("GATE") or model:FindFirstChild("GATE1") or model:FindFirstChild("GATE2")) and model or model:FindFirstChild("PrisonGates"),
 			})
 		end
 	end
@@ -9751,7 +9751,7 @@ local function transport(player: Player, fac: any, preferredTransport: any?): bo
 			local announced=false
 			while transportAlive() and van.transporting and body.Parent do
 				local nearest=math.huge
-				for _,gateName in {"GATE1","GATE2"} do
+				for _,gateName in {"GATE","GATE1","GATE2"} do
 					local leaf=fac.model and fac.model:FindFirstChild(gateName)
 					if leaf then
 						local gp=if leaf:IsA("BasePart") then leaf.Position elseif leaf:IsA("Model") then leaf:GetPivot().Position else nil
@@ -10722,6 +10722,14 @@ release = function(player: Player, how: string)
 			if not PrisonFlow.deliver(player,"HOUSING OFFICER",holding,"RELEASE_ESCORT") then
 				warn("[CustodyDiag] RELEASE PROCESSING interrupted for "..player.Name)
 			end
+			-- v218: a 30 second booking hold (release paperwork) before the Release
+			-- Officer comes for them.
+			player:SetAttribute("ReleaseHoldEnds",os.time()+30)
+			tell(player,"Custody","Booking hold: release paperwork is processing (30s)")
+			print(("[CustodyDiag] RELEASE BOOKING HOLD %s 30s in %s"):format(player.Name,holding.name))
+			local holdUntil=os.clock()+30
+			while player.Parent and os.clock()<holdUntil do task.wait(1) end
+			player:SetAttribute("ReleaseHoldEnds",nil)
 			-- The Release Officer collects from the holding cell: unlock it for the walk out.
 			pcall(openMarkedDoor,holding.door,40)
 			PrisonFlow.rooms[player]=nil;PrisonFlow.reserved[player]=nil
@@ -11154,8 +11162,95 @@ local function gateLeafParts(leaf: Instance): {BasePart}
 	return parts
 end
 
+-- v218: the sally-port gates are now swing gates: each GATE model has an anchored
+-- "pivitPoint" with a Motor6D per leaf, jointed at the leaf's outer end. Opening
+-- swings each leaf 90 degrees about its hinge (toward the pivot side) by tweening
+-- the Motor6D's C0, with the leaves non-collidable while they move / stand open.
+local swingState: { [Instance]: any } = {}
+
+local function swingGates(target: Instance): { Model }
+	local out={}
+	local function consider(m: Instance)
+		if m:IsA("Model") then
+			for _,d in m:GetDescendants() do
+				if d:IsA("Motor6D") and d.Part0 and d.Part1 and d.Part0.Anchored then
+					table.insert(out,m)
+					break
+				end
+			end
+		end
+	end
+	local n=string.upper(target.Name)
+	if n=="GATE" or n=="GATE1" or n=="GATE2" then consider(target) end
+	if #out==0 then
+		for _,c in target:GetChildren() do
+			local cn=string.upper(c.Name)
+			if cn=="GATE" or cn=="GATE1" or cn=="GATE2" or cn=="GATE3" then consider(c) end
+		end
+	end
+	return out
+end
+
+local function swingGateOpen(gate: Model, secs: number)
+	local st=swingState[gate]
+	if not st then
+		st={untilT=0, motors={}, parts={}}
+		for _,d in gate:GetDescendants() do
+			if d:IsA("Motor6D") and d.Part0 and d.Part1 and d.Part0.Anchored then
+				local p0: BasePart=d.Part0
+				local hinge=d.C0.Position
+				-- where this leaf's middle sits, in the pivot's space
+				local leafModel=d.Part1:FindFirstAncestorWhichIsA("Model")
+				local mid: Vector3=d.Part1.Position
+				if leafModel and leafModel~=gate then
+					local sum,n=Vector3.zero,0
+					for _,q in leafModel:GetDescendants() do if q:IsA("BasePart") then sum+=q.Position;n+=1 end end
+					if n>0 then mid=sum/n end
+				end
+				local dir=p0.CFrame:PointToObjectSpace(mid)-hinge
+				local best,bestD=math.rad(90),math.huge
+				for _,a in {math.rad(90),math.rad(-90)} do
+					local d2=(hinge+CFrame.Angles(0,a,0):VectorToWorldSpace(dir)).Magnitude
+					if d2<bestD then best,bestD=a,d2 end
+				end
+				table.insert(st.motors,{m=d, closed=d.C0, opened=CFrame.new(hinge)*CFrame.Angles(0,best,0)*d.C0.Rotation})
+			end
+		end
+		for _,p in gate:GetDescendants() do
+			if p:IsA("BasePart") and not p.Anchored then st.parts[p]=p.CanCollide end
+		end
+		swingState[gate]=st
+	end
+	local wasOpen=st.untilT>os.clock()
+	st.untilT=math.max(st.untilT,os.clock()+secs)
+	if not wasOpen then
+		for p in st.parts do if p.Parent then p.CanCollide=false end end
+		for _,mo in st.motors do
+			TweenService:Create(mo.m,TweenInfo.new(2.2,Enum.EasingStyle.Quad,Enum.EasingDirection.InOut),{C0=mo.opened}):Play()
+		end
+		print("[PoliceSystem] PRISON SWING GATE OPEN: "..gate:GetFullName())
+	end
+	local mine=st.untilT
+	task.delay(secs+0.05,function()
+		if swingState[gate]~=st or st.untilT~=mine or os.clock()<st.untilT then return end
+		for _,mo in st.motors do
+			TweenService:Create(mo.m,TweenInfo.new(2.4,Enum.EasingStyle.Quad,Enum.EasingDirection.InOut),{C0=mo.closed}):Play()
+		end
+		task.delay(2.5,function()
+			if os.clock()<st.untilT then return end
+			for p,c in st.parts do if p.Parent then p.CanCollide=c end end
+			print("[PoliceSystem] PRISON SWING GATE CLOSED: "..gate:GetFullName())
+		end)
+	end)
+end
+
 physicalGateOpen = function(target: Instance, secs: number)
 	if not target or not target.Parent then return end
+	local swings=swingGates(target)
+	if #swings>0 then
+		for _,g in swings do swingGateOpen(g,secs) end
+		return
+	end
 	local leaves=gateLeafCandidates(target)
 	if #leaves==0 then
 		-- Unknown legacy gate structure: preserve old access behavior rather than fail closed.
@@ -11273,7 +11368,7 @@ end
 
 local function setupDoors()
 	if prison then
-		local hasNamedVehicleGates=(prison:FindFirstChild("GATE1")~=nil or prison:FindFirstChild("GATE2")~=nil)
+		local hasNamedVehicleGates=(prison:FindFirstChild("GATE")~=nil or prison:FindFirstChild("GATE1")~=nil or prison:FindFirstChild("GATE2")~=nil)
 		for _, c in prison:GetChildren() do
 			if c.Name == "PrisonAccess" and c:IsA("BasePart") then
 				CollectionService:AddTag(c, "PoliceAutoDoor")
@@ -11287,7 +11382,7 @@ local function setupDoors()
 			end
 		end
 		if hasNamedVehicleGates then
-			local promptPart=biggestPart(prison:FindFirstChild("GATE1") or prison:FindFirstChild("GATE2"))
+			local promptPart=biggestPart(prison:FindFirstChild("GATE") or prison:FindFirstChild("GATE1") or prison:FindFirstChild("GATE2"))
 			if promptPart then
 				CollectionService:AddTag(promptPart,"PoliceAutoDoor")
 				local prompt=Instance.new("ProximityPrompt")
@@ -11295,6 +11390,41 @@ local function setupDoors()
 				prompt.KeyboardKeyCode=Enum.KeyCode.E;prompt.HoldDuration=0.3;prompt.MaxActivationDistance=12;prompt.RequiresLineOfSight=false;prompt.Parent=promptPart
 				prompt.Triggered:Connect(function(player)
 					if isStaff(player) and not inPrison(player) then physicalGateOpen(prison,18) else tell(player,"Notice","Locked - staff only") end
+				end)
+			end
+			-- v218: police / staff vehicles (player or AI driven) open the gate they drive up to
+			local swings=swingGates(prison)
+			if #swings>0 then
+				local centers={}
+				for _,g in swings do
+					local sum,n=Vector3.zero,0
+					for _,q in g:GetDescendants() do if q:IsA("BasePart") and not q.Anchored then sum+=q.Position;n+=1 end end
+					if n>0 then table.insert(centers,{gate=g,pos=sum/n}) end
+				end
+				task.spawn(function()
+					while prison and prison.Parent do
+						task.wait(0.4)
+						for _,c in centers do
+							local ok,parts=pcall(function() return Workspace:GetPartBoundsInRadius(c.pos,48) end)
+							if ok then
+								for _,part in parts do
+									if part:IsA("VehicleSeat") then
+										local occ=part.Occupant
+										local driver=occ and Players:GetPlayerFromCharacter(occ.Parent)
+										local car=part:FindFirstAncestorWhichIsA("Model")
+										local civilian=car and (car:GetAttribute("TrafficActive")==true or car:GetAttribute("StolenVehicle")==true)
+										local allowed=false
+										if driver then
+											allowed=isStaff(driver) and not inPrison(driver)
+										elseif not civilian then
+											allowed=occ~=nil or part.AssemblyLinearVelocity.Magnitude>3
+										end
+										if allowed then swingGateOpen(c.gate,7);break end
+									end
+								end
+							end
+						end
+					end
 				end)
 			end
 		end
@@ -12037,8 +12167,8 @@ PL.NPC_ARRESTS = {
 	Interval = { 60, 180 }, -- seconds between arrests (v212: always one within 5 minutes)
 	MaxInFlight = 3, -- arrests on the road / in intake at the same time
 	MaxHoused = 30, -- arrested NPCs kept in the prison at once (PrisonExtras caps each class)
-	IntakeHold = 20,
-	BookingHold = 15,
+	IntakeHold = 60, -- v218: same one-minute intake hold a player gets
+	BookingHold = 30,
 	Classes = { { "Low", 40 }, { "Medium", 35 }, { "High", 20 }, { "Death Row", 5 } },
 }
 PL.npcArrestHoused = 0
@@ -12122,6 +12252,51 @@ function PL.npcEscortTo(cop: any, npc: Model, goal: Vector3, label: string): boo
 	return false
 end
 
+-- v218: NPC arrivals are held INSIDE a free intake / booking cell (door shut)
+-- for the hold, like a player, instead of standing outside it.
+PL.npcHeldRooms = {}
+function PL.npcPickRoom(category: string): any?
+	local free={}
+	for _,room in PL.classRooms(category) do
+		if not PL.npcHeldRooms[room.name] then
+			local taken=false
+			for _,plr in Players:GetPlayers() do
+				local _,_,r=Util.charInfo(plr)
+				if r and Util.flat(r.Position-room.pos).Magnitude<6 and math.abs(r.Position.Y-room.pos.Y)<8 then taken=true;break end
+			end
+			if not taken then table.insert(free,room) end
+		end
+	end
+	return if #free>0 then free[math.random(1,#free)] else nil
+end
+function PL.npcHoldIn(cop: any, npc: Model, category: string, secs: number, label: string)
+	local room=PL.npcPickRoom(category)
+	local hum=npc:FindFirstChildOfClass("Humanoid")
+	local root=npc:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not room or not hum or not root then
+		if cop then cop:stop() end
+		task.wait(secs)
+		return
+	end
+	PL.npcHeldRooms[room.name]=true
+	PL.npcEscortTo(cop,npc,PrisonFlow.approach(room),label)
+	if not room.open then pcall(openMarkedDoor,room.door,7) end
+	hum.WalkSpeed=8;hum:MoveTo(room.pos)
+	local t=os.clock()+6
+	while os.clock()<t and npc.Parent and Util.flat(root.Position-room.pos).Magnitude>2 do task.wait(0.2) end
+	if npc.Parent and Util.flat(root.Position-room.pos).Magnitude>3 then npc:PivotTo(CFrame.new(room.pos+Vector3.new(0,3,0))) end
+	if cop then cop:stop() end
+	print(("[NPCArrest] %s held in %s for %ds"):format(label,room.name,secs))
+	task.wait(secs)
+	if npc.Parent and not room.open then pcall(openMarkedDoor,room.door,7) end
+	if npc.Parent then
+		hum:MoveTo(PrisonFlow.approach(room))
+		local t2=os.clock()+5
+		while os.clock()<t2 and npc.Parent and Util.flat(root.Position-PrisonFlow.approach(room)).Magnitude>3 do task.wait(0.2) end
+	end
+	PL.npcHeldRooms[room.name]=nil
+end
+
 function PL.npcArrestOnce()
 	if not PrisonNav or not PrisonNav.ready then warn("[NPCArrest] prison navigation not ready");return end
 	if PL.npcArrestHoused>=PL.NPC_ARRESTS.MaxHoused then return end
@@ -12189,8 +12364,42 @@ function PL.npcArrestOnce()
 	deadline=os.clock()+240
 	while not roadDone and os.clock()<deadline and npc.Parent and not van.dead do task.wait(0.5) end
 	if not npc.Parent or van.dead then pcall(function() van:destroy() end);return end
+	-- v218: same as a player transport - the city road ends at the prison access
+	-- road, so drive the last stretch through the sally-port gates to the intake
+	-- handoff (the old unload point was outside the gates, where the intake
+	-- officer can't walk to).
+	local unloadAt: Vector3?=nil
+	do
+		local intakeGoal=fac.intake or fac.center
+		if Util.flat(intakeGoal-body.Position).Magnitude>45 then
+			local finalRoute=correctionalVehicleRoute(van.cfg,body.Position,intakeGoal)
+			if finalRoute and #finalRoute>=2 then
+				local done=false
+				van.parked=false
+				van.parts.ap.Enabled=true;van.parts.ao.Enabled=true
+				for _,part in van.model:GetDescendants() do
+					if part:IsA("BasePart") then part.Anchored=false;part.CanCollide=false end
+				end
+				body.Anchored=false
+				pcall(function() body:SetNetworkOwner(nil) end)
+				van.parts.ap.Position=body.Position;van.parts.ao.CFrame=body.CFrame.Rotation
+				if fac.gates then pcall(physicalGateOpen,fac.gates,25) end
+				print("[NPCArrest] final approach to intake handoff "..string.format("%.1f",Util.flat(intakeGoal-body.Position).Magnitude).." studs")
+				van:drive(finalRoute,8,nil,function() done=true end)
+				local t=os.clock()+45
+				while not done and os.clock()<t and npc.Parent and not van.dead and Util.flat(intakeGoal-body.Position).Magnitude>20 do task.wait(0.4) end
+			end
+			if npc.Parent and Util.flat(intakeGoal-body.Position).Magnitude>60 then
+				-- could not drive in: walk-in point next to the intake instead of the gate
+				warn("[NPCArrest] cruiser could not reach intake handoff; unloading at intake")
+				weld:Destroy()
+				unloadAt=intakeGoal
+				weld=Instance.new("WeldConstraint")
+			end
+		end
+	end
 	-- 3) unloaded at the prison and handed to an intake officer
-	local unload=body.CFrame:PointToWorldSpace(Vector3.new(-(body.Size.X/2+3),0,0))
+	local unload=unloadAt or body.CFrame:PointToWorldSpace(Vector3.new(-(body.Size.X/2+3),0,0))
 	weld:Destroy()
 	for _,d in npc:GetDescendants() do if d:IsA("BasePart") then d.Massless=false;d.CanCollide=(d.Name=="HumanoidRootPart" or d.Name=="Head" or string.find(d.Name,"Torso")~=nil) end end
 	npc:PivotTo(CFrame.new(unload+Vector3.new(0,3,0)))
@@ -12202,12 +12411,10 @@ function PL.npcArrestOnce()
 	if not cop then npc:Destroy();return end
 	moveEscortOnly(cop,unload,40)
 	PL.npcLabel(npc,"INTAKE")
-	local intake=PL.classRooms("IntakeCell");local booking=PL.classRooms("BookingCell")
-	if intake[1] then PL.npcEscortTo(cop,npc,PrisonFlow.approach(intake[math.random(1,#intake)]),"NPC INTAKE") end
-	cop:stop();task.wait(PL.NPC_ARRESTS.IntakeHold)
+	PL.npcLabel(npc,"INTAKE HOLD")
+	PL.npcHoldIn(cop,npc,"IntakeCell",PL.NPC_ARRESTS.IntakeHold,"NPC INTAKE")
 	PL.npcLabel(npc,"BOOKING")
-	if booking[1] then PL.npcEscortTo(cop,npc,PrisonFlow.approach(booking[math.random(1,#booking)]),"NPC BOOKING") end
-	cop:stop();task.wait(PL.NPC_ARRESTS.BookingHold)
+	PL.npcHoldIn(cop,npc,"BookingCell",PL.NPC_ARRESTS.BookingHold,"NPC BOOKING")
 	-- 4) dress-out: uniform of the class
 	local dress=PrisonFlow.findDressOutRoom()
 	if dress then PL.npcEscortTo(cop,npc,PrisonFlow.approach(dress),"NPC DRESS OUT") end

@@ -375,7 +375,8 @@ local function prepareCar(car, seat)
 
 	-- Strip old joints / movers; they either don't work any more or fight the new setup.
 	for _, obj in ipairs(car:GetDescendants()) do
-		if obj:IsA("JointInstance") or obj:IsA("BodyMover") or obj:IsA("WeldConstraint") then
+		if (obj:IsA("JointInstance") or obj:IsA("BodyMover") or obj:IsA("WeldConstraint")) and obj.Name ~= "SeatWeld" then
+			-- v218: never strip the weld holding a seated player (carjacked traffic cars)
 			obj:Destroy()
 		elseif obj:IsA("BaseScript") then
 			obj.Disabled = true
@@ -910,6 +911,18 @@ adoptStolen.OnInvoke=function(player,car)
 	for _,seat in ipairs(car:GetDescendants()) do if seat:IsA("VehicleSeat") or seat:IsA("Seat") then setupSeat(car,rootSeat,seat,seat==rootSeat) end end
 	hookDrive(car,rootSeat,driven,(CARS[car:GetAttribute("CarName") or car.Name] or {}).topSpeed or 72)
 	activeCars[player]=car
+	-- v218: the thief sat down before CarServer set the seat up, so the seat's own
+	-- Occupant hook never ran for them: hand them the car's physics and controls now.
+	local occ=rootSeat.Occupant
+	if occ and occ.Parent==player.Character then
+		setPassenger(occ.Parent,true)
+		pcall(function()
+			occ:SetStateEnabled(Enum.HumanoidStateType.FallingDown,false)
+			occ:SetStateEnabled(Enum.HumanoidStateType.Ragdoll,false)
+		end)
+		setCarOwner(car,player)
+		giveDoorGui(player,car)
+	end
 	print(("[CarServer] %s stole and took control of %s"):format(player.Name,car.Name))
 	return true
 end

@@ -307,6 +307,7 @@ local function releaseNpc(n: Npc)
 end
 
 local openDialogue -- forward
+local resolveScene -- forward (v218 forced-choice scenes)
 
 local function setupPrompt(n: Npc)
 	local prompt = n.root:FindFirstChild("SocietyTalk") :: ProximityPrompt?
@@ -983,7 +984,7 @@ end
 ---------------------------------------------------------------------------
 -- dialogue
 ---------------------------------------------------------------------------
-type Session = { token: number, npc: Npc, kind: string, expires: number, answered: boolean, stage: string }
+type Session = { token: number, npc: Npc, kind: string, expires: number, answered: boolean, stage: string, scene: any?, sceneEnds: number?, depth: number? }
 local sessions: { [Player]: Session } = {}
 local tokenSeq = 0
 
@@ -1005,7 +1006,10 @@ local function sendDialogue(player: Player, s: Session, text: string, options: {
 		color = gang and gang.color or Color3.fromRGB(150, 150, 150),
 		text = text,
 		options = options,
-		seconds = if s.kind == "approach" and not s.answered then math.max(1, s.expires - os.clock()) else nil,
+		seconds = if s.scene and s.sceneEnds then math.max(0.5, s.sceneEnds - os.clock())
+			elseif s.kind == "approach" and not s.answered then math.max(1, s.expires - os.clock())
+			else nil,
+		forced = s.scene ~= nil,
 	})
 	say(s.npc.model, text, 5)
 end
@@ -1064,7 +1068,12 @@ openDialogue = function(player: Player, n: Npc, kind: string, opener: string?)
 		while sessions[player] == s do
 			local _, root = charInfo(player.Character)
 			local walkedOff = root == nil or (root.Position - n.root.Position).Magnitude > 22
-			if os.clock() > s.expires or walkedOff or not free2(n) then
+			if s.scene and s.sceneEnds and (os.clock() > s.sceneEnds or walkedOff) then
+				-- no backing out: running the clock down (or walking off) picks for you
+				resolveScene(player, s, s.scene.timeout, true)
+			elseif s.scene then
+				-- mid-scene: the conversation can't just end
+			elseif os.clock() > s.expires or walkedOff or not free2(n) then
 				if s.kind == "approach" and not s.answered then
 					say(n.model, pick(LINES.ignored), 4)
 					addRep(player, n.gang, -6, "ignored")
@@ -1101,9 +1110,148 @@ local function reply(player: Player, s: Session, text: string, delta: number?, w
 	end
 end
 
+
+---------------------------------------------------------------------------
+-- v218 forced-choice scenes (Telltale style): picking a topic starts a scene
+-- with 4 answers and a countdown. There is no "walk away" - when the clock runs
+-- out (or you walk off) the silent option is chosen for you. Answers have
+-- consequences: respect, rival respect, fights, a CO noticing (solitary),
+-- contraband, cash.
+---------------------------------------------------------------------------
+local SCENE_TIME = 10
+type Outcome = { say: { string }, rep: number?, rival: number?, fight: number?, co: number?, item: string?, cash: number?, notice: string?, next: string?, crew: boolean? }
+local SCENES: { [string]: { line: { string }, options: { { text: string, tone: string, out: Outcome } }, timeout: Outcome } } = {
+	joke = {
+		line = { "Go on then, comedian. Make me laugh.", "You think you're funny? Prove it.", "Everybody's a comedian in here. Your turn." },
+		options = {
+			{ text = "Roast the guards", tone = "bold", out = { say = { "HAH! Officer Donut, I'm stealing that.", "Keep it down... but that was good." }, rep = 7, co = 0.15, notice = "A CO heard that." } },
+			{ text = "Joke about myself", tone = "calm", out = { say = { "Heh. At least you know what you are.", "Alright, that's fair." }, rep = 3 } },
+			{ text = "Joke about his crew", tone = "risky", out = { say = { "You wanna say that again?", "Say one more word about my people." }, rep = -12, fight = 0.5, next = "trash" } },
+			{ text = "Joke about his mama", tone = "hostile", out = { say = { "...You're dead.", "Oh, you done messed up now." }, rep = -22, fight = 0.85, co = 0.35 } },
+		},
+		timeout = { say = { "...That's it? You froze up.", "Yeah, that's what I thought. Boring." }, rep = -4, notice = "You choked. He'll remember that." },
+	},
+	respect = {
+		line = { "Respect, huh? Then do me a favor. Hold something for me.", "Words are cheap. Hold this for me till count.", "You wanna show respect? Keep this in your cell." },
+		options = {
+			{ text = "Hold it for him", tone = "risky", out = { say = { "Good. Don't get caught.", "That's respect. We're good." }, rep = 10, item = "Shiv", co = 0.25, notice = "You're holding contraband now." } },
+			{ text = "\"What's in it for me?\"", tone = "bold", out = { say = { "Smart. Here, for your trouble.", "Business man, huh? Fine." }, rep = 2, item = "Pills", next = "deal" } },
+			{ text = "\"I don't do favors\"", tone = "calm", out = { say = { "Then don't talk to me about respect.", "Noted." }, rep = -5 } },
+			{ text = "Tell a CO about it", tone = "hostile", out = { say = { "You a SNITCH?", "Snitches get stitches, fish." }, rep = -35, rival = 3, fight = 0.7, notice = "Word travels fast. Everyone knows you snitched." } },
+		},
+		timeout = { say = { "Too slow. Forget I asked.", "Hesitation. That tells me everything." }, rep = -6 },
+	},
+	deal = {
+		line = { "You like business? I got a bigger job. $500 up front, double back tomorrow." },
+		options = {
+			{ text = "Pay the $500", tone = "risky", out = { say = { "Pleasure doing business.", "You'll see it back. Probably." }, cash = 500, rep = 8 } },
+			{ text = "Haggle him down", tone = "bold", out = { say = { "Hah. You got guts. Fine, forget the fee." }, rep = 4 } },
+			{ text = "Walk it back", tone = "calm", out = { say = { "Thought so. Small time." }, rep = -3 } },
+			{ text = "Threaten to report him", tone = "hostile", out = { say = { "Now you're threatening me?" }, rep = -20, fight = 0.75 } },
+		},
+		timeout = { say = { "Clock's ticking and you're standing there. No deal." }, rep = -3 },
+	},
+	trash = {
+		line = { "You got something to say to me?", "Say it again. To my face.", "Oh, you wanna go?" },
+		options = {
+			{ text = "Back down", tone = "calm", out = { say = { "Yeah. Walk it off, fish.", "Smart move." }, rep = -6 } },
+			{ text = "Stare him down", tone = "bold", out = { say = { "...Tch. Not worth it.", "You got some nerve." }, rep = 8, fight = 0.45 } },
+			{ text = "Swing first", tone = "hostile", out = { say = { "Oh it's ON!", "BIG mistake." }, rep = -10, fight = 1, co = 0.55, notice = "Every CO saw you start that." } },
+			{ text = "Call your crew over", tone = "risky", out = { say = { "You need backup? Pathetic.", "Bring 'em. I'll wait." }, rep = -8, crew = true, fight = 0.4 } },
+		},
+		timeout = { say = { "Nothing? Then I'll say it for you.", "Silence. Figures." }, rep = -8, fight = 0.7 },
+	},
+}
+
+local function startScene(player: Player, s: Session, id: string)
+	local sc = SCENES[id]
+	if not sc then
+		return
+	end
+	s.stage = "scene"
+	s.scene = sc
+	s.depth = (s.depth or 0) + 1
+	s.sceneEnds = os.clock() + SCENE_TIME
+	s.expires = s.sceneEnds + 1
+	s.token += 1 -- old buttons stop working
+	local opts = {}
+	for i, o in sc.options do
+		table.insert(opts, { id = "scene" .. i, text = o.text, tone = o.tone })
+	end
+	sendDialogue(player, s, pick(sc.line), opts)
+end
+
+resolveScene = function(player: Player, s: Session, out: Outcome, timedOut: boolean?)
+	local n = s.npc
+	local gang = n.gang and GANGS[n.gang]
+	s.scene = nil
+	s.sceneEnds = nil
+	s.answered = true
+	addRep(player, n.gang, out.rep or 0, if timedOut then "froze up" else "chose")
+	if out.rival and gang then
+		setRep(player, gang.rival, getRep(player, gang.rival) + out.rival)
+	end
+	if out.crew then
+		local mine = player:GetAttribute("PrisonGang")
+		if type(mine) == "string" and GANGS[mine] then
+			addRep(player, mine, 5, "called the crew")
+			notice(player, GANGS[mine].name .. " have your back")
+		else
+			notice(player, "Nobody's coming. You don't have a crew.")
+		end
+	end
+	if out.cash and out.cash > 0 then
+		if not economy("Charge", player, out.cash) then
+			out = { say = { "You ain't even got it? You wasted my time." }, fight = 0.6 }
+		end
+	end
+	if out.item == "Shiv" then
+		giveShiv(player)
+	elseif out.item == "Pills" then
+		givePills(player)
+	end
+	if out.notice then
+		notice(player, out.notice)
+	end
+	local line = pick(out.say)
+	local fights = out.fight and math.random() < out.fight
+	if out.co and math.random() < out.co then
+		task.delay(1.5, function()
+			notice(player, "A correctional officer saw that - you're going to solitary")
+			discipline(player, "caught in the act")
+		end)
+	end
+	if out.next and not fights and (s.depth or 0) < 3 and SCENES[out.next] then
+		say(n.model, line, 3)
+		s.expires = os.clock() + 5
+		task.delay(1.2, function()
+			if sessions[player] == s then
+				startScene(player, s, out.next :: string)
+			end
+		end)
+		return
+	end
+	say(n.model, line, 4)
+	closeDialogue(player)
+	if fights then
+		task.delay(0.4, function()
+			attack(n, player, 20)
+		end)
+	end
+end
+
 DialogueRE.OnServerEvent:Connect(function(player, token, choice)
 	local s = sessions[player]
 	if not s or s.token ~= token or type(choice) ~= "string" then
+		return
+	end
+	if s.scene then
+		-- mid-scene only the scene's own answers count (no backing out)
+		local idx = tonumber(string.match(choice, "^scene(%d)$"))
+		local opt = idx and s.scene.options[idx]
+		if opt then
+			resolveScene(player, s, opt.out, false)
+		end
 		return
 	end
 	s.answered = true
@@ -1117,19 +1265,9 @@ DialogueRE.OnServerEvent:Connect(function(player, token, choice)
 		end
 		say(n.model, if mood == "hostile" then "Yeah, keep walking." else "Aight.", 3)
 		closeDialogue(player)
-	elseif choice == "respect" then
-		if mood == "hostile" then
-			reply(player, s, "Respect gotta be earned back, fish.", 2, "respect", true)
-		else
-			reply(player, s, pick({ "Respect.", "Solid.", "I see you." }), 4, "respect", true)
-		end
-	elseif choice == "joke" then
-		if math.random() < 0.55 then
-			reply(player, s, pick({ "Hah! You're funny.", "Okay, that was good.", "Heh. Alright." }), 5, "joke landed", true)
-		else
-			reply(player, s, pick({ "...That ain't funny.", "You think you're a comedian?", "Not the time." }), -3, "joke flopped", true)
-		end
-	elseif choice == "trash" then
+	elseif choice == "respect" or choice == "joke" or choice == "trash" then
+		startScene(player, s, choice)
+	elseif choice == "trash_legacy" then
 		addRep(player, n.gang, -15, "talked trash")
 		if gang then
 			-- their rivals enjoy it
