@@ -537,6 +537,75 @@ local function moodFor(player: Player, n: Npc): string
 end
 
 ---------------------------------------------------------------------------
+-- v229 RIOT STATE: the prison's mood. Three things feed it:
+--   * gang anger - each gang's anger at its rival (fights, beatdowns)
+--   * CO anger   - how provoked the inmates are by the officers (shakedowns,
+--                  rough handling, trips to solitary)
+--   * tension    - the overall temperature of the place
+-- Past a point it boils over: a gang war (rival crews brawl) or a full riot
+-- where inmates turn on the officers. Published on the PrisonSociety folder
+-- (PrisonTension / COAnger / GangAnger_XX / Riot) for the client panel.
+---------------------------------------------------------------------------
+local Riot = {
+	tension = 15,
+	coAnger = 10,
+	gangAnger = {} :: { [string]: number },
+	active = false,
+	cause = "",
+	rioters = {} :: { [any]: number }, -- Npc -> hits landed
+	coHits = {} :: { [Player]: number },
+	lastRiot = -600,
+	lastGangWar = -300,
+	lastWarning = 0,
+}
+for _, k in GANG_ORDER do
+	Riot.gangAnger[k] = 10
+end
+
+local function riotPublish()
+	folder:SetAttribute("PrisonTension", math.floor(Riot.tension + 0.5))
+	folder:SetAttribute("COAnger", math.floor(Riot.coAnger + 0.5))
+	for k, v in Riot.gangAnger do
+		folder:SetAttribute("GangAnger_" .. k, math.floor(v + 0.5))
+	end
+	folder:SetAttribute("Riot", Riot.active)
+end
+
+-- the hottest rival pair (the average anger of two rival gangs at each other)
+local function riotGangHeat(): (number, string?)
+	local best, bestKey = 0, nil
+	for _, k in GANG_ORDER do
+		local r = GANGS[k].rival
+		local v = ((Riot.gangAnger[k] or 0) + (Riot.gangAnger[r] or 0)) / 2
+		if v > best then
+			best, bestKey = v, k
+		end
+	end
+	return best, bestKey
+end
+
+-- the single "anger level" of the prison, 0..100
+local function riotLevel(): number
+	local gang = riotGangHeat()
+	return Riot.tension * 0.45 + Riot.coAnger * 0.35 + gang * 0.2
+end
+
+-- tension: overall; gang: that gang gets angrier at its rival; co: at the officers
+local function riotHeat(tension: number, gang: string?, gangDelta: number?, co: number?)
+	Riot.tension = math.clamp(Riot.tension + tension, 0, 100)
+	if gang and Riot.gangAnger[gang] then
+		Riot.gangAnger[gang] = math.clamp(Riot.gangAnger[gang] + (gangDelta or tension * 1.5), 0, 100)
+	end
+	if co then
+		Riot.coAnger = math.clamp(Riot.coAnger + co, 0, 100)
+	end
+	riotPublish()
+end
+riotPublish()
+
+local riotOnCOHit -- forward: a player punched a correctional officer
+
+---------------------------------------------------------------------------
 -- punching
 ---------------------------------------------------------------------------
 local restC0: { [Motor6D]: CFrame } = {}
@@ -623,6 +692,10 @@ local function onPlayerHit(player: Player, model: Model, damage: number)
 		return
 	end
 	hum:TakeDamage(damage)
+	if cos[model] then
+		riotOnCOHit(player, cos[model])
+		return
+	end
 	local n = npcs[model]
 	local victim = Players:GetPlayerFromCharacter(model)
 	if isInmate(player) and (n or (victim and isInmate(victim))) then
@@ -632,6 +705,7 @@ local function onPlayerHit(player: Player, model: Model, damage: number)
 		return
 	end
 	if n.gang then
+		riotHeat(0.6, n.gang, 1, nil)
 		local killed = hum.Health <= 0
 		addRep(player, n.gang, if killed then -40 else -12, if killed then "killed a member" else "hit a member")
 		holdGrudge(player, n.gang, 120)
@@ -732,6 +806,10 @@ end
 -- v212: fighters a CO catches go to solitary (PoliceSystem's PrisonExtras)
 local lastInmateHit: { [Player]: number } = {}
 local function discipline(target: Instance, why: string)
+	-- v229: every trip to the hole winds the block up against the COs
+	if not Riot.active and why ~= "rioting" and why ~= "inciting a riot" then
+		riotHeat(1.5, nil, nil, if target:IsA("Player") then 4 else 2.5)
+	end
 	local fn = ServerStorage:FindFirstChild("PrisonDiscipline")
 	if fn and fn:IsA("BindableFunction") then
 		task.spawn(function()
@@ -857,6 +935,11 @@ local function npcFight(a: Npc, b: Npc)
 		return
 	end
 	say(a.model, pick(LINES.taunt), 3)
+	-- v229: a scrap between rivals makes both crews angrier at each other
+	riotHeat(2, a.gang, 6, nil)
+	if b.gang then
+		riotHeat(0, b.gang, 6, nil)
+	end
 	for _, o in freeNpcsNear(a.root.Position, 35) do
 		if math.random() < 0.5 then
 			say(o.model, pick(LINES.fight), 3)
@@ -924,6 +1007,9 @@ end
 task.spawn(function()
 	while true do
 		task.wait(math.random(35, 70))
+		if Riot.active then
+			continue
+		end
 		local pool = {}
 		for _, n in npcs do
 			if n.gang and free(n) and n.hum.Health > 40 then
@@ -1667,6 +1753,504 @@ task.spawn(function()
 end)
 
 ---------------------------------------------------------------------------
+-- v229 RIOTS
+---------------------------------------------------------------------------
+local RIOT_LINES = {
+	start = { "BURN IT DOWN!", "THEY CAN'T HOLD ALL OF US!", "GET THE COs!", "IT'S GOING DOWN!", "NO MORE!", "TAKE THE BLOCK!" },
+	co = { "Not so tough now, huh?!", "Where's your baton now?!", "This is for the hole!", "Get him!" },
+	gang = { "Tonight we settle it!", "Your crew's finished!", "This our yard now!" },
+	subdued = { "Alright! Alright!", "I'm down, I'm down!", "Get off me!", "I give!" },
+	warn = { "Something's gonna pop off...", "These COs pushing too hard, man.", "Whole block's on edge.", "It's gonna blow, watch." },
+	coProvoke = { "Wall. Now.", "You got a problem, inmate?", "Move it, or you're going in the hole.", "Shakedown. Strip the bunk.", "Keep running your mouth." },
+	inmateBack = { "Man, get off me!", "This is harassment!", "Every day with this...", "Y'all gonna push somebody too far." },
+}
+
+local RIOT_MIN_GAP = 300 -- seconds between riots
+local RIOT_LEVEL = 62 -- the anger level where a riot can break out
+local GANG_WAR_HEAT = 72 -- rival crews this angry go to war
+
+local function broadcast(inmateText: string, outsideText: string?)
+	for _, p in Players:GetPlayers() do
+		if isInmate(p) then
+			notice(p, inmateText)
+		elseif outsideText then
+			notice(p, outsideText)
+		end
+	end
+end
+
+local function nearestCO(pos: Vector3, radius: number, minHealth: number): Npc?
+	local best, bestD = nil, radius
+	for _, co in cos do
+		if co.model.Parent and co.hum.Health > minHealth then
+			local d = (co.root.Position - pos).Magnitude
+			if d < bestD and math.abs(co.root.Position.Y - pos.Y) < 14 then
+				best, bestD = co, d
+			end
+		end
+	end
+	return best
+end
+
+local function riotAlive(n: Npc): boolean
+	return Riot.rioters[n] ~= nil and n.model.Parent ~= nil and n.hum.Health > 0
+end
+
+local function subdue(n: Npc, by: Npc?)
+	if Riot.rioters[n] == nil then
+		return
+	end
+	Riot.rioters[n] = nil
+	n.model:SetAttribute("Rioting", nil)
+	n.hum.Health = math.max(n.hum.Health, 20)
+	n.hum:MoveTo(n.root.Position)
+	say(n.model, pick(RIOT_LINES.subdued), 3)
+	if by then
+		say(by.model, pick({ "Stay down!", "On the ground!", "Hands behind your back!" }), 3)
+	end
+	releaseNpc(n)
+end
+
+-- one rioter's behaviour: go after COs, rivals, or a player they hate
+local function runRioter(n: Npc)
+	local target: Model? = nil
+	local nextPick, nextHit = 0, 0
+	while Riot.active and riotAlive(n) do
+		if os.clock() >= nextPick then
+			nextPick = os.clock() + 1.5
+			target = nil
+			local pos = n.root.Position
+			-- the officers are the main target, unless this is a gang war
+			local wantCO = Riot.cause ~= "gang" or math.random() < 0.35
+			local co = wantCO and nearestCO(pos, 90, 20) or nil
+			if co then
+				target = co.model
+			else
+				-- a rival still standing
+				local rival = n.gang and GANGS[n.gang].rival
+				local bestD = 45
+				if rival then
+					for other in Riot.rioters do
+						if other.gang == rival and riotAlive(other) then
+							local d = (other.root.Position - pos).Magnitude
+							if d < bestD then
+								target, bestD = other.model, d
+							end
+						end
+					end
+				end
+				-- or a player inmate this crew has a problem with / who's with the COs
+				if not target then
+					for _, p in Players:GetPlayers() do
+						local _, proot = charInfo(p.Character)
+						if proot and isInmate(p) and (hostileTo(p, n.gang) or getCORespect(p) >= 60) then
+							local d = (proot.Position - pos).Magnitude
+							if d < bestD then
+								target, bestD = p.Character, d
+							end
+						end
+					end
+				end
+				if not target then
+					co = nearestCO(pos, 200, 20)
+					target = co and co.model or nil
+				end
+			end
+		end
+		local thum, troot = charInfo(target)
+		if n.hum.Sit then
+			n.hum.Sit = false
+			n.hum.Jump = true
+		end
+		if target and thum and troot and thum.Health > 0 then
+			local d = (troot.Position - n.root.Position).Magnitude
+			if d > 3.5 then
+				n.hum:MoveTo(troot.Position)
+			else
+				n.hum:MoveTo(n.root.Position)
+				n.root.CFrame = CFrame.lookAt(n.root.Position, Vector3.new(troot.Position.X, n.root.Position.Y, troot.Position.Z))
+			end
+			if d <= PUNCH_RANGE and os.clock() >= nextHit then
+				nextHit = os.clock() + 0.8 + math.random() * 0.5
+				swing(n.model)
+				hitSound(troot, false)
+				local victimNpc = npcs[target :: Model]
+				if cos[target :: Model] then
+					-- officers go down but aren't beaten to death
+					thum.Health = math.max(12, thum.Health - NPC_FIST_DAMAGE)
+					if math.random() < 0.3 then
+						say(n.model, pick(RIOT_LINES.co), 2.5)
+					end
+				elseif victimNpc then
+					thum.Health = math.max(8, thum.Health - 6)
+				else
+					local victim = Players:GetPlayerFromCharacter(target)
+					if victim and not isCuffed(thum) then
+						thum:TakeDamage(NPC_FIST_DAMAGE)
+					end
+				end
+				Riot.rioters[n] = (Riot.rioters[n] or 0) + 1
+			end
+		else
+			-- nobody to hit: roam the block and shout
+			if math.random() < 0.05 then
+				say(n.model, pick(RIOT_LINES.start), 2.5)
+			end
+			n.hum:MoveTo(n.root.Position + Vector3.new(math.random(-14, 14), 0, math.random(-14, 14)))
+		end
+		task.wait(0.3)
+	end
+	if Riot.rioters[n] ~= nil then
+		Riot.rioters[n] = nil
+		n.model:SetAttribute("Rioting", nil)
+		releaseNpc(n)
+	end
+end
+
+local function recruit(n: Npc, line: { string })
+	if Riot.rioters[n] ~= nil or not take(n) then
+		return false
+	end
+	Riot.rioters[n] = 0
+	n.model:SetAttribute("Rioting", true)
+	if math.random() < 0.6 then
+		say(n.model, pick(line), 3)
+	end
+	task.spawn(runRioter, n)
+	return true
+end
+
+local function rioterCount(): number
+	local c = 0
+	for n in Riot.rioters do
+		if riotAlive(n) then
+			c += 1
+		end
+	end
+	return c
+end
+
+local function endRiot(suppressed: boolean)
+	if not Riot.active then
+		return
+	end
+	Riot.active = false
+	local ringleaders = {}
+	for n, hits in Riot.rioters do
+		table.insert(ringleaders, { n = n, hits = hits })
+		if n.model.Parent then
+			n.model:SetAttribute("Rioting", nil)
+			n.hum:MoveTo(n.root.Position)
+			releaseNpc(n)
+		end
+	end
+	table.clear(Riot.rioters)
+	-- the worst offenders go to solitary
+	table.sort(ringleaders, function(a, b)
+		return a.hits > b.hits
+	end)
+	for i = 1, math.min(3, #ringleaders) do
+		local n = ringleaders[i].n
+		if n.model.Parent and n.hum.Health > 0 then
+			discipline(n.model, "rioting")
+		end
+	end
+	-- players on camera swinging at officers pay for it; the ones who kept out earn a little trust
+	local adjust = ServerStorage:FindFirstChild("PrisonSentenceAdjust")
+	for _, p in Players:GetPlayers() do
+		if not isInmate(p) then
+			continue
+		end
+		local hits = Riot.coHits[p] or 0
+		if hits >= 2 then
+			notice(p, "Cameras caught you attacking officers: solitary, +5:00 on your sentence")
+			addCORespect(p, -20, "rioting")
+			if adjust then
+				pcall(adjust.Invoke, adjust, p, 300)
+			end
+			discipline(p, "inciting a riot")
+		elseif hits == 0 then
+			addCORespect(p, 5, "stayed out of the riot")
+		end
+	end
+	table.clear(Riot.coHits)
+	-- the pressure is let out
+	Riot.tension = 18
+	Riot.coAnger = math.max(8, Riot.coAnger * 0.35)
+	for k, v in Riot.gangAnger do
+		Riot.gangAnger[k] = math.max(8, v * 0.5)
+	end
+	Riot.lastRiot = os.clock()
+	folder:SetAttribute("RiotLockdownUntil", os.time() + 150)
+	riotPublish()
+	broadcast(
+		if suppressed then "Riot suppressed. FACILITY LOCKDOWN - everyone back to your cells." else "The riot burned itself out. FACILITY LOCKDOWN - back to your cells.",
+		"News: the prison riot is over - the facility is on lockdown"
+	)
+	print(("[PrisonSociety] RIOT ENDED (%s)"):format(if suppressed then "suppressed" else "burned out"))
+end
+
+local function startRiot(cause: string)
+	if Riot.active then
+		return
+	end
+	Riot.active = true
+	Riot.cause = cause
+	table.clear(Riot.coHits)
+	riotPublish()
+	local level = riotLevel()
+	local why = if cause == "co" then "The inmates have had enough of the COs"
+		elseif cause == "gang" then "A gang war boiled over"
+		else "The whole prison boiled over"
+	broadcast("RIOT! " .. why .. " - fight the COs, pick a side, or keep your head down.",
+		"Breaking news: a riot has broken out at the State Prison")
+	-- who joins: more inmates the angrier the place is, crews most of all
+	local joined = 0
+	for _, n in npcs do
+		if free(n) and n.hum.Health > 30 then
+			local chance = 0.35 + level / 220
+			if n.gang then
+				chance += (Riot.gangAnger[n.gang] or 0) / 400
+			end
+			if math.random() < chance and recruit(n, if cause == "gang" then RIOT_LINES.gang else RIOT_LINES.start) then
+				joined += 1
+			end
+		end
+	end
+	print(("[PrisonSociety] RIOT STARTED cause=%s level=%d rioters=%d"):format(cause, math.floor(level), joined))
+	if joined < 2 then
+		endRiot(true)
+		return
+	end
+	local initial = joined
+	local started = os.clock()
+	local duration = 110 + math.random(0, 70)
+	-- officers respond: they converge on rioters and put them down
+	task.spawn(function()
+		local nextCall = 0
+		while Riot.active do
+			if os.clock() >= nextCall then
+				nextCall = os.clock() + 12
+				local spots = {}
+				for n in Riot.rioters do
+					if riotAlive(n) then
+						table.insert(spots, n.root.Position)
+					end
+				end
+				for i = 1, math.min(4, #spots) do
+					local pos = spots[math.random(1, #spots)]
+					task.spawn(callCO, pos)
+				end
+			end
+			for _, co in cos do
+				if not (co.model.Parent and co.hum.Health > 0) then
+					continue
+				end
+				local best: Npc?, bestD = nil, 7
+				for n in Riot.rioters do
+					if riotAlive(n) then
+						local d = (n.root.Position - co.root.Position).Magnitude
+						if d < bestD then
+							best, bestD = n, d
+						end
+					end
+				end
+				if best then
+					swing(co.model)
+					hitSound(best.root, false)
+					best.hum.Health = math.max(1, best.hum.Health - 16)
+					if best.hum.Health <= 30 then
+						subdue(best, co)
+					end
+				end
+			end
+			-- the riot spreads while it's going well for the inmates
+			if math.random() < 0.08 then
+				for _, n in npcs do
+					if free(n) and n.hum.Health > 30 and math.random() < 0.25 then
+						recruit(n, RIOT_LINES.start)
+					end
+				end
+			end
+			local left = rioterCount()
+			if left == 0 or left < math.max(2, initial * 0.25) then
+				endRiot(true)
+				break
+			end
+			if os.clock() - started > duration then
+				endRiot(false)
+				break
+			end
+			task.wait(0.6)
+		end
+	end)
+end
+
+-- a gang war: the two angriest rival crews brawl; the COs wade in
+local function startGangWar(gang: string)
+	local rival = GANGS[gang].rival
+	Riot.lastGangWar = os.clock()
+	local sideA, sideB = {}, {}
+	for _, n in npcs do
+		if free(n) and n.hum.Health > 40 then
+			if n.gang == gang then
+				table.insert(sideA, n)
+			elseif n.gang == rival then
+				table.insert(sideB, n)
+			end
+		end
+	end
+	if #sideA == 0 or #sideB == 0 then
+		return
+	end
+	broadcast(("Gang war! %s and %s are going at it"):format(GANGS[gang].name, GANGS[rival].name))
+	print(("[PrisonSociety] GANG WAR %s vs %s (%d vs %d)"):format(gang, rival, #sideA, #sideB))
+	for i = 1, math.min(4, #sideA, #sideB) do
+		task.spawn(npcFight, sideA[i], sideB[i])
+	end
+	-- the anger comes out in the fight; the COs cracking heads winds everyone up
+	Riot.gangAnger[gang] = math.max(10, Riot.gangAnger[gang] - 30)
+	Riot.gangAnger[rival] = math.max(10, Riot.gangAnger[rival] - 30)
+	riotHeat(10, nil, nil, 6)
+end
+
+riotOnCOHit = function(player: Player, co: Npc)
+	if Riot.active then
+		Riot.coHits[player] = (Riot.coHits[player] or 0) + 1
+		if Riot.coHits[player] == 1 then
+			-- the crews respect someone who stands up to the COs
+			for _, k in GANG_ORDER do
+				addRep(player, k, 3)
+			end
+			notice(player, "The block saw you swing at a CO")
+		end
+		addCORespect(player, -6)
+		return
+	end
+	-- outside a riot, hitting an officer is a trip to the hole - and the block cheers
+	say(co.model, pick({ "Assault on staff!", "You just made a big mistake.", "Get on the ground!" }), 3)
+	addCORespect(player, -15, "assaulting a CO")
+	for _, n in freeNpcsNear(co.root.Position, 40) do
+		if math.random() < 0.4 then
+			say(n.model, pick({ "OHHH!", "He hit the CO!", "About time somebody did!" }), 2.5)
+		end
+	end
+	riotHeat(5, nil, nil, 6)
+	if isInmate(player) then
+		confiscate(player)
+		discipline(player, "assaulting staff")
+	end
+end
+
+-- COs provoking inmates: random shakedowns and rough handling
+task.spawn(function()
+	while true do
+		task.wait(math.random(45, 90))
+		if Riot.active then
+			continue
+		end
+		local list = {}
+		for _, co in cos do
+			if co.model.Parent and co.hum.Health > 0 then
+				table.insert(list, co)
+			end
+		end
+		if #list == 0 then
+			continue
+		end
+		local co = pick(list)
+		local near = freeNpcsNear(co.root.Position, 28)
+		if #near == 0 then
+			continue
+		end
+		local n = pick(near)
+		say(co.model, pick(RIOT_LINES.coProvoke), 3.5)
+		task.delay(1.2, function()
+			if n.model.Parent then
+				say(n.model, pick(RIOT_LINES.inmateBack), 3.5)
+			end
+		end)
+		local rough = math.random() < 0.3 + Riot.coAnger / 400
+		if rough and n.hum.Health > 30 then
+			n.hum.Health -= 15
+			riotHeat(3, n.gang, 4, 7)
+		else
+			riotHeat(1, n.gang, 1, 3)
+		end
+	end
+end)
+
+-- cooling off, warnings, and boiling over
+task.spawn(function()
+	while true do
+		task.wait(15)
+		if Riot.active then
+			continue
+		end
+		-- things calm down slowly on their own (faster during a lockdown)
+		local lockdown = (tonumber(folder:GetAttribute("RiotLockdownUntil")) or 0) > os.time()
+		local cool = if lockdown then 2.5 else 0.6
+		Riot.tension = math.max(5, Riot.tension - cool)
+		Riot.coAnger = math.max(5, Riot.coAnger - cool * 0.7)
+		for k, v in Riot.gangAnger do
+			Riot.gangAnger[k] = math.max(5, v - cool * 0.5)
+		end
+		-- a crowded prison simmers: more inmates on the floor, more friction
+		local out = 0
+		for _, n in npcs do
+			if free(n) then
+				out += 1
+			end
+		end
+		if out >= 10 then
+			Riot.tension = math.min(100, Riot.tension + 0.4)
+		end
+		riotPublish()
+		if lockdown then
+			continue
+		end
+		local level = riotLevel()
+		local gangHeat, hotGang = riotGangHeat()
+		if level >= RIOT_LEVEL - 12 and os.clock() - Riot.lastWarning > 120 then
+			Riot.lastWarning = os.clock()
+			for _, n in npcs do
+				if free(n) and math.random() < 0.3 then
+					say(n.model, pick(RIOT_LINES.warn), 4)
+				end
+			end
+			broadcast("The prison is on edge - you can feel it (anger " .. math.floor(level) .. "/100)")
+		end
+		if hotGang and gangHeat >= GANG_WAR_HEAT and os.clock() - Riot.lastGangWar > 180 and math.random() < 0.5 then
+			startGangWar(hotGang)
+		elseif level >= RIOT_LEVEL and os.clock() - Riot.lastRiot > RIOT_MIN_GAP and math.random() < (level - RIOT_LEVEL + 8) / 60 then
+			local gang = riotGangHeat()
+			local cause = if Riot.coAnger >= Riot.tension and Riot.coAnger >= gang then "co"
+				elseif gang > Riot.tension then "gang"
+				else "tension"
+			startRiot(cause)
+		end
+	end
+end)
+
+-- Studio / admin testing: ServerStorage.PrisonRiot:Invoke("start" | "gangwar" | "end" | "status")
+do
+	local fn = ServerStorage:FindFirstChild("PrisonRiot") or Instance.new("BindableFunction")
+	fn.Name = "PrisonRiot"
+	fn.OnInvoke = function(action)
+		if action == "start" then
+			startRiot("co")
+		elseif action == "gangwar" then
+			local _, g = riotGangHeat()
+			startGangWar(g or "EK")
+		elseif action == "end" then
+			endRiot(true)
+		end
+		return { level = riotLevel(), tension = Riot.tension, co = Riot.coAnger, active = Riot.active }
+	end
+	fn.Parent = ServerStorage
+end
+
+---------------------------------------------------------------------------
 -- players
 ---------------------------------------------------------------------------
 local function onPlayer(player: Player)
@@ -1733,6 +2317,7 @@ task.spawn(function()
 				say(nearCO.model, pick({ "Shakedown. Arms out.", "Random search. Don't move." }), 4)
 				notice(player, "A CO searched you")
 				confiscate(player)
+				riotHeat(1, nil, nil, 2.5)
 			elseif r >= 60 and math.random() < 0.25 then
 				say(nearCO.model, pick({ "You're alright, inmate.", "Keep it up and I'll put in a word for you." }), 4)
 				local adjust = ServerStorage:FindFirstChild("PrisonSentenceAdjust")
@@ -1745,4 +2330,4 @@ task.spawn(function()
 	end
 end)
 
-print("[PrisonSociety] ready: gangs, contraband, fights, CO respect")
+print("[PrisonSociety] ready: gangs, contraband, fights, CO respect, riots")

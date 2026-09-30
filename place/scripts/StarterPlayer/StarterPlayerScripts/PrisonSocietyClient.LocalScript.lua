@@ -365,6 +365,81 @@ header.Activated:Connect(function()
 	collapsed = not collapsed
 	refreshPanel()
 end)
+
+-- v229: the prison's mood (how close it is to a riot) and a riot banner
+local mood = Instance.new("TextLabel")
+mood.Name = "PrisonMood"
+mood.Size = UDim2.new(1, 0, 0, 30)
+mood.BackgroundTransparency = 1
+mood.Font = Enum.Font.GothamBold
+mood.TextSize = 12
+mood.TextWrapped = true
+mood.TextXAlignment = Enum.TextXAlignment.Left
+mood.LayoutOrder = 100
+mood.Parent = panel
+
+local banner = Instance.new("TextLabel")
+banner.Name = "RiotBanner"
+banner.AnchorPoint = Vector2.new(0.5, 0)
+banner.Position = UDim2.new(0.5, 0, 0, 12)
+banner.Size = UDim2.new(0.8, 0, 0, 40)
+banner.BackgroundColor3 = Color3.fromRGB(150, 15, 15)
+banner.BackgroundTransparency = 0.15
+banner.TextColor3 = Color3.new(1, 1, 1)
+banner.Font = Enum.Font.GothamBlack
+banner.TextScaled = true
+banner.Text = "RIOT IN PROGRESS"
+banner.Visible = false
+banner.Parent = gui
+corner(banner, 8)
+local bannerMax = Instance.new("UISizeConstraint")
+bannerMax.MaxSize = Vector2.new(560, 40)
+bannerMax.Parent = banner
+local bannerText = Instance.new("UITextSizeConstraint")
+bannerText.MaxTextSize = 22
+bannerText.Parent = banner
+
+local function refreshMood()
+	local t = tonumber(folder:GetAttribute("PrisonTension")) or 0
+	local co = tonumber(folder:GetAttribute("COAnger")) or 0
+	local gang = 0
+	for _, k in { "EK", "IS", "DS", "TL" } do
+		gang = math.max(gang, tonumber(folder:GetAttribute("GangAnger_" .. k)) or 0)
+	end
+	local level = math.floor(t * 0.45 + co * 0.35 + gang * 0.2 + 0.5)
+	local riot = folder:GetAttribute("Riot") == true
+	local lockdown = (tonumber(folder:GetAttribute("RiotLockdownUntil")) or 0) > os.time()
+	local word, color
+	if riot then
+		word, color = "RIOT", Color3.fromRGB(255, 60, 60)
+	elseif lockdown then
+		word, color = "LOCKDOWN", Color3.fromRGB(120, 170, 255)
+	elseif level >= 55 then
+		word, color = "About to blow", Color3.fromRGB(255, 80, 60)
+	elseif level >= 40 then
+		word, color = "Tense", Color3.fromRGB(255, 160, 60)
+	elseif level >= 25 then
+		word, color = "Uneasy", Color3.fromRGB(230, 210, 90)
+	else
+		word, color = "Calm", Color3.fromRGB(120, 210, 120)
+	end
+	mood.Text = ("Prison mood: %s (%d)\nCOs %d  -  gangs %d"):format(word, level, math.floor(co), math.floor(gang))
+	mood.TextColor3 = color
+	banner.Visible = riot and player:GetAttribute("CustodyOwner") == "INCARCERATED"
+end
+folder.AttributeChanged:Connect(refreshMood)
+refreshMood()
+task.spawn(function()
+	local on = false
+	while true do
+		task.wait(0.5)
+		if banner.Visible then
+			on = not on
+			banner.BackgroundColor3 = if on then Color3.fromRGB(190, 20, 20) else Color3.fromRGB(110, 10, 10)
+		end
+		refreshMood()
+	end
+end)
 player.AttributeChanged:Connect(function(name)
 	if name == "CustodyOwner" or name == "PrisonGang" or name == "CORespect" or string.sub(name, 1, 4) == "Rep_" then
 		refreshPanel()

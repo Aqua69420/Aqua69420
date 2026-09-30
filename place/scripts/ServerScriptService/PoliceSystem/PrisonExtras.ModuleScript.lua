@@ -160,7 +160,21 @@ local function pretty(loc: string): string
 	return "cellblock"
 end
 
+-- v229: PrisonSociety's riot state (a riot pauses the schedule and the CO sweep;
+-- afterwards the whole facility is locked down for a while)
+function X.society(): Instance?
+	return ReplicatedStorage:FindFirstChild("PrisonSociety")
+end
+function X.riotActive(): boolean
+	local f = X.society()
+	return f ~= nil and f:GetAttribute("Riot") == true
+end
+
 function X.block(): string
+	local f = X.society()
+	if f and (tonumber(f:GetAttribute("RiotLockdownUntil")) or 0) > os.time() then
+		return "Lockdown"
+	end
 	local hour = Lighting.ClockTime
 	for _, b in C.Config.PrisonSchedule.Blocks do
 		if hour >= b.Start and hour < b.Finish then
@@ -940,6 +954,9 @@ function X.startRegimen()
 	task.spawn(function()
 		while C.prison and C.prison.Parent do
 			task.wait(5)
+			if X.riotActive() then
+				continue
+			end
 			local now = X.block()
 			for i, class in X.CLASSES do
 				local want = X.locationFor(class, now)
@@ -1312,6 +1329,9 @@ function X.startSweep()
 	task.spawn(function()
 		while C.prison and C.prison.Parent do
 			task.wait(4)
+			if X.riotActive() then
+				continue
+			end
 			local now = os.clock()
 			for _, plr in Players:GetPlayers() do
 				if sweepEligible(plr) and not X.returning[plr] then
