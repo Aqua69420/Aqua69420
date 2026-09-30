@@ -885,6 +885,7 @@ spawnCar=function()
 
 	local car=template:Clone()
 	car.Name="Resident Traffic"
+	car:SetAttribute("TrafficCarType",carType) -- v221: carjacking respawns this type as a real player car
 	local seat=car:FindFirstChildWhichIsA("VehicleSeat",true)
 	if not seat then car:Destroy(); return end
 	car.PrimaryPart=seat

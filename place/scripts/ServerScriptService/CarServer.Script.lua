@@ -902,6 +902,48 @@ adoptStolen.OnInvoke=function(player,car)
 	if typeof(player)~="Instance" or not player:IsA("Player") or typeof(car)~="Instance" or not car:IsA("Model") or not car.Parent then return false end
 	local rootSeat=car:FindFirstChildWhichIsA("VehicleSeat",true)
 	if not rootSeat then return false end
+	-- v221: converting the animated traffic model in place left it frozen. Swap it
+	-- for a fresh, normally built car of the same type in the same spot instead
+	-- (exactly what a spawned car is) and put the thief in the driver's seat.
+	do
+		local carType=car:GetAttribute("TrafficCarType")
+		local name=if type(carType)=="string" and templates:FindFirstChild(carType) then carType else nil
+		if not name then
+			for _,n in {"Sedan","SUV","Van","Muscle Car","Sports Car"} do
+				if templates:FindFirstChild(n) then name=n;break end
+			end
+		end
+		if name then
+			local seatCF=rootSeat.CFrame
+			local boxCF,boxSize=car:GetBoundingBox()
+			local groundPos=Vector3.new(seatCF.Position.X,boxCF.Position.Y-boxSize.Y/2,seatCF.Position.Z)
+			local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Exclude;params.FilterDescendantsInstances={car,player.Character}
+			local hit=workspace:Raycast(seatCF.Position+Vector3.new(0,2,0),Vector3.new(0,-30,0),params)
+			if hit then groundPos=hit.Position end
+			local look=seatCF.LookVector
+			local occ=rootSeat.Occupant
+			if occ then occ.Sit=false end
+			car:Destroy()
+			-- keep the thief's own car where it is (spawnCar replaces activeCars[player])
+			local own=activeCars[player];activeCars[player]=nil
+			local stolen=spawnCar(player,name,groundPos,look)
+			if not stolen then activeCars[player]=own;return false end
+			stolen.Name="Stolen "..name
+			stolen:SetAttribute("StolenVehicle",true);stolen:SetAttribute("StolenByUserId",player.UserId)
+			local newSeat=stolen.PrimaryPart
+			local hum=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+			if hum and newSeat and newSeat:IsA("VehicleSeat") then
+				task.defer(function()
+					if hum.Parent and newSeat.Parent then
+						pcall(function() hum.Parent:PivotTo(newSeat.CFrame+Vector3.new(0,2,0)) end)
+						newSeat:Sit(hum)
+					end
+				end)
+			end
+			print(("[CarServer] %s carjacked a %s - respawned as a drivable car"):format(player.Name,name))
+			return true
+		end
+	end
 	car.PrimaryPart=rootSeat
 	car:SetAttribute("TrafficActive",false);car:SetAttribute("StolenVehicle",true);car:SetAttribute("StolenByUserId",player.UserId)
 	local driven,doors=prepareCar(car,rootSeat);carDoors[car]=doors
