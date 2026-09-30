@@ -13186,9 +13186,29 @@ function Justice.init()
 			end
 			-- v225: a detainee who dies respawns INSIDE intake (a hidden spawn on an
 			-- intake cell floor) instead of at the team spawn across the map
+			player:SetAttribute("PrisonKilledBy",nil) -- v237: fresh character, no killer on record
 			local dh=char:WaitForChild("Humanoid",5)
 			if dh then
 				dh.Died:Connect(function()
+					-- v237: an inmate KILLED in prison (a gang hit, a fight, a riot) is wiped
+					-- like an executed player: a brand-new player. Resetting your own
+					-- character or falling through the map never records a killer.
+					local killer=player:GetAttribute("PrisonKilledBy")
+					if type(killer)=="string" and sentenceEnd[player] and not deathRowExecutionActive[player]
+						and player:GetAttribute("DeathRowExecutionStarted")~=true then
+						player:SetAttribute("PrisonKilledBy",nil)
+						warn(("[PrisonDeath] %s was killed in prison by %s - profile reset"):format(player.Name,killer))
+						resetExecutedPlayer(player)
+						clearJusticeState(player)
+						releaseBusy[player]=nil
+						pcall(uncuff,player)
+						for _,name in {"Solitary","PoliceCuffed","SnitchedOn","CORespect"} do player:SetAttribute(name,nil) end
+						pcall(tell,player,"Released","killed")
+						for _,other in Players:GetPlayers() do
+							if other~=player then pcall(tell,other,"Notice",player.Name.." was killed in prison") end
+						end
+						return
+					end
 					if not sentenceEnd[player] and not releaseBusy[player] and (custody[player] or PrisonFlow.isDetainee(player)) then
 						local sp=PrisonFlow.intakeSpawn()
 						if sp then

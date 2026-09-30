@@ -605,6 +605,34 @@ riotPublish()
 
 local riotOnCOHit -- forward: a player punched a correctional officer
 
+-- gangs that want you dead (not just a beating): deep enough in the red, a
+-- member of theirs killed, or you snitched on them
+local bloodFeud: { [Player]: { [string]: number } } = {}
+local function wantsDead(player: Player, key: string?): boolean
+	if not key then
+		return false
+	end
+	local f = bloodFeud[player]
+	if f and f[key] and os.clock() < f[key] then
+		return true
+	end
+	if player:GetAttribute("PrisonGang") == key then
+		return false
+	end
+	if getRep(player, key) <= -70 then
+		return true
+	end
+	local snitched = player:GetAttribute("SnitchedOn")
+	return type(snitched) == "string" and string.find(snitched, key, 1, true) ~= nil
+end
+local function startFeud(player: Player, key: string?, seconds: number)
+	if not key then
+		return
+	end
+	bloodFeud[player] = bloodFeud[player] or {}
+	bloodFeud[player][key] = os.clock() + seconds
+end
+
 ---------------------------------------------------------------------------
 -- punching
 ---------------------------------------------------------------------------
@@ -691,6 +719,10 @@ local function onPlayerHit(player: Player, model: Model, damage: number)
 	if not hum then
 		return
 	end
+	local victimPlayer = Players:GetPlayerFromCharacter(model)
+	if victimPlayer and isInmate(victimPlayer) and hum.Health - damage <= 0 then
+		victimPlayer:SetAttribute("PrisonKilledBy", player.Name)
+	end
 	hum:TakeDamage(damage)
 	if cos[model] then
 		riotOnCOHit(player, cos[model])
@@ -708,6 +740,11 @@ local function onPlayerHit(player: Player, model: Model, damage: number)
 		riotHeat(0.6, n.gang, 1, nil)
 		local killed = hum.Health <= 0
 		addRep(player, n.gang, if killed then -40 else -12, if killed then "killed a member" else "hit a member")
+		if killed then
+			-- v237: you killed one of theirs - they want you dead for a long time
+			startFeud(player, n.gang, 900)
+			notice(player, "The " .. GANGS[n.gang].name .. " want you dead")
+		end
 		holdGrudge(player, n.gang, 120)
 	end
 	if hum.Health > 0 then
@@ -862,12 +899,63 @@ end
 ---------------------------------------------------------------------------
 local attacking: { [Player]: number } = {}
 
-attack = function(n: Npc, player: Player, duration: number)
+-- v237 PRISON DEATH: a player inmate killed by another inmate (NPC or player) in
+-- a fight, a hit or a riot is wiped like an executed player (PoliceSystem reads
+-- the PrisonKilledBy attribute when they die). Resetting your own character or
+-- falling through the map never sets it, so those don't wipe you.
+local function hurtPlayer(victim: Player, hum: Humanoid, damage: number, byName: string, lethal: boolean)
+	if damage <= 0 or hum.Health <= 0 then
+		return
+	end
+	if not lethal then
+		-- a beating, not a killing: they stop short
+		damage = math.min(damage, math.max(0, hum.Health - 10))
+		if damage <= 0 then
+			return
+		end
+	end
+	if isInmate(victim) and hum.Health - damage <= 0 then
+		victim:SetAttribute("PrisonKilledBy", byName)
+	end
+	hum:TakeDamage(damage)
+end
+
+-- a shiv in an NPC's hand for a hit
+local function armShiv(model: Model): BasePart?
+	local hand = model:FindFirstChild("RightHand") or model:FindFirstChild("Right Arm")
+	if not hand or not hand:IsA("BasePart") then
+		return nil
+	end
+	local blade = Instance.new("Part")
+	blade.Name = "HitShiv"
+	blade.Size = Vector3.new(0.15, 0.15, 1.1)
+	blade.Color = Color3.fromRGB(170, 170, 175)
+	blade.Material = Enum.Material.Metal
+	blade.CanCollide = false
+	blade.CanQuery = false
+	blade.CanTouch = false
+	blade.Massless = true
+	blade.CFrame = hand.CFrame * CFrame.new(0, -hand.Size.Y / 2 - 0.1, -0.5)
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = hand
+	weld.Part1 = blade
+	weld.Parent = blade
+	blade.Parent = model
+	return blade
+end
+
+attack = function(n: Npc, player: Player, duration: number, lethal: boolean?)
 	if not take(n) then
 		return
 	end
+	-- v237: a crew that wants you dead comes with a shiv and doesn't stop at a beating
+	lethal = lethal == true or wantsDead(player, n.gang)
+	local shiv = if lethal then armShiv(n.model) else nil
+	if lethal then
+		duration = math.max(duration, 45)
+	end
 	attacking[player] = (attacking[player] or 0) + 1
-	say(n.model, pick(LINES.taunt), 3)
+	say(n.model, if lethal then pick({ "You're done.", "Word came down. Nothing personal.", "This is for my people." }) else pick(LINES.taunt), 3)
 	local deadline = os.clock() + duration
 	local cop: Model? = nil
 	local called = false
@@ -878,7 +966,7 @@ attack = function(n: Npc, player: Player, duration: number)
 			break
 		end
 		local d = (proot.Position - n.root.Position).Magnitude
-		if d > 90 then
+		if d > (if lethal then 160 else 90) then
 			break -- they got away (or went back in their cell)
 		end
 		if n.hum.Sit then
@@ -892,11 +980,11 @@ attack = function(n: Npc, player: Player, duration: number)
 			n.root.CFrame = CFrame.lookAt(n.root.Position, Vector3.new(proot.Position.X, n.root.Position.Y, proot.Position.Z))
 		end
 		if d <= PUNCH_RANGE and os.clock() >= nextHit then
-			nextHit = os.clock() + 0.9 + math.random() * 0.5
+			nextHit = os.clock() + (if lethal then 0.8 else 0.9) + math.random() * 0.5
 			swing(n.model)
 			if not isCuffed(phum) then
-				phum:TakeDamage(NPC_FIST_DAMAGE)
-				hitSound(proot, false)
+				hurtPlayer(player, phum, if lethal then 16 else NPC_FIST_DAMAGE, n.name .. (if n.gang then " (" .. GANGS[n.gang].name .. ")" else ""), lethal)
+				hitSound(proot, lethal)
 			end
 		end
 		if not called and d < 12 and isInmate(player) then
@@ -919,6 +1007,9 @@ attack = function(n: Npc, player: Player, duration: number)
 		task.wait(0.3)
 	end
 	n.hum:MoveTo(n.root.Position)
+	if shiv then
+		shiv:Destroy()
+	end
 	attacking[player] = math.max(0, (attacking[player] or 1) - 1)
 	releaseNpc(n)
 end
@@ -1672,14 +1763,37 @@ task.spawn(function()
 			-- a crew you've crossed comes for you
 			if (attacking[player] or 0) == 0 and now - (lastJump[player] or 0) > 45 then
 				local nearby = freeNpcsNear(root.Position, 55, function(n)
-					return hostileTo(player, n.gang)
+					return hostileTo(player, n.gang) or wantsDead(player, n.gang)
 				end)
 				if #nearby > 0 then
-					lastJump[player] = now
-					for i = 1, math.min(2, #nearby) do
-						task.spawn(attack, nearby[i], player, 25)
+					-- v237: a hit waits until no officer is close; a beating doesn't care
+					local killers = {}
+					for _, n in nearby do
+						if wantsDead(player, n.gang) then
+							table.insert(killers, n)
+						end
 					end
-					continue
+					local coClose = false
+					for _, co in cos do
+						if co.model.Parent and co.hum.Health > 0 and (co.root.Position - root.Position).Magnitude < 35 then
+							coClose = true
+							break
+						end
+					end
+					if #killers > 0 and not coClose then
+						lastJump[player] = now
+						notice(player, "Something's wrong... they're coming for you")
+						for i = 1, math.min(3, #killers) do
+							task.spawn(attack, killers[i], player, 45, true)
+						end
+						continue
+					elseif #killers == 0 then
+						lastJump[player] = now
+						for i = 1, math.min(2, #nearby) do
+							task.spawn(attack, nearby[i], player, 25)
+						end
+						continue
+					end
 				end
 			end
 			-- somebody wanders over to talk
@@ -1886,7 +2000,8 @@ local function runRioter(n: Npc)
 				else
 					local victim = Players:GetPlayerFromCharacter(target)
 					if victim and not isCuffed(thum) then
-						thum:TakeDamage(NPC_FIST_DAMAGE)
+						-- in a riot, a crew that wants you dead finishes the job
+						hurtPlayer(victim, thum, NPC_FIST_DAMAGE, n.name .. " (riot)", wantsDead(victim, n.gang))
 					end
 				end
 				Riot.rioters[n] = (Riot.rioters[n] or 0) + 1
@@ -2276,6 +2391,7 @@ Players.PlayerRemoving:Connect(function(player)
 	lastApproach[player] = nil
 	lastJump[player] = nil
 	attacking[player] = nil
+	bloodFeud[player] = nil
 end)
 
 -- v226: what the COs think of you plays out on its own. Every so often a CO who is
