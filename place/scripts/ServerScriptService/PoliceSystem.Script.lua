@@ -12903,6 +12903,77 @@ function Justice.init()
 		local owner=tostring(player:GetAttribute("CustodyOwner") or "")
 		return owner=="INTAKE_CELL" or owner=="INTAKE_ESCORT" or owner=="BOOKING" or owner=="BOOKING_ESCORT" or owner=="CORRECTIONAL_HOLD"
 	end
+	---------------------------------------------------------------------------
+	-- v239 CUSTODY STAGES. One answer to "where is this player in the custody
+	-- pipeline?", derived from the older BookingState / CustodyOwner / sentence
+	-- flags, and published as the CustodyStage attribute. Each stage owns where a
+	-- new character appears (placed before anything yields, so the player's own
+	-- client never takes the body over somewhere else).
+	--   Arrest -> Transport -> Station -> Detention -> (Court) -> Serving -> Release
+	--   Medical: critical custody (EMS)
+	---------------------------------------------------------------------------
+	PrisonFlow.STAGE_OF_BOOKING={
+		Arrested="Arrest",TransportSceneHold="Arrest",
+		Transport="Transport",SharedTransport="Transport",SharedTransportHold="Transport",TransportBlocked="Transport",
+		Intake="Station",IntakeCell="Station",IntakeOfficerDispatch="Station",IntakeTransfer="Station",
+		Booking="Detention",Review="Detention",AwaitingHousing="Detention",
+		MedicalEMS="Medical",MedicalRecovery="Medical",MedicalOfficerDispatch="Medical",MedicalTransport="Medical",
+		Housed="Serving",DeathRowExecution="Serving",
+		Release="Release",Executed="Free",
+	}
+	-- where the NEW character appears for each stage
+	PrisonFlow.RESPAWN_AT={
+		Arrest="Intake",Transport="Intake",Station="Intake",Detention="Intake",Court="Intake",Medical="Intake",
+		Serving="Cell",Release="None",Free="None",
+	}
+	function PrisonFlow.stageOf(player: Player): string
+		if releaseBusy[player] then return "Release" end
+		local bs=tostring(player:GetAttribute("BookingState") or "")
+		if bs=="Executed" then return "Free" end
+		if sentenceEnd[player] then return "Serving" end
+		if criticalCustody[player] then return "Medical" end
+		local stage=PrisonFlow.STAGE_OF_BOOKING[bs]
+		if stage then return stage end
+		if custody[player] or PrisonFlow.isDetainee(player) then return "Arrest" end
+		return "Free"
+	end
+	function PrisonFlow.syncStage(player: Player, why: string?): string
+		local stage=PrisonFlow.stageOf(player)
+		local old=player:GetAttribute("CustodyStage")
+		local new=if stage=="Free" then nil else stage
+		if old~=new then
+			player:SetAttribute("CustodyStage",new)
+			print(("[Custody] STAGE %s %s -> %s (%s)"):format(player.Name,tostring(old or "Free"),stage,tostring(why or "sync")))
+		end
+		return stage
+	end
+	-- the spot a new character is placed at for its stage (nil = leave it alone)
+	function PrisonFlow.respawnAnchor(player: Player, stage: string): CFrame?
+		local where=PrisonFlow.RESPAWN_AT[stage]
+		if where=="Intake" then
+			local sp=PrisonFlow.intakeSpawn()
+			return if sp then CFrame.new(sp.Position+Vector3.new(0,3.4,0)) else nil
+		elseif where=="Cell" then
+			-- the same spot restorePrisonRespawn uses, so the two never disagree
+			local cell=housingAssignment[player]
+			if cell and cell.Parent then
+				local pos=mappedCellZoneCenter(cell) or cellStand(cell)
+				if pos then return CFrame.new(pos+Vector3.new(0,3,0),pos+Vector3.new(0,3,1)) end
+			end
+		end
+		return nil
+	end
+	-- some custody changes only touch internal tables (release, EMS, sentence):
+	-- a light sweep keeps every player's CustodyStage honest
+	task.spawn(function()
+		while true do
+			task.wait(2)
+			for _,p in Players:GetPlayers() do
+				pcall(PrisonFlow.syncStage,p,"tick")
+			end
+		end
+	end)
+
 	local function recoverCustodyRespawn(player: Player)
 		if not custody[player] or criticalCustody[player] or not player.Parent then return end
 		if custodyRecovery[player] then return end
@@ -13171,18 +13242,31 @@ function Justice.init()
 				player.Team = t
 			end
 		end
+		-- v239: keep CustodyStage current whenever the older custody flags change
+		player.AttributeChanged:Connect(function(name)
+			if name=="BookingState" or name=="CustodyOwner" or name=="CustodyPhase" or name=="SentenceEnd" or name=="PoliceCritical" then
+				PrisonFlow.syncStage(player,name)
+			end
+		end)
 		player.CharacterAdded:Connect(function(char)
-			-- v234: a detainee's new character is moved into intake RIGHT NOW, before
-			-- anything yields. Waiting (even a fraction of a second) let the player's
-			-- client take over the body at its city spawn point, and every later
-			-- server teleport was overridden - the "respawned in the city" bug.
-			if not sentenceEnd[player] and not releaseBusy[player] and (custody[player] or PrisonFlow.isDetainee(player)) then
-				local ok,sp=pcall(function() return PrisonFlow.intakeSpawn and PrisonFlow.intakeSpawn() end)
-				if ok and sp then
-					local cf=CFrame.new(sp.Position+Vector3.new(0,3.4,0))
-					pcall(function() char:PivotTo(cf) end)
-					print("[CustodyDiag] RESPAWN "..player.Name.." spawned straight into intake")
+			-- v239 (was v234, intake only): the new character goes straight to its
+			-- custody stage's spot RIGHT NOW, before anything yields. Waiting even a
+			-- fraction of a second let the player's client take the body over at its
+			-- spawn point, and every later server teleport was overridden.
+			local stage=PrisonFlow.syncStage(player,"respawn")
+			local okAnchor,anchor=pcall(PrisonFlow.respawnAnchor,player,stage)
+			if okAnchor and anchor then
+				pcall(function() char:PivotTo(anchor) end)
+				print(("[Custody] RESPAWN %s stage=%s -> %s"):format(player.Name,stage,PrisonFlow.RESPAWN_AT[stage] or "?"))
+				if PrisonFlow.RESPAWN_AT[stage]=="Cell" then
+					-- the client also holds the character there while the cell is restored
+					player:SetAttribute("CustodyPinCF",anchor)
+					task.delay(6,function()
+						if player:GetAttribute("CustodyPinCF")==anchor then player:SetAttribute("CustodyPinCF",nil) end
+					end)
 				end
+			elseif not okAnchor then
+				warn("[Custody] RESPAWN anchor failed for "..player.Name..": "..tostring(anchor))
 			end
 			-- v225: a detainee who dies respawns INSIDE intake (a hidden spawn on an
 			-- intake cell floor) instead of at the team spawn across the map
