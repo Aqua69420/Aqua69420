@@ -10512,6 +10512,7 @@ local function releaseTargetTeam(player: Player): Team?
 end
 
 local function clearJusticeState(player: Player)
+	if player.RespawnLocation and player.RespawnLocation.Name=="IntakeRespawn" then player.RespawnLocation=nil end
 	sentenceEnd[player]=nil;inmateFacility[player]=nil;custody[player]=nil;criticalCustody[player]=nil
 	bookingGeneration[player]=(bookingGeneration[player] or 0)+1;custodyRecovery[player]=nil
 	custodyArrestAt[player]=nil;sharedTransportDelivered[player]=nil
@@ -12808,6 +12809,31 @@ function Justice.init()
 	-- A busted player's Reset Character action does not return them to a public
 	-- spawn. It recovers into a reserved intake cell, locks that mapped door, waits
 	-- through the normal intake hold, and resumes the same booking case.
+	-- v225: hidden spawn point on an intake cell floor used as a detainee's
+	-- RespawnLocation, so a death in custody never respawns across the map
+	function PrisonFlow.intakeSpawn(): SpawnLocation?
+		local existing=Workspace:FindFirstChild("IntakeRespawn")
+		if existing and existing:IsA("SpawnLocation") then return existing end
+		if not PrisonNav or not PrisonNav.CellPairs then return nil end
+		local pos=nil
+		for _,pair in PrisonNav.CellPairs do
+			if pair.category=="IntakeCell" and pair.pos then pos=pair.pos;break end
+		end
+		if not pos then return nil end
+		local team=teamNamed("Intake Prisoners")
+		local sp=Instance.new("SpawnLocation")
+		sp.Name="IntakeRespawn"
+		sp.Size=Vector3.new(3,0.2,3)
+		sp.CFrame=CFrame.new(pos+Vector3.new(0,0.1,0))
+		sp.Anchored=true;sp.CanCollide=false;sp.CanTouch=false;sp.CanQuery=false
+		sp.Transparency=1;sp.Duration=0;sp.AllowTeamChangeOnTouch=false
+		sp.Neutral=false;sp.Enabled=true
+		if team then sp.TeamColor=team.TeamColor end
+		local decal=sp:FindFirstChildOfClass("Decal");if decal then decal:Destroy() end
+		sp.Parent=Workspace
+		print("[CustodyDiag] INTAKE RESPAWN point created at "..tostring(pos))
+		return sp
+	end
 	-- v222: still an arrested detainee going through intake / booking?
 	function PrisonFlow.isDetainee(player: Player): boolean
 		local team=player.Team and player.Team.Name
@@ -12902,6 +12928,21 @@ function Justice.init()
 				if not closed then warn("[CustodyDiag] RESET INTAKE DOOR CLOSE FAILED "..room.name..": "..tostring(closeWhy)) end
 				print(("[CustodyDiag] RESET RECOVERY INTAKE CELL %s -> %s doorLocked=%s"):format(player.Name,room.name,tostring(closed)))
 				tell(player,"Custody","Reset recovered inside intake. Booking will continue after the intake hold.")
+				-- v225: the player's own client can still hold the new character at its
+				-- spawn point once it is unanchored and push that position back to the
+				-- server. For the whole intake hold, anyone found outside the cell is put
+				-- straight back in (no second recovery, which used to cancel the hold).
+				task.spawn(function()
+					local cellCF=CFrame.lookAt(room.pos+Vector3.new(0,3.25,0),doorFloor+Vector3.new(0,3,0))
+					while alive() and PrisonFlow.rooms[player]==room and player:GetAttribute("BookingState")=="IntakeCell" do
+						if Util.flat(root.Position-room.pos).Magnitude>8 or math.abs(root.Position.Y-room.pos.Y)>8 then
+							warn("[CustodyDiag] INTAKE HOLD GUARD: "..player.Name.." left the cell - put back in "..room.name)
+							root.AssemblyLinearVelocity=Vector3.zero
+							root.CFrame=cellCF
+						end
+						task.wait(0.5)
+					end
+				end)
 				if PrisonFlow.intakeHold(player,alive) and alive() then
 					local case=bookingCase[player]
 					if not case then
@@ -13047,6 +13088,22 @@ function Justice.init()
 			end
 		end
 		player.CharacterAdded:Connect(function(char)
+			-- v225: a detainee who dies respawns INSIDE intake (a hidden spawn on an
+			-- intake cell floor) instead of at the team spawn across the map
+			local dh=char:WaitForChild("Humanoid",5)
+			if dh then
+				dh.Died:Connect(function()
+					if not sentenceEnd[player] and not releaseBusy[player] and (custody[player] or PrisonFlow.isDetainee(player)) then
+						local sp=PrisonFlow.intakeSpawn()
+						if sp then player.RespawnLocation=sp end
+					elseif player.RespawnLocation and player.RespawnLocation.Name=="IntakeRespawn" then
+						player.RespawnLocation=nil
+					end
+				end)
+			end
+			if player.RespawnLocation and player.RespawnLocation.Name=="IntakeRespawn" and not custody[player] and not PrisonFlow.isDetainee(player) then
+				player.RespawnLocation=nil
+			end
 			-- v222: anyone who is still a detainee (intake / booking, not yet sentenced)
 			-- goes back to an intake cell, even if a flag got lost on the way (custody
 			-- cleared by another flow, or a stale "critical" flag with no saved case)
@@ -13087,6 +13144,17 @@ function Justice.init()
 				local room=PrisonFlow.rooms[player]
 				if room and room.pos and Util.flat(r.Position-room.pos).Magnitude<12 and math.abs(r.Position.Y-room.pos.Y)<8 then return end
 				if not custody[player] and not sentenceEnd[player] and not releaseBusy[player] and PrisonFlow.isDetainee(player) then custody[player]=true end
+				-- v225: a recovery already running for this character keeps its own guard
+				-- (restarting it cancelled the intake hold) - just put them back in the cell
+				local running=custodyRecovery[player]
+				if running and running.character==char then
+					if room and room.pos then
+						warn("[CustodyDiag] RESPAWN WATCHDOG: "..player.Name.." outside during recovery - back into "..tostring(room.name))
+						r.AssemblyLinearVelocity=Vector3.zero
+						r.CFrame=CFrame.new(room.pos+Vector3.new(0,3.25,0))
+					end
+					return
+				end
 				if custody[player] and not criticalCustody[player] then
 					warn("[CustodyDiag] RESPAWN WATCHDOG: detainee "..player.Name.." still outside - restarting intake recovery")
 					custodyRecovery[player]=nil
