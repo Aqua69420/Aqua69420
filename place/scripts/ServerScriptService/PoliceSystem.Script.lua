@@ -10519,6 +10519,7 @@ end
 
 local function clearJusticeState(player: Player)
 	if player.RespawnLocation and player.RespawnLocation.Name=="IntakeRespawn" then player.RespawnLocation=nil end
+	player:SetAttribute("CustodyPinCF",nil)
 	sentenceEnd[player]=nil;inmateFacility[player]=nil;custody[player]=nil;criticalCustody[player]=nil
 	bookingGeneration[player]=(bookingGeneration[player] or 0)+1;custodyRecovery[player]=nil
 	custodyArrestAt[player]=nil;sharedTransportDelivered[player]=nil
@@ -12918,8 +12919,12 @@ function Justice.init()
 				root.Anchored=true;root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
 				hum.PlatformStand=false;hum.Sit=false;hum.AutoRotate=true
 				root.CFrame=CFrame.lookAt(room.pos+Vector3.new(0,3.25,0),doorFloor+Vector3.new(0,3,0))
+				-- v230: the player's own client also pulls its character to this spot
+				-- (CustodyPinClient) - the server alone couldn't win against a client
+				-- that kept the fresh character at its spawn point in the city
+				player:SetAttribute("CustodyPinCF",root.CFrame)
 				RunService.Heartbeat:Wait();RunService.Heartbeat:Wait()
-				if not alive() then root.Anchored=false;continue end
+				if not alive() then root.Anchored=false;player:SetAttribute("CustodyPinCF",nil);continue end
 				-- v223: the fresh character can still be pulled back to its spawn point in
 				-- the first moments after spawning: keep re-placing it until it stays put
 				local placedCF=root.CFrame
@@ -12969,6 +12974,7 @@ function Justice.init()
 						task.wait(0.5)
 					end
 					if pinned and root.Parent and player.Character==char then root.Anchored=false end
+					player:SetAttribute("CustodyPinCF",nil)
 				end)
 				if PrisonFlow.intakeHold(player,alive) and alive() then
 					local case=bookingCase[player]
