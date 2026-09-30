@@ -10720,9 +10720,18 @@ release = function(player: Player, how: string)
 	if player:GetAttribute("PrisonClothesIssued")==true or player:GetAttribute("PrisonDressOutComplete")==true then
 		custody[player]=true -- the transfer only runs for players in processing
 		player:SetAttribute("ReleaseDressOutComplete",nil)
-		local holding=PrisonFlow.pick(player,"BookingCell")
+		-- v227: almost-released inmates wait in overflow holding (not booking, which
+		-- stays free for new arrivals); long-term holding, then booking as fallbacks
+		local function pickReleaseHold(): any?
+			for _,category in {"OverflowHolding","LongTermHolding","BookingCell"} do
+				local room=PrisonFlow.pick(player,category)
+				if room then return room end
+			end
+			return nil
+		end
+		local holding=pickReleaseHold()
 		local waitUntil=os.clock()+60
-		while not holding and player.Parent and os.clock()<waitUntil do task.wait(3);holding=PrisonFlow.pick(player,"BookingCell") end
+		while not holding and player.Parent and os.clock()<waitUntil do task.wait(3);holding=pickReleaseHold() end
 		if holding then
 			tell(player,"Custody","Housing officer escorting you to property release")
 			print(("[CustodyDiag] RELEASE PROCESSING %s -> dress-out -> %s"):format(player.Name,holding.name))
@@ -10732,7 +10741,7 @@ release = function(player: Player, how: string)
 			-- v218: a 30 second booking hold (release paperwork) before the Release
 			-- Officer comes for them.
 			player:SetAttribute("ReleaseHoldEnds",os.time()+30)
-			tell(player,"Custody","Booking hold: release paperwork is processing (30s)")
+			tell(player,"Custody","Release hold in "..string.gsub(holding.name,"_"," ")..": paperwork is processing (30s)")
 			print(("[CustodyDiag] RELEASE BOOKING HOLD %s 30s in %s"):format(player.Name,holding.name))
 			local holdUntil=os.clock()+30
 			while player.Parent and os.clock()<holdUntil do task.wait(1) end
@@ -10744,7 +10753,7 @@ release = function(player: Player, how: string)
 			tell(player,"Custody","Release Officer is collecting you from holding")
 			task.wait(3)
 		else
-			warn("[CustodyDiag] RELEASE PROCESSING: no booking cell free; releasing directly "..player.Name)
+			warn("[CustodyDiag] RELEASE PROCESSING: no holding cell free; releasing directly "..player.Name)
 			pcall(PrisonFlow.restoreCivilianClothes,player)
 		end
 	end
