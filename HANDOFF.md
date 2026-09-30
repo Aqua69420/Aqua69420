@@ -28,5 +28,10 @@ Read this first in a new Claude session. Working branch: `claude/roblox-cuffwalk
 - Next: v240 multi-building (Police HQ etc. from the user's mapped place), v241 arrest scene. See ROADMAP.md.
 
 ## With the Studio MCP server connected
-Use it to: run play tests, read the Output (`[Custody]`, `[CustodyDiag]`, `[PrisonNav]` lines), inspect the mapped folders
-(`CorrectionalFacility.PrisonMap`, `<Building>.FacilityMap`, `Workspace.CityMap`), and verify fixes live instead of guessing.
+**User rule: do NOT start play tests unless the user explicitly asks** (they burn usage). The user plays and reports.
+Use the connection for everything else:
+- read the Output the user's own test left behind (`[Custody]`, `[CustodyDiag]`, `[PrisonNav]` lines) instead of asking them to paste it
+- inspect the place in edit mode: mapped folders (`CorrectionalFacility.PrisonMap`, `<Building>.FacilityMap`, `Workspace.CityMap`),
+  seats with `SeatRole`, models, attributes
+- run small edit-mode Luau checks (counts, validation) and apply script changes straight into Studio
+- keep the repo in sync: every script change still goes into `place/scripts/`, is compile-checked, committed and pushed
