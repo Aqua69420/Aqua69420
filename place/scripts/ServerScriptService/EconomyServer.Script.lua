@@ -228,12 +228,25 @@ do
 		warn("[EconomyServer] DataStores unavailable, progress won't save:", result)
 	end
 end
-local loaded = {}
+local loaded = {} -- only true once this player's saved data was read successfully
+local saving = {} -- a save in flight per player (BindToClose waits on these)
 
-local function saveData(player)
-	if not (store and loaded[player]) then
-		return
+-- v236: retry DataStore calls (they fail now and then under load)
+local function withRetries(what, fn)
+	local lastErr
+	for attempt = 1, 4 do
+		local ok, result = pcall(fn)
+		if ok then
+			return true, result
+		end
+		lastErr = result
+		task.wait(attempt)
 	end
+	warn("[EconomyServer] " .. what .. " failed after retries:", lastErr)
+	return false, lastErr
+end
+
+local function snapshot(player)
 	local cars = {}
 	local storage = player:FindFirstChild("CarStorage")
 	if storage then
@@ -243,40 +256,78 @@ local function saveData(player)
 			end
 		end
 	end
-	local data = { cash = player.Cash.Value, bank = player.Money.Value, cars = cars, house = player:GetAttribute("HouseId") }
-	local ok, err = pcall(function()
-		store:SetAsync("player_" .. player.UserId, data)
+	local cash = player:FindFirstChild("Cash")
+	local bank = player:FindFirstChild("Money")
+	return {
+		cash = cash and cash.Value or 0,
+		bank = bank and bank.Value or 0,
+		cars = cars,
+		house = player:GetAttribute("HouseId"),
+		savedAt = os.time(),
+	}
+end
+
+local function saveData(player)
+	-- never save before the real data was loaded: that would overwrite a
+	-- player's balance with the starting money (v236 data-loss fix)
+	if not (store and loaded[player]) then
+		return false
+	end
+	local data = snapshot(player)
+	saving[player] = (saving[player] or 0) + 1
+	local ok = withRetries("save for " .. player.Name, function()
+		store:UpdateAsync("player_" .. player.UserId, function()
+			return data
+		end)
 	end)
-	if not ok then
-		warn("[EconomyServer] save failed for", player.Name, err)
+	saving[player] = math.max(0, (saving[player] or 1) - 1)
+	if saving[player] == 0 then
+		saving[player] = nil
+	end
+	return ok
+end
+
+-- (cash, bank) -> topped up so the TOTAL is at least the player's floor
+-- (aquagaming22: always at least $50M; more than that is kept as saved)
+local function applyFloor(player)
+	local floor = PlayerDefaults.bankFloor(player)
+	if floor <= 0 then
+		return
+	end
+	local have = player.Cash.Value + player.Money.Value
+	if have < floor then
+		player.Money.Value += floor - have
 	end
 end
 
 local function loadData(player)
 	local data = nil
+	local ok = false
 	if store then
-		local ok, result = pcall(function()
+		ok, data = withRetries("load for " .. player.Name, function()
 			return store:GetAsync("player_" .. player.UserId)
 		end)
-		if ok then
-			data = result
-		else
-			warn("[EconomyServer] load failed for", player.Name, "(enable Studio API access to test saving):", result)
+		if not ok then
+			data = nil
+			warn("[EconomyServer] couldn't read " .. player.Name .. "'s save - their progress won't be saved this session (so it isn't overwritten)")
 		end
 	end
-	data = data or {}
+	data = if type(data) == "table" then data else {}
 	if type(data.house) == "string" then
 		player:SetAttribute("SavedHouse", data.house) -- HousingServer moves you back in
 	end
 	local startCash, startBank = PlayerDefaults.start(player)
 	player.Cash.Value = tonumber(data.cash) or startCash
 	player.Money.Value = tonumber(data.bank) or startBank
-	-- v200: special starting balances are also a floor on every join
-	local floor = PlayerDefaults.bankFloor(player)
-	if floor > 0 and player.Money.Value < floor then
-		player.Money.Value = floor
-	end
-	loaded[player] = true
+	applyFloor(player)
+	-- only a successful read (a returning player OR a genuinely new one) may be saved over
+	loaded[player] = store ~= nil and ok
+	print(("[EconomyServer] %s loaded: cash=%d bank=%d (%s)"):format(
+		player.Name, player.Cash.Value, player.Money.Value,
+		if not store then "NO DATASTORE - publish the place and enable Studio API access"
+			elseif not ok then "load failed"
+			elseif data.savedAt then "saved profile"
+			else "new profile"))
 
 	if type(data.cars) == "table" then
 		local give = ServerStorage:WaitForChild("GiveCarKeys", 15)
@@ -288,6 +339,19 @@ local function loadData(player)
 			end
 		end
 	end
+end
+
+-- other scripts (e.g. the Death Row wipe) can force a save right away
+do
+	local fn = ServerStorage:FindFirstChild("SavePlayerData") or Instance.new("BindableFunction")
+	fn.Name = "SavePlayerData"
+	fn.OnInvoke = function(player)
+		if typeof(player) == "Instance" and player:IsA("Player") then
+			return saveData(player)
+		end
+		return false
+	end
+	fn.Parent = ServerStorage
 end
 
 ---------------------------------------------------------------------------
@@ -439,8 +503,14 @@ Players.PlayerRemoving:Connect(function(player)
 	passCache[player] = nil
 end)
 game:BindToClose(function()
+	-- save everyone in parallel, then wait (up to ~25s) for every save to finish
 	for _, player in ipairs(Players:GetPlayers()) do
-		saveData(player)
+		task.spawn(saveData, player)
+	end
+	local deadline = os.clock() + 25
+	task.wait(0.5)
+	while next(saving) and os.clock() < deadline do
+		task.wait(0.25)
 	end
 end)
 
@@ -466,7 +536,7 @@ task.spawn(function()
 				end
 			end
 		end
-		if sinceSave >= 120 then
+		if sinceSave >= 60 then -- v236: autosave every minute
 			sinceSave = 0
 			for _, player in ipairs(Players:GetPlayers()) do
 				task.spawn(saveData, player)
