@@ -48,6 +48,12 @@ local shopRF = folder:FindFirstChild("Shop") or Instance.new("RemoteFunction")
 shopRF.Name = "Shop"
 shopRF.Parent = folder
 
+-- v233: the pilot's client also reports its flight targets so the server can
+-- apply them if physics ownership never reached the pilot (seen on phones)
+local flyRE = folder:FindFirstChild("Fly") or Instance.new("RemoteEvent")
+flyRE.Name = "Fly"
+flyRE.Parent = folder
+
 local heliFolder = Workspace:FindFirstChild("PlayerHelicopters") or Instance.new("Folder")
 heliFolder.Name = "PlayerHelicopters"
 heliFolder.Parent = Workspace
@@ -492,6 +498,38 @@ task.spawn(function()
 				lv.Enabled = true
 			end
 		end
+	end
+end)
+
+flyRE.OnServerEvent:Connect(function(player: Player, vel: any, rot: any)
+	if typeof(vel) ~= "Vector3" or typeof(rot) ~= "CFrame" then
+		return
+	end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local seat = hum and hum.SeatPart
+	if not seat or not seat:IsA("VehicleSeat") or not seat:GetAttribute("HeliPilot") then
+		return
+	end
+	local body = seat.Parent and seat.Parent:FindFirstChild("Fuselage")
+	local lv = body and body:FindFirstChild("HeliFly") :: LinearVelocity?
+	local ao = body and body:FindFirstChild("HeliAlign") :: AlignOrientation?
+	if not lv or not ao then
+		return
+	end
+	local top = (seat:GetAttribute("MaxSpeed") or 80) + 5
+	local climb = (seat:GetAttribute("ClimbSpeed") or 30) + 5
+	local flat = Vector3.new(vel.X, 0, vel.Z)
+	if flat.Magnitude > top then
+		flat = flat.Unit * top
+	end
+	lv.VectorVelocity = Vector3.new(flat.X, math.clamp(vel.Y, -climb, climb), flat.Z)
+	lv.Enabled = true
+	ao.CFrame = rot.Rotation
+	-- keep handing the pilot the physics in case it was lost
+	local ok, owner = pcall(body.GetNetworkOwner, body)
+	if ok and owner ~= player then
+		pcall(body.SetNetworkOwner, body, player)
 	end
 end)
 

@@ -12,6 +12,12 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local flyRE: RemoteEvent? = nil
+task.spawn(function()
+	local f = ReplicatedStorage:WaitForChild("Helicopters", 30)
+	flyRE = f and f:WaitForChild("Fly", 30) :: RemoteEvent?
+end)
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "HeliHud"
@@ -56,24 +62,39 @@ local function holdButton(text: string, pos: UDim2, key: string)
 	local bc = Instance.new("UICorner")
 	bc.CornerRadius = UDim.new(0, 10)
 	bc.Parent = b
-	b.MouseButton1Down:Connect(function()
-		held[key] = true
-	end)
-	b.MouseButton1Up:Connect(function()
-		held[key] = false
-	end)
-	b.MouseLeave:Connect(function()
-		held[key] = false
-	end)
-	-- touch: a finger lifted anywhere (or dragged off) always lets go
+	-- v233: follow the actual touch/click. MouseLeave fires as soon as a finger
+	-- lands on a phone, which used to cancel UP instantly (the heli never lifted).
+	local presses: { [InputObject]: boolean } = {}
+	local function refresh()
+		local any = false
+		for input in presses do
+			if input.UserInputState == Enum.UserInputState.End or input.UserInputState == Enum.UserInputState.Cancel then
+				presses[input] = nil
+			else
+				any = true
+			end
+		end
+		held[key] = any
+	end
 	b.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.Touch then
-			held[key] = true
+		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			presses[input] = true
+			refresh()
 		end
 	end)
 	b.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-			held[key] = false
+		presses[input] = nil
+		refresh()
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if presses[input] then
+			presses[input] = nil
+			refresh()
+		end
+	end)
+	RunService.Heartbeat:Connect(function()
+		if held[key] then
+			refresh()
 		end
 	end)
 	return b
@@ -139,6 +160,7 @@ local function fly(humanoid: Humanoid, seat: VehicleSeat)
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = { model, humanoid.Parent }
 
+	local sendTimer = 0
 	local conn
 	conn = RunService.Heartbeat:Connect(function(dt)
 		if humanoid.SeatPart ~= seat or not body.Parent or humanoid.Health <= 0 then
@@ -175,6 +197,10 @@ local function fly(humanoid: Humanoid, seat: VehicleSeat)
 
 		local ground = Workspace:Raycast(body.Position, Vector3.new(0, -9, 0), params)
 		local landed = ground ~= nil
+		-- v233 take-off assist: pushing forward (stick or W) on the ground lifts off
+		if landed and lift == 0 and throttle > 0.5 then
+			lift = 1
+		end
 		-- the skids stay on the ground until you climb
 		if landed and lift <= 0 then
 			throttle *= 0.15
@@ -198,6 +224,11 @@ local function fly(humanoid: Humanoid, seat: VehicleSeat)
 		local pitch = -(fwd / maxSpeed) * 0.22
 		local roll = turn / yawRate * 0.2 * math.clamp(math.abs(fwd) / maxSpeed + 0.2, 0, 1)
 		ao.CFrame = heading * CFrame.Angles(pitch, 0, roll)
+		sendTimer += dt
+		if sendTimer >= 0.1 and flyRE then
+			sendTimer = 0
+			flyRE:FireServer(lv.VectorVelocity, ao.CFrame)
+		end
 
 		local agl = ground and (body.Position.Y - ground.Position.Y) or nil
 		info.Text = ("%s   |   %d mph   |   ALT %s   |   "):format(
