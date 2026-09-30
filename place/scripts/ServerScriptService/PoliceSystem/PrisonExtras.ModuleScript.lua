@@ -55,8 +55,8 @@ X.BLOCK_AREA = {
 	["Death Row"] = "DEATH_ROW",
 }
 X.CLASSES = { "Low", "Medium", "High", "Maximum", "Supermax", "Death Row" }
-X.NPC_COUNT = { Low = 6, Medium = 7, High = 2, Maximum = 2, Supermax = 3, ["Death Row"] = 1 }
-X.START_FILL = 0.7 -- share of NPC_COUNT spawned at server start; arrests bring in the rest
+X.NPC_COUNT = { Low = 8, Medium = 10, High = 3, Maximum = 3, Supermax = 4, ["Death Row"] = 1 }
+X.START_FILL = 0.5 -- the rest arrive through intake (city arrests) -- share of NPC_COUNT spawned at server start; arrests bring in the rest
 X.SENTENCE = {
 	Low = { 240, 480 },
 	Medium = { 420, 900 },
@@ -66,12 +66,25 @@ X.SENTENCE = {
 	["Death Row"] = { 900, 1800 },
 }
 X.CHARGES = {
-	Low = { "Petty theft", "Trespassing", "Vandalism", "Disorderly conduct", "Shoplifting", "Driving without a license" },
-	Medium = { "Burglary", "Grand theft auto", "Drug possession", "Assault", "Resisting arrest", "Fraud" },
-	High = { "Armed robbery", "Drug trafficking", "Aggravated assault", "Carjacking" },
-	Maximum = { "Bank robbery", "Attempted murder", "Kidnapping", "Arson" },
-	Supermax = { "Murder of a police officer", "Prison escape", "Organized crime" },
-	["Death Row"] = { "Capital murder", "Multiple homicide" },
+	Low = { "Petty theft", "Trespassing", "Vandalism", "Disorderly conduct", "Shoplifting", "Driving without a license",
+		"Public intoxication", "Loitering", "Jaywalking", "Illegal gambling", "Counterfeit casino chips", "Noise violation" },
+	Medium = { "Burglary", "Grand theft auto", "Drug possession", "Assault", "Resisting arrest", "Fraud", "Identity theft",
+		"Card counting fraud", "Receiving stolen property", "DUI", "Reckless driving", "Possession of a firearm" },
+	High = { "Armed robbery", "Drug trafficking", "Aggravated assault", "Carjacking", "Racketeering", "Extortion",
+		"Casino heist", "Arms dealing" },
+	Maximum = { "Bank robbery", "Attempted murder", "Kidnapping", "Arson", "Manslaughter", "Human trafficking" },
+	Supermax = { "Murder of a police officer", "Prison escape", "Organized crime", "Terrorism", "Serial armed robbery" },
+	["Death Row"] = { "Capital murder", "Multiple homicide", "Murder of a police officer" },
+}
+-- who defends an NPC: mostly the public defender (price tiers match player counsel)
+X.COUNSEL = {
+	{ "Public Defender", 55, 0.08 },
+	{ "Local Attorney", 20, 0.16 },
+	{ "Experienced Defense Counsel", 12, 0.25 },
+	{ "Criminal Defense Firm", 7, 0.36 },
+	{ "Elite Defense Team", 4, 0.48 },
+	{ "National Trial Firm", 1.5, 0.60 },
+	{ "Premier Counsel", 0.5, 0.72 },
 }
 X.SOLITARY_SECS = 150
 X.PARDON_PRICE = 50000000
@@ -442,18 +455,46 @@ function X.forget(rec: any)
 	end
 end
 
-local function sentenceFor(class: string): (number, string)
+local function pickCounsel(): (string, number)
+	local total = 0
+	for _, c in X.COUNSEL do
+		total += c[2]
+	end
+	local roll = math.random() * total
+	for _, c in X.COUNSEL do
+		roll -= c[2]
+		if roll <= 0 then
+			return c[1], c[3]
+		end
+	end
+	return X.COUNSEL[1][1], X.COUNSEL[1][3]
+end
+
+local function sentenceFor(class: string): (number, string, string)
 	local range = X.SENTENCE[class] or { 300, 600 }
 	local secs = math.random(range[1], range[2])
 	local charges = X.CHARGES[class] or X.CHARGES.Low
-	local text = pick(charges)
+	local list = { pick(charges) }
+	-- sometimes a second charge, sometimes one from the class below
 	if math.random() < 0.35 then
 		local second = pick(charges)
-		if second ~= text then
-			text ..= ", " .. second
+		if second ~= list[1] then
+			table.insert(list, second)
 		end
 	end
-	return secs, text
+	if math.random() < 0.2 then
+		local lower = X.CHARGES.Low
+		local extra = pick(lower)
+		if not table.find(list, extra) then
+			table.insert(list, extra)
+		end
+	end
+	-- better counsel, shorter sentence (death row stays death row)
+	local counsel, quality = pickCounsel()
+	if class ~= "Death Row" then
+		secs = math.floor(secs * (1 - quality * (0.3 + math.random() * 0.5)))
+	end
+	return math.max(120, secs), table.concat(list, ", "), counsel
 end
 
 -- take over an NPC that is already in the prison (spawned here or arrived via intake)
@@ -462,7 +503,7 @@ function X.adopt(npc: Model, hum: Humanoid, root: BasePart, class: string): bool
 	if not room then
 		return false
 	end
-	local secs, charges = sentenceFor(class)
+	local secs, charges, counsel = sentenceFor(class)
 	local rec = {
 		model = npc,
 		hum = hum,
@@ -475,7 +516,17 @@ function X.adopt(npc: Model, hum: Humanoid, root: BasePart, class: string): bool
 	}
 	npc:SetAttribute("PrisonNPCInmate", class)
 	npc:SetAttribute("Charges", charges)
+	npc:SetAttribute("Counsel", counsel)
 	npc:SetAttribute("SentenceEnd", rec.sentenceEnd)
+	print(("[PrisonExtras] NPC %s sentenced: %s | %s | %s | %d:%02d"):format(npc.Name, class, charges, counsel, secs // 60, secs % 60))
+	C.PL.npcLabel(npc, ("%s · %d min · %s"):format(charges, math.max(1, secs // 60), counsel))
+	task.delay(25, function()
+		local head = npc:FindFirstChild("Head")
+		local gui = head and head:FindFirstChild("NpcCustodyLabel")
+		if gui then
+			gui:Destroy()
+		end
+	end)
 	npc:SetAttribute("AssignedCell", room.name)
 	room.cell:SetAttribute("NPCName", npc.Name)
 	X.npcs[npc] = rec
@@ -1468,6 +1519,9 @@ function X.executeNpc(rec: any)
 end
 
 ExecRE.OnServerEvent:Connect(function(player: Player, kind: any, token: any, value: any)
+	if not C then
+		return
+	end
 	if kind == "choose" then
 		local job = X.exec[player]
 		if job and job.choiceToken == token and not job.method then
@@ -1536,6 +1590,9 @@ local function eligibleInmate(player: Player): (boolean, string?)
 end
 
 VisitRF.OnServerInvoke = function(player: Player, action: any)
+	if not C then
+		return { hours = false, inmates = {}, busy = false }
+	end
 	if action == "list" then
 		local out = {}
 		for _, plr in Players:GetPlayers() do
@@ -1840,6 +1897,9 @@ end
 local pendingRequests: { [number]: any } = {}
 
 VisitRE.OnServerEvent:Connect(function(player: Player, kind: any, a: any, b: any)
+	if not C then
+		return
+	end
 	if kind == "request" then
 		local inmate = type(a) == "string" and Players:FindFirstChild(a)
 		local contact = b == true

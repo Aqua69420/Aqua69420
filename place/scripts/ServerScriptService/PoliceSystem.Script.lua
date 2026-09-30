@@ -11912,7 +11912,8 @@ end
 ---------------------------------------------------------------------------
 PL.NPC_ARRESTS = {
 	Enabled = true,
-	Interval = { 40, 80 }, -- seconds between arrests (v212: busier intake)
+	Interval = { 60, 180 }, -- seconds between arrests (v212: always one within 5 minutes)
+	MaxInFlight = 3, -- arrests on the road / in intake at the same time
 	MaxHoused = 30, -- arrested NPCs kept in the prison at once (PrisonExtras caps each class)
 	IntakeHold = 20,
 	BookingHold = 15,
@@ -12106,18 +12107,30 @@ function PL.npcArrestOnce()
 	npc.Name=class.." Inmate";hum.DisplayName=class.." Inmate"
 	print(("[NPCArrest] %s inmate housed via full intake"):format(class))
 	PL.npcArrestHoused+=1
-	PL.inmateLife(npc,hum,root,group,room,PL.prisonNpcFolder())
-	PL.npcArrestHoused-=1
+	task.spawn(function()
+		PL.inmateLife(npc,hum,root,group,room,PL.prisonNpcFolder())
+		PL.npcArrestHoused-=1
+	end)
 end
 
 function PL.startNpcArrests()
 	if not PL.NPC_ARRESTS.Enabled then return end
+	-- v212: every arrest runs in its own thread (a housed NPC's prison life never
+	-- returns, which used to stall this loop after the first arrest). A few can be
+	-- on the road at once; one is always under way within 5 minutes.
+	PL.arrestsInFlight=0
 	task.spawn(function()
 		task.wait(30)
 		print("[NPCArrest] city arrests online")
 		while prison and prison.Parent do
-			local ok,err=pcall(PL.npcArrestOnce)
-			if not ok then warn("[NPCArrest] "..tostring(err)) end
+			if PL.arrestsInFlight<PL.NPC_ARRESTS.MaxInFlight then
+				PL.arrestsInFlight+=1
+				task.spawn(function()
+					local ok,err=pcall(PL.npcArrestOnce)
+					if not ok then warn("[NPCArrest] "..tostring(err)) end
+					PL.arrestsInFlight-=1
+				end)
+			end
 			task.wait(math.random(PL.NPC_ARRESTS.Interval[1],PL.NPC_ARRESTS.Interval[2]))
 		end
 	end)
@@ -12248,6 +12261,10 @@ end
 end -- prison life block
 
 function Justice.init()
+	-- v212: PrisonExtras' remotes exist from the start (clients wait on them);
+	-- its prison logic starts later with the prison navigation (startPrisonLife)
+	local extrasModule=script:FindFirstChild("PrisonExtras")
+	if extrasModule then pcall(require,extrasModule) end
 	findPrison()
 	loadFacilities()
 	buildLandmarks()

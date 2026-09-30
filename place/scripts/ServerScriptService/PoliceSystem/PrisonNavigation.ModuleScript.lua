@@ -87,6 +87,7 @@ local CFG = {
 	RayHeights = { 2.4, 4.3 },
 	PathfindBudget = 180, -- PathfindingService validations during a build
 	BridgeRange = 170,
+	BridgeBudget = 500, -- v212: extra PathfindingService checks just for joining islands (stairs)
 	ArriveRadius = 3,
 	DoorArriveRadius = 2.4,
 	DoorLead = 14, -- start opening a door this far before it
@@ -260,8 +261,8 @@ local function rayClear(a: Vector3, b: Vector3): boolean
 end
 
 local pathfindUsed = 0
-local function pathfindCheck(a: Vector3, b: Vector3, maxFactor: number): { Vector3 }?
-	if pathfindUsed >= CFG.PathfindBudget then
+local function pathfindCheck(a: Vector3, b: Vector3, maxFactor: number, extraBudget: number?, stairSlack: number?): { Vector3 }?
+	if pathfindUsed >= CFG.PathfindBudget + (extraBudget or 0) then
 		return nil
 	end
 	pathfindUsed += 1
@@ -282,7 +283,9 @@ local function pathfindCheck(a: Vector3, b: Vector3, maxFactor: number): { Vecto
 		end
 	end
 	local straight = (b - a).Magnitude
-	if len > math.max(straight * maxFactor, straight + 25) then
+	-- v212: a staircase is always far longer than the drop between floors
+	local slack = if math.abs(a.Y - b.Y) > 4 then (stairSlack or 25) else 25
+	if len > math.max(straight * maxFactor, straight + slack) then
 		return nil
 	end
 	return pts
@@ -1085,32 +1088,56 @@ local function computeComponents(): { [number]: { number } }
 end
 
 -- islands (upper tiers, towers...) joined to the main network with PathfindingService
+-- v212: upper floors (medium / maximum / supermax tiers, low security's
+-- second level) only reach the ground floor by stairs, so every island is
+-- retried against the growing main network with its own pathfinding budget,
+-- same-floor links first, and a staircase may be much longer than the drop.
 local function bridgeIslands()
-	local comps = computeComponents()
-	for cid, list in comps do
-		if cid == mainComponent then
-			continue
-		end
-		local pairsList = {}
-		for _, a in list do
-			for _, b in comps[mainComponent] do
-				local d = (nodes[a].pos - nodes[b].pos).Magnitude
-				if d <= CFG.BridgeRange then
-					table.insert(pairsList, { a = a, b = b, d = d })
-				end
+	local budget = CFG.BridgeBudget or 500
+	local startUsed = pathfindUsed
+	local failed: { [number]: boolean } = {}
+	for _ = 1, 200 do
+		local comps = computeComponents()
+		local main = comps[mainComponent] or {}
+		local bridged = false
+		for cid, list in comps do
+			if cid == mainComponent or failed[list[1]] then
+				continue
 			end
-		end
-		table.sort(pairsList, function(x, y)
-			return x.d < y.d
-		end)
-		for k = 1, math.min(3, #pairsList) do
-			local pr = pairsList[k]
-			local wps = pathfindCheck(nodes[pr.a].pos, nodes[pr.b].pos, 3)
-			if wps then
-				local stairs = math.abs(nodes[pr.a].pos.Y - nodes[pr.b].pos.Y) > 4
-				addEdge(pr.a, pr.b, if stairs then "STAIRS" else "PATHFIND", { waypoints = wps })
+			if pathfindUsed - startUsed >= budget then
 				break
 			end
+			local pairsList = {}
+			for _, a in list do
+				for _, b in main do
+					local pa, pb = nodes[a].pos, nodes[b].pos
+					local d = (pa - pb).Magnitude
+					if d <= CFG.BridgeRange then
+						local sameFloor = math.abs(pa.Y - pb.Y) <= 3
+						table.insert(pairsList, { a = a, b = b, d = d + (if sameFloor then 0 else 60) })
+					end
+				end
+			end
+			table.sort(pairsList, function(x, y)
+				return x.d < y.d
+			end)
+			for k = 1, math.min(4, #pairsList) do
+				local pr = pairsList[k]
+				local wps = pathfindCheck(nodes[pr.a].pos, nodes[pr.b].pos, 3, budget + (startUsed - CFG.PathfindBudget), 220)
+				if wps then
+					local stairs = math.abs(nodes[pr.a].pos.Y - nodes[pr.b].pos.Y) > 4
+					addEdge(pr.a, pr.b, if stairs then "STAIRS" else "PATHFIND", { waypoints = wps })
+					bridged = true
+					break
+				end
+			end
+			if bridged then
+				break -- components changed: recompute before the next island
+			end
+			failed[list[1]] = true
+		end
+		if not bridged then
+			break
 		end
 	end
 	computeComponents()
