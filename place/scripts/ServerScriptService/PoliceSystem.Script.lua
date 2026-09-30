@@ -12879,6 +12879,18 @@ function Justice.init()
 				root.CFrame=CFrame.lookAt(room.pos+Vector3.new(0,3.25,0),doorFloor+Vector3.new(0,3,0))
 				RunService.Heartbeat:Wait();RunService.Heartbeat:Wait()
 				if not alive() then root.Anchored=false;continue end
+				-- v223: the fresh character can still be pulled back to its spawn point in
+				-- the first moments after spawning: keep re-placing it until it stays put
+				local placedCF=root.CFrame
+				for _=1,8 do
+					task.wait(0.25)
+					if not alive() then break end
+					if Util.flat(root.Position-room.pos).Magnitude>6 then
+						warn("[CustodyDiag] RESET RECOVERY re-placing "..player.Name.." (character left the cell after spawn)")
+						root.Anchored=true;root.CFrame=placedCF
+					end
+				end
+				if not alive() then root.Anchored=false;continue end
 				PrisonFlow.rooms[player]=room;PrisonFlow.reserved[player]=nil
 				player:SetAttribute("ReservedPrisonCell",nil)
 				player:SetAttribute("AssignedCell",room.name)
@@ -12909,7 +12921,9 @@ function Justice.init()
 					warn("[CustodyDiag] RESET RECOVERY has no saved case for "..player.Name)
 				end
 			end
-			custodyRecovery[player]=nil
+			-- v223: only clear our own claim, never a newer recovery's (two recoveries
+			-- used to cancel each other and the intake hold / booking never ran)
+			if custodyRecovery[player]==token then custodyRecovery[player]=nil end
 		end)
 	end
 
@@ -13068,6 +13082,10 @@ function Justice.init()
 				if not player.Parent or player.Character~=char then return end
 				local _,h,r=Util.charInfo(player)
 				if not h or not r or not outsidePrison(r.Position,nil) then return end
+				-- v223: already standing in the assigned cell (intake cells sit outside the
+				-- facility's bounding box) - leave the running recovery alone
+				local room=PrisonFlow.rooms[player]
+				if room and room.pos and Util.flat(r.Position-room.pos).Magnitude<12 and math.abs(r.Position.Y-room.pos.Y)<8 then return end
 				if not custody[player] and not sentenceEnd[player] and not releaseBusy[player] and PrisonFlow.isDetainee(player) then custody[player]=true end
 				if custody[player] and not criticalCustody[player] then
 					warn("[CustodyDiag] RESPAWN WATCHDOG: detainee "..player.Name.." still outside - restarting intake recovery")
