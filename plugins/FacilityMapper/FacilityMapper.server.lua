@@ -1,5 +1,5 @@
 --!nocheck
--- Facility Mapper (Studio plugin)  v4
+-- Facility Mapper (Studio plugin)  v5
 -- Maps the prison, Police HQ, City Jail, law offices and city markers in the
 -- same format the game's navigation already reads (the format of the original
 -- prison map):
@@ -44,7 +44,7 @@ local ZONE_INFO = {
 	-- street gang turf (city)
 	TerritoryEK = {}, TerritoryIS = {}, TerritoryDS = {}, TerritoryTL = {},
 	-- bank safe deposit vault
-	DepositVault = { room = true },
+	DepositVault = { room = true }, TransferHolding = { room = true },
 	-- courts
 	JuryRoom = { room = true }, JudgeChambers = { room = true }, SecurityCheckpoint = {}, ClerkOffice = {},
 	CourtLobby = {}, PressArea = {},
@@ -77,7 +77,7 @@ local ZONE_TYPES = {
 		"CourtHolding", "Hallway", "Stairs", "Office", "Evidence", "LockerRoom", "Garage", "Room",
 	},
 	CityJail = {
-		"SallyPort", "BookingArea", "JailCell", "HoldingCell", "DayRoom", "Yard", "LegalVisit", "ReleaseArea",
+		"SallyPort", "BookingArea", "JailCell", "HoldingCell", "TransferHolding", "DayRoom", "Yard", "LegalVisit", "ReleaseArea",
 		"Lobby", "Hallway", "Stairs", "Office", "Room",
 	},
 	LawOffice = { "Lobby", "Office", "ConferenceRoom", "Hallway", "Stairs", "Room" },
@@ -86,8 +86,8 @@ local ZONE_TYPES = {
 }
 local POINT_TYPES = {
 	Prison = { "BusBay", "PrisonPhone", "SniperPost", "Spotlight", "BailiffSpot", "CourtCam", "OfficerPost", "TurnInPoint", "DrugTestStation", "CommissaryWindow" },
-	Courthouse = { "BusDeparture", "BailiffSpot", "CourtCam", "ClerkWindow", "MetalDetector", "VehicleDropoff", "TurnInPoint", "CourthouseSteps", "PressPodium", "OfficerPost" },
-	PoliceHQ = { "BusDeparture", "BookingDesk", "TurnInPoint", "VehicleDropoff", "FrontDesk", "BailiffSpot", "CourtCam", "DetectivePost", "OfficerPost", "HoldingPhone", "MDTTerminal", "EvidenceLocker", "MugshotSpot", "PressPodium", "PoliceSpawn" },
+	Courthouse = { "BailiffSpot", "CourtCam", "ClerkWindow", "MetalDetector", "VehicleDropoff", "TurnInPoint", "CourthouseSteps", "PressPodium", "OfficerPost" },
+	PoliceHQ = { "BookingDesk", "TurnInPoint", "VehicleDropoff", "FrontDesk", "BailiffSpot", "CourtCam", "DetectivePost", "OfficerPost", "HoldingPhone", "MDTTerminal", "EvidenceLocker", "MugshotSpot", "PressPodium", "PoliceSpawn" },
 	CityJail = { "BusDeparture", "BookingDesk", "VehicleDropoff", "ReleasePoint", "JailPhone", "OfficerPost", "TurnInPoint" },
 	LawOffice = { "Reception", "WaitingArea" },
 	Bank = { "DepositTerminal", "BoxWall", "TellerDesk", "BankerDesk" },
@@ -139,7 +139,6 @@ local CHECKLIST = {
 		{ kind = "point", type = "BailiffSpot", min = 1 }, { kind = "point", type = "ClerkWindow", min = 1 },
 		{ kind = "point", type = "MetalDetector", min = 1 }, { kind = "point", type = "VehicleDropoff", min = 1 },
 		{ kind = "point", type = "CourthouseSteps", min = 1 },
-		{ kind = "point", type = "BusDeparture", min = 1 },
 		{ kind = "point", type = "CourtCam", min = 0, optional = true },
 		{ kind = "zone", type = "LegalVisit", min = 0, optional = true },
 		{ kind = "zone", type = "PressArea", min = 0, optional = true },
@@ -160,6 +159,8 @@ local CHECKLIST = {
 		{ kind = "zone", type = "ReleaseArea", min = 1 },
 		{ kind = "point", type = "BookingDesk", min = 1 }, { kind = "point", type = "VehicleDropoff", min = 1 },
 		{ kind = "point", type = "ReleasePoint", min = 1 },
+		{ kind = "point", type = "BusDeparture", min = 1 },
+		{ kind = "zone", type = "TransferHolding", min = 1 },
 		{ kind = "zone", type = "Yard", min = 0, optional = true },
 		{ kind = "zone", type = "LegalVisit", min = 0, optional = true },
 		{ kind = "point", type = "JailPhone", min = 0, optional = true },
