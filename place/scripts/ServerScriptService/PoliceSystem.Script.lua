@@ -12285,6 +12285,8 @@ function PL.startCellFreeTime()
 					if player:GetAttribute("CustodyOwner")~="INCARCERATED" then return end
 					-- v212: solitary, a visit or an execution owns the inmate's door
 					if player:GetAttribute("Solitary") or player:GetAttribute("Visiting") or player:GetAttribute("DeathRowExecutionStarted") then PL.freeState[player]=nil;return end
+					-- Death Row (and solitary) cells never open for free time
+					if player:GetAttribute("SecurityClass")=="Death Row" then PL.freeState[player]=nil;return end
 					local room=PL.playerRoom(player)
 					if not room or room.open then return end -- low security cells have no door
 					local _,_,root=Util.charInfo(player)

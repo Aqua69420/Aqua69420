@@ -171,7 +171,8 @@ end
 
 -- where a class should be during a schedule block
 function X.locationFor(class: string, block: string): string
-	if block == "Lockdown" or block == "Count" then
+	-- Death Row is like solitary: the door never opens on the schedule
+	if block == "Lockdown" or block == "Count" or class == "Death Row" then
 		return "CELL"
 	end
 	local restricted = class == "Supermax" or class == "Death Row"
