@@ -1562,11 +1562,13 @@ function X.execute(player: Player): boolean
 		return true
 	end
 	C.custody[player] = true
-	local room = C.PrisonFlow.pick(player, "ExecutionRoom")
+	local room = C.PrisonFlow.pick(player, "ExecutionRoom") or X.freeRoom("ExecutionRoom")
 	if not room then
 		C.custody[player] = nil
-		return false -- legacy in-cell execution
+		warn(("[PrisonExtras] no free execution room for %s (mapped: %d)"):format(player.Name, #X.rooms("ExecutionRoom")))
+		return false -- retried next second
 	end
+	print(("[PrisonExtras] EXECUTION START %s -> %s"):format(player.Name, room.name))
 	local job = { key = player, player = player, room = room, name = player.Name }
 	X.exec[player] = job
 	room.cell:SetAttribute("RoomBusy", true)

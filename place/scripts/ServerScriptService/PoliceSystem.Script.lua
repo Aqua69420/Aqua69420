@@ -10902,8 +10902,25 @@ local function sentenceLoop()
 			local done = sentenceEnd[player]
 			if done then
 				if now >= done then
-					if player:GetAttribute("SecurityClass")=="Death Row" and PrisonFlow.execute and PrisonFlow.execute(player) then
-						-- v212: execution room, method choice, live on C-SPAN (PrisonExtras)
+					local handled=false
+					if player:GetAttribute("SecurityClass")=="Death Row" and script:FindFirstChild("PrisonExtras") then
+						-- v216: execution room, method choice, executioner, live on C-SPAN
+						-- (PrisonExtras). While it's still starting up, the execution waits.
+						if PrisonFlow.execute then
+							local ok,res=pcall(PrisonFlow.execute,player)
+							if not ok then warn("[DeathRow] execution room flow error: "..tostring(res)) end
+							handled=ok and res==true
+						end
+						if not handled then
+							if not PrisonFlow.executeWarned or os.clock()-PrisonFlow.executeWarned>10 then
+								PrisonFlow.executeWarned=os.clock()
+								warn("[DeathRow] waiting for an execution room for "..player.Name)
+							end
+							handled=true
+						end
+					end
+					if handled then
+						-- owned by PrisonExtras
 					elseif player:GetAttribute("SecurityClass")=="Death Row" and deathRowExecution then
 						task.spawn(deathRowExecution,player)
 					else
