@@ -37,6 +37,52 @@ do
 end
 
 local network=RoadDriving.loadNetwork()
+
+-- v210: residents don't drive out to the prison. Roads within PRISON_RADIUS of
+-- the CorrectionalFacility, plus anything only reachable through them (the
+-- dead-end spur out there), are left to police transports.
+local PRISON_RADIUS=600
+local restrictedRoads={}
+do
+	local facility=workspace:FindFirstChild("CorrectionalFacility")
+	local prisonPos=facility and facility:IsA("Model") and facility:GetPivot().Position
+	if prisonPos then
+		for idx,road in ipairs(network) do
+			for _,p in ipairs(road.points or {}) do
+				if Vector3.new(p.X-prisonPos.X,0,p.Z-prisonPos.Z).Magnitude<=PRISON_RADIUS then
+					restrictedRoads[idx]=true
+					break
+				end
+			end
+		end
+		-- whatever is cut off from the main (largest) city network by those
+		-- roads is part of the spur too
+		local graph=RoadDriving.buildGraph(network)
+		local component,best,bestSize={},nil,0
+		for start=1,#network do
+			if not restrictedRoads[start] and not component[start] then
+				local members={start};component[start]=start
+				local q=1
+				while q<=#members do
+					local u=members[q];q+=1
+					for _,edge in ipairs(graph[u] or {}) do
+						local v=edge.road
+						if not restrictedRoads[v] and not component[v] then component[v]=start;table.insert(members,v) end
+					end
+				end
+				if #members>bestSize then best,bestSize=start,#members end
+			end
+		end
+		local count=0
+		for idx=1,#network do
+			if not restrictedRoads[idx] and component[idx]~=best then restrictedRoads[idx]=true end
+			if restrictedRoads[idx] then count+=1 end
+		end
+		print(("[CivilianTrafficServer] %d prison-area road(s) closed to resident traffic"):format(count))
+	end
+end
+_G.TrafficRestrictedRoads=restrictedRoads
+
 local trafficRegistry={}
 local roadOccupancy={}
 local trafficGrid={}
@@ -140,7 +186,7 @@ local function chooseSpawnRoad()
 		local idx=math.random(1,#network)
 		local road=network[idx]
 		local info=roadSpawnInfo[idx]
-		if info and info.length>20 and #info.segments>0 then
+		if info and info.length>20 and #info.segments>0 and not restrictedRoads[idx] then
 			local occupancy=roadOccupancy[road.name] or 0
 			local fill=occupancy/math.max(1,info.capacity)
 			local classPenalty=(road.roadType=="Primary" and 0) or (road.roadType=="Secondary" and 0.15) or 0.55
@@ -574,7 +620,7 @@ local function chooseTripDestination(state,tried)
 			if not seen[i] then
 				seen[i]=true
 				table.insert(queue,i)
-				if not tried[i] then
+				if not tried[i] and not restrictedRoads[i] then
 					local r=network[i]
 					local classWeight=(r.roadType=="Primary" and 1.3) or (r.roadType=="Secondary" and 1.1) or 0.75
 					local congestion=roadOccupancy[r.name] or 0
@@ -606,6 +652,7 @@ local function newTrip(state)
 	local tried={}
 	for _=1,math.min(10,math.max(2,#network)) do
 		local destination=chooseTripDestination(state,tried) or RoadDriving.chooseDestinationRoad(network,driver.road,roadOccupancy)
+		if destination and restrictedRoads[destination] then tried[destination]=true;destination=nil end
 		if destination and not tried[destination] then
 			tried[destination]=true
 			local route=RoadDriving.planTrip(driver,destination,roadOccupancy,{emergency=false})

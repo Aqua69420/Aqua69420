@@ -7704,8 +7704,18 @@ local function restoreAuthoredMap(): Instance?
   else warn("[CustodyDiag] MAP RECOVERY missing physical door: "..record.name) end
  end
  if linked~=#data.doors then map:Destroy();warn("[CustodyDiag] MAP RECOVERY rejected incomplete physical door links");return nil end
- map.Parent=ServerStorage
- print(("[CustodyDiag] AUTHORED MAP RECOVERED zones=%d doors=%d routes=%d"):format(#data.zones,linked,#data.routes))
+ -- v210: put the restored map back where the live one belongs, so everything
+ -- that reads CorrectionalFacility.PrisonMap (door lockpicks / staff access,
+ -- prison points) keeps working when the place file has lost it.
+ local facility=Workspace:FindFirstChild("CorrectionalFacility")
+ if facility and not facility:FindFirstChild("PrisonMap") then
+  map.Name="PrisonMap"
+  for _,part in map:GetDescendants() do if part:IsA("BasePart") then part.Transparency=1;part.CanCollide=false;part.CanQuery=false;part.CanTouch=false end end
+  map.Parent=facility
+ else
+  map.Parent=ServerStorage
+ end
+ print(("[CustodyDiag] AUTHORED MAP RECOVERED zones=%d doors=%d routes=%d -> %s"):format(#data.zones,linked,#data.routes,map:GetFullName()))
  return map
 end
 
@@ -8551,6 +8561,78 @@ function PrisonFlow.restoreCivilianClothes(player: Player): boolean
 	return true
 end
 
+-- v210: a uniform ID can be a catalog clothing item (Shirt/Pants asset) or the
+-- clothing image itself. Using one as the other gives a blank texture - the
+-- inmate showed up naked. Look the asset type up once and use it correctly.
+PrisonFlow.clothingCache={}
+function PrisonFlow.resolveClothing(id: any): any
+	local n=tonumber(id)
+	if not n or n<=0 then return {} end
+	local cached=PrisonFlow.clothingCache[n]
+	if cached then return cached end
+	local MarketplaceService=game:GetService("MarketplaceService")
+	local function typeOf(assetId: number): number?
+		local ok,info=pcall(function() return MarketplaceService:GetProductInfo(assetId,Enum.InfoType.Asset) end)
+		return if ok and info then info.AssetTypeId else nil
+	end
+	local t=typeOf(n)
+	local result
+	if t==11 or t==12 then
+		result={catalog=n} -- Shirt / Pants item: goes through the avatar description
+	elseif t==1 then
+		result={template="rbxassetid://"..n} -- the texture image itself
+	elseif t==13 then
+		-- a decal: its image is (almost always) the asset just before it
+		result={template="rbxassetid://"..n}
+		for k=1,3 do if typeOf(n-k)==1 then result={template="rbxassetid://"..(n-k)};break end end
+	else
+		result={catalog=n,unknown=true}
+	end
+	PrisonFlow.clothingCache[n]=result
+	print(("[CustodyDiag] UNIFORM ASSET %d type=%s -> %s"):format(n,tostring(t),result.catalog and "catalog item" or tostring(result.template)))
+	return result
+end
+
+-- Dress a character (player or NPC) in {shirt=,pants=} uniform IDs.
+function PrisonFlow.wearUniform(character: Model, outfit: any): (boolean, Shirt?, Pants?)
+	local humanoid=character:FindFirstChildOfClass("Humanoid")
+	local shirtInfo=PrisonFlow.resolveClothing(outfit.shirt)
+	local pantsInfo=PrisonFlow.resolveClothing(outfit.pants)
+	local descriptionApplied=false
+	if humanoid then
+		local got,description=pcall(function() return humanoid:GetAppliedDescription() end)
+		if got and description then
+			-- catalog items go on through the description; image IDs clear the
+			-- avatar's own clothing so the uniform texture below is what shows
+			description.Shirt=shirtInfo.catalog or 0
+			description.Pants=pantsInfo.catalog or 0
+			local ok,why=pcall(function() humanoid:ApplyDescription(description) end)
+			descriptionApplied=ok
+			if not ok then warn("[CustodyDiag] UNIFORM DESCRIPTION APPLY FAILED "..character.Name..": "..tostring(why)) end
+		end
+	end
+	local function piece(className: string, info: any, prop: string, name: string): any
+		local obj=character:FindFirstChildOfClass(className)
+		if info.template then
+			obj=obj or Instance.new(className)
+			obj[prop]=info.template
+		elseif info.catalog and (not obj or obj[prop]=="") then
+			-- the description didn't produce the item (unknown asset type):
+			-- try the ID as an image as a last resort
+			obj=obj or Instance.new(className)
+			obj[prop]="rbxassetid://"..info.catalog
+		end
+		if obj then
+			obj.Name=name
+			obj.Parent=character
+		end
+		return obj
+	end
+	local shirt=piece("Shirt",shirtInfo,"ShirtTemplate","InmateUniformShirt")
+	local pants=piece("Pants",pantsInfo,"PantsTemplate","InmateUniformPants")
+	return descriptionApplied,shirt,pants
+end
+
 function PrisonFlow.applyInmateClothes(player: Player, security: string): boolean
 	local outfit=inmateClothes[security];local character=player.Character
 	if not outfit or not character then return false end
@@ -8564,34 +8646,15 @@ function PrisonFlow.applyInmateClothes(player: Player, security: string): boolea
 		end
 		PrisonFlow.civilianClothes[player]=snap
 	end
-	-- Set the avatar's canonical classic-clothing IDs as well as the Shirt/Pants
-	-- instances. Some player appearances are rebuilt by Roblox after the initial
-	-- clothing objects replicate, which can otherwise leave the inmate visibly
-	-- undressed even though those instances and custody attributes are present.
-	local humanoid=character:FindFirstChildOfClass("Humanoid")
-	local descriptionApplied=false
-	if humanoid then
-		local gotDescription,description=pcall(function() return humanoid:GetAppliedDescription() end)
-		if gotDescription and description then
-			description.Shirt=tonumber(outfit.shirt) or 0
-			description.Pants=tonumber(outfit.pants) or 0
-		local applied,why=pcall(function() humanoid:ApplyDescription(description) end)
-			if applied then descriptionApplied=true else warn("[CustodyDiag] UNIFORM DESCRIPTION APPLY FAILED "..player.Name..": "..tostring(why)) end
-		else
-			warn("[CustodyDiag] UNIFORM DESCRIPTION READ FAILED "..player.Name..": "..tostring(description))
-		end
-	end
+	local descriptionApplied,shirt,pants=PrisonFlow.wearUniform(character,outfit)
 	character=player.Character or character
-	local shirt=character:FindFirstChildOfClass("Shirt") or Instance.new("Shirt")
-	shirt.Name="InmateUniformShirt";shirt.ShirtTemplate="http://www.roblox.com/asset/?id="..outfit.shirt;shirt.Parent=character
-	local pants=character:FindFirstChildOfClass("Pants") or Instance.new("Pants")
-	pants.Name="InmateUniformPants";pants.PantsTemplate="http://www.roblox.com/asset/?id="..outfit.pants;pants.Parent=character
 	player:SetAttribute("InmateShirtAssetId",outfit.shirt);player:SetAttribute("InmatePantsAssetId",outfit.pants)
 	player:SetAttribute("PrisonClothesIssued",true)
-	print(("[CustodyDiag] DRESS OUT UNIFORM %s class=%s shirt=%s pants=%s descriptionApplied=%s shirtTemplate=%s pantsTemplate=%s"):format(player.Name,security,outfit.shirt,outfit.pants,tostring(descriptionApplied),tostring(shirt.ShirtTemplate),tostring(pants.PantsTemplate)))
+	print(("[CustodyDiag] DRESS OUT UNIFORM %s class=%s shirt=%s pants=%s descriptionApplied=%s shirtTemplate=%s pantsTemplate=%s"):format(player.Name,security,outfit.shirt,outfit.pants,tostring(descriptionApplied),tostring(shirt and shirt.ShirtTemplate),tostring(pants and pants.PantsTemplate)))
 	task.spawn(function()
 		local ok,why=pcall(function()
-			game:GetService("ContentProvider"):PreloadAsync({shirt,pants},function(contentId,status)
+			local items={};if shirt then table.insert(items,shirt) end;if pants then table.insert(items,pants) end
+			game:GetService("ContentProvider"):PreloadAsync(items,function(contentId,status)
 				print(("[CustodyDiag] UNIFORM ASSET LOAD %s asset=%s status=%s"):format(player.Name,tostring(contentId),tostring(status)))
 			end)
 		end)
@@ -10346,7 +10409,16 @@ function PrisonFlow.releaseRide(player: Player, team: Team?)
 	local char,hum,root=Util.charInfo(player)
 	local dest=PrisonFlow.releaseSpawn(team)
 	if not char or not hum or not root or not dest then return end
-	local van=Van.spawnPatrol(root.Position+root.CFrame.RightVector*8,1,true,root.CFrame.LookVector)
+	-- pull up on the nearest mapped road, not on the spot (the kerb, a fence)
+	local pickup=root.Position+root.CFrame.RightVector*8
+	local bestD=math.huge
+	for _,node in RoadGraph.nodesNear(root.Position,120) do
+		local p=RoadGraph.nodePos(node)
+		if p and outsidePrison(p,nil) and Util.flat(p-root.Position).Magnitude<bestD then pickup,bestD=p,Util.flat(p-root.Position).Magnitude end
+	end
+	local ground=Util.groundAt(pickup,30,80)
+	if ground then pickup=Vector3.new(pickup.X,ground.Y,pickup.Z) end
+	local van=Van.spawnPatrol(pickup,1,true,Util.safeUnit(Util.flat(dest-pickup),Vector3.zAxis))
 	local function drop()
 		if root.Parent then
 			local ground=Util.groundAt(dest,20,60) or dest
@@ -10371,10 +10443,23 @@ function PrisonFlow.releaseRide(player: Player, team: Team?)
 	local done=false
 	local started=van:driveTo(dest,false,function() done=true end)
 	local deadline=os.clock()+240
+	-- v210: never sit stuck - if the cruiser stops making progress for 12s
+	-- (blocked, off the road network), the ride ends at the spawn instead
+	local lastPos,lastMove=body.Position,os.clock()
+	local stuck=false
 	while started and not done and os.clock()<deadline and player.Parent and player.Character==char and not van.dead do
 		if Util.flat(body.Position-dest).Magnitude<30 then break end
+		if Util.flat(body.Position-lastPos).Magnitude>4 then lastPos,lastMove=body.Position,os.clock() end
+		if os.clock()-lastMove>12 then stuck=true;break end
+		-- open the prison vehicle gates for the cruiser on its way out
+		for _,fac in facilities do
+			if fac.gates and fac.center and Util.flat(body.Position-fac.center).Magnitude<260 then
+				pcall(safeTransportGateOpen,fac.gates,8,"release-ride")
+			end
+		end
 		task.wait(0.5)
 	end
+	if stuck then warn("[CustodyDiag] RELEASE RIDE stalled for "..player.Name.."; dropping at spawn") end
 	weld:Destroy()
 	if player.Character==char then custodyTransportGhost(char,false);hum.Sit=false end
 	if not started or os.clock()>=deadline or van.dead then warn("[CustodyDiag] RELEASE RIDE incomplete; placing "..player.Name.." at spawn") end
@@ -11536,11 +11621,7 @@ function PL.makeInmateNpc(class: string): (Model?, Humanoid?, BasePart?)
 	local hum=npc:FindFirstChildOfClass("Humanoid");local root=npc:FindFirstChild("HumanoidRootPart")
 	if not hum or not root then npc:Destroy();return nil end
 	for _,d in npc:GetChildren() do if d:IsA("Shirt") or d:IsA("Pants") or d:IsA("Accessory") then d:Destroy() end end
-	local outfit=inmateClothes[class]
-	if outfit then
-		local shirt=Instance.new("Shirt");shirt.ShirtTemplate="http://www.roblox.com/asset/?id="..outfit.shirt;shirt.Parent=npc
-		local pants=Instance.new("Pants");pants.PantsTemplate="http://www.roblox.com/asset/?id="..outfit.pants;pants.Parent=npc
-	end
+	-- the uniform goes on once the NPC is in the world (ApplyDescription needs it)
 	npc.Name=class.." Inmate"
 	npc:SetAttribute("PrisonNPCInmate",class)
 	hum.DisplayName=class.." Inmate"
@@ -11614,6 +11695,7 @@ function PL.startNpcInmates()
 					local start=if PL.prisonLifeInCells() then door else (if group.area then PrisonNav.patrolStart(group.area) or door else door)
 					npc:PivotTo(CFrame.new(start+Vector3.new(0,3,0)))
 					npc.Parent=folder
+					if inmateClothes[group.class] then pcall(PrisonFlow.wearUniform,npc,inmateClothes[group.class]) end
 					PL.prisonNpcCollision(npc)
 					pcall(function() root:SetNetworkOwner(nil) end)
 					PL.inmateLife(npc,hum,root,group,room,folder)
@@ -11811,8 +11893,7 @@ function PL.npcArrestOnce()
 	for _,d in npc:GetChildren() do if d:IsA("Shirt") or d:IsA("Pants") or d:IsA("Accessory") then d:Destroy() end end
 	local outfit=inmateClothes[class]
 	if outfit then
-		local shirt=Instance.new("Shirt");shirt.ShirtTemplate="http://www.roblox.com/asset/?id="..outfit.shirt;shirt.Parent=npc
-		local pants=Instance.new("Pants");pants.PantsTemplate="http://www.roblox.com/asset/?id="..outfit.pants;pants.Parent=npc
+		pcall(PrisonFlow.wearUniform,npc,outfit)
 	end
 	task.wait(3)
 	-- 5) housing: their class's cellblock, then normal inmate life

@@ -369,7 +369,9 @@ if prisonMarkers then
 else
 	warn("[BankServer] prison DoorMarkers unavailable; mapped prison lockpicks will retry")
 	task.spawn(function()
-		for _=1,30 do
+		-- v210: the prison can restore its map a while after start (from its
+		-- baked copy when the place file has lost it), so keep looking.
+		for _=1,180 do
 			task.wait(1)
 			local facility=workspace:FindFirstChild("CorrectionalFacility")
 			local map=facility and facility:FindFirstChild("PrisonMap")
