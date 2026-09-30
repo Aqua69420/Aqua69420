@@ -12949,14 +12949,26 @@ function Justice.init()
 				-- straight back in (no second recovery, which used to cancel the hold).
 				task.spawn(function()
 					local cellCF=CFrame.lookAt(room.pos+Vector3.new(0,3.25,0),doorFloor+Vector3.new(0,3,0))
+					local pinned=false
 					while alive() and PrisonFlow.rooms[player]==room and player:GetAttribute("BookingState")=="IntakeCell" do
 						if Util.flat(root.Position-room.pos).Magnitude>8 or math.abs(root.Position.Y-room.pos.Y)>8 then
-							warn("[CustodyDiag] INTAKE HOLD GUARD: "..player.Name.." left the cell - put back in "..room.name)
 							root.AssemblyLinearVelocity=Vector3.zero
 							root.CFrame=cellCF
+							-- v228: the client kept winning (it owns the character's physics and
+							-- held it at its spawn point, so every put-back was undone half a
+							-- second later). Pin it server-side in the cell for the rest of the
+							-- intake hold - an anchored root can't be moved by the client.
+							if not pinned then
+								pinned=true
+								root.Anchored=true
+								warn("[CustodyDiag] INTAKE HOLD GUARD: "..player.Name.." left the cell - pinned in "..room.name.." for the intake hold")
+							end
+						elseif pinned and not root.Anchored then
+							root.Anchored=true
 						end
 						task.wait(0.5)
 					end
+					if pinned and root.Parent and player.Character==char then root.Anchored=false end
 				end)
 				if PrisonFlow.intakeHold(player,alive) and alive() then
 					local case=bookingCase[player]
