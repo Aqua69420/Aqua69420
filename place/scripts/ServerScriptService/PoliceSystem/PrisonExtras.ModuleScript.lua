@@ -727,6 +727,10 @@ function X.moveClass(class: string, from: string?, to: string)
 	for _, rec in members do
 		rec.model:SetAttribute("LineUp", true)
 	end
+	-- v239: players being walked by a CO can't sit down on the way
+	for _, plr in plist do
+		plr:SetAttribute("NoSit", true)
+	end
 	local ok, err = pcall(function()
 		local fromLoc = from or "CELL"
 		local gather = X.pointIn(class, if fromLoc == "CELL" then "BLOCK" else fromLoc)
@@ -913,6 +917,11 @@ function X.moveClass(class: string, from: string?, to: string)
 	for _, rec in members do
 		if rec.model.Parent then
 			rec.model:SetAttribute("LineUp", nil)
+		end
+	end
+	for _, plr in plist do
+		if plr.Parent then
+			plr:SetAttribute("NoSit", nil)
 		end
 	end
 end
@@ -1167,6 +1176,7 @@ end
 
 function X.returnPlayer(plr: Player, class: string, want: string)
 	X.returning[plr] = true
+	plr:SetAttribute("NoSit", true)
 	local ok, err = pcall(function()
 		local _, hum, root = C.Util.charInfo(plr)
 		if not hum or not root then
@@ -1302,6 +1312,9 @@ function X.returnPlayer(plr: Player, class: string, want: string)
 	end
 	X.outSince[plr] = nil
 	X.returning[plr] = nil
+	if plr.Parent then
+		plr:SetAttribute("NoSit", nil)
+	end
 end
 
 function X.returnNpc(rec: any, want: string)
@@ -2544,6 +2557,38 @@ function X.init(ctx: any)
 	end)
 	X.startRegimen()
 	X.startSweep()
+	-- v239: server-side backstop for NoSit / custody walks - the seat weld is made
+	-- by the server, so a player being walked is pulled straight back off any seat
+	local function guardSeats(plr: Player)
+		local function hook(char: Model)
+			plr:SetAttribute("NoSit", nil) -- a fresh character is never mid-walk
+			local hum = char:WaitForChild("Humanoid", 10) :: Humanoid?
+			if not hum then
+				return
+			end
+			hum:GetPropertyChangedSignal("SeatPart"):Connect(function()
+				local seat = hum.SeatPart
+				if seat and (plr:GetAttribute("NoSit") == true or plr:GetAttribute("CustodyAutoMove") == true) then
+					task.defer(function()
+						local weld = seat:FindFirstChild("SeatWeld")
+						if weld then
+							weld:Destroy()
+						end
+						hum.Sit = false
+						hum.Jump = true
+					end)
+				end
+			end)
+		end
+		if plr.Character then
+			task.spawn(hook, plr.Character)
+		end
+		plr.CharacterAdded:Connect(hook)
+	end
+	for _, plr in Players:GetPlayers() do
+		guardSeats(plr)
+	end
+	Players.PlayerAdded:Connect(guardSeats)
 	X.startPopulation()
 	print("[PrisonExtras] regimen, solitary, executions and visits online")
 end

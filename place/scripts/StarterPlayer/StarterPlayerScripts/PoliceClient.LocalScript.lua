@@ -46,7 +46,8 @@ do
  local guarded,previous
  local function syncSeating()
   local h=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-  local active=player:GetAttribute("CustodyAutoMove")==true
+  -- v239: also while a CO walks you (line-ups, being returned) - NoSit
+  local active=player:GetAttribute("CustodyAutoMove")==true or player:GetAttribute("NoSit")==true
   if guarded and (guarded~=h or not active) then
    guarded:SetStateEnabled(Enum.HumanoidStateType.Seated,previous);guarded=nil
   end
@@ -56,9 +57,10 @@ do
   end
  end
  local changed=player:GetAttributeChangedSignal("CustodyAutoMove"):Connect(syncSeating)
+ local noSitChanged=player:GetAttributeChangedSignal("NoSit"):Connect(syncSeating)
  local heartbeat=RunService.Heartbeat:Connect(syncSeating)
  script.Destroying:Connect(function()
-  changed:Disconnect();heartbeat:Disconnect()
+  changed:Disconnect();noSitChanged:Disconnect();heartbeat:Disconnect()
   if guarded then guarded:SetStateEnabled(Enum.HumanoidStateType.Seated,previous) end
  end)
  syncSeating()
