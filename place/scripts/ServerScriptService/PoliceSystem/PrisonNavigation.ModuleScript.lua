@@ -527,7 +527,7 @@ function Nav.refreshCellPairs(map: Instance)
         end
     end
     for _,zone in folder:GetChildren() do
-        if Nav.CellPairs[zone.Name] then continue end
+        if Nav.CellPairs[zone.Name] or zone:GetAttribute("NavIgnore")==true then continue end
         local name=string.lower(zone.Name.." "..tostring(zone:GetAttribute("ZoneType") or ""))
         local passage=false
         for _,word in {"area","outside","transfer","leads","common","block","hall","walk","lobby"} do
@@ -625,6 +625,10 @@ local function importZones(map: Instance)
 	end
 	for _, zm in folder:GetChildren() do
 		local cp = zm:FindFirstChild("ControlPoints")
+		-- v238: sniper zones (kill zone between the fences, perimeter) aren't walkable areas
+		if zm:GetAttribute("NavIgnore") == true then
+			cp = nil
+		end
 		if cp then
 			local poly, ysum, count = {}, 0, 0
 			for _, v in sortedChildren(cp) do
