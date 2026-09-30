@@ -10326,6 +10326,8 @@ function Justice.medicalCustody(player: Player,reason: string)
 	local list=charges[player] or {};local keys=crimeKeys[player] or {};local fac=pickFacility(stars,keys);local secs=math.floor(sentenceFor(stars,list)*(if fac then fac.cfg.SentenceScale or 1 else 1));local text=chargesText(list)
 	if player.Team and player.Team.Name~=JCFG.PrisonerTeam and not inmateTeamColors[player.Team.Name] then previousTeam[player]=player.Team end
 	charges[player]=nil;crimeKeys[player]=nil;player:SetAttribute("CustodyStars",stars);mirror(player,0);if pursuit then Heat.clear(player,"Busted") end
+	bookingCase[player]={fac=fac,secs=secs,text=text,stars=stars} -- v212: a death in transport resumes this case
+	player:SetAttribute("CaseCharges",text)
 	takeGuns(player);cuff(player)
 	-- v195: a critical arrest is an arrest: intake team immediately (Justice.jail does the same).
 	PrisonFlow.team(player,"Intake Prisoners")
@@ -12448,7 +12450,30 @@ function Justice.init()
 					return player.Parent~=nil and custody[player]==true and not criticalCustody[player]
 						and player.Character==char and hum.Health>0 and custodyRecovery[player]==token
 				end
-				local room=PrisonFlow.acquireRoom(player,"IntakeCell",alive)
+				-- v212: a death/reset in custody always lands in a cell: intake, then
+				-- the holding cells, then any intake cell regardless of capacity
+				local room=nil
+				local waitUntil=os.clock()+10
+				while alive() and not room and os.clock()<waitUntil do
+					for _,category in {"IntakeCell","OverflowHolding","LongTermHolding"} do
+						room=PrisonFlow.pick(player,category)
+						if room then break end
+					end
+					if not room then task.wait(0.5) end
+				end
+				if not room and alive() and PrisonNav and PrisonNav.mapRoot then
+					local zones=PrisonNav.mapRoot:FindFirstChild("Zones");local doors=PrisonNav.mapRoot:FindFirstChild("DoorMarkers")
+					for name,pair in PrisonNav.CellPairs do
+						if pair.category=="IntakeCell" and zones and doors then
+							local cell,door=zones:FindFirstChild(name),doors:FindFirstChild(pair.door)
+							if cell and door then
+								room={cell=cell,door=door,pos=pair.pos,name=name,category="IntakeCell",open=false,capacity=pair.capacity or 1}
+								warn("[CustodyDiag] RESET RECOVERY forced into "..name.." for "..player.Name)
+								break
+							end
+						end
+					end
+				end
 				if not room then
 					if player.Character~=char then continue end
 					warn("[CustodyDiag] RESET RECOVERY waiting for a mapped intake cell "..player.Name)
@@ -12474,6 +12499,14 @@ function Justice.init()
 				tell(player,"Custody","Reset recovered inside intake. Booking will continue after the intake hold.")
 				if PrisonFlow.intakeHold(player,alive) and alive() then
 					local case=bookingCase[player]
+					if not case then
+						local stars=math.max(1,tonumber(player:GetAttribute("CustodyStars")) or 1)
+						local fac=pickFacility(stars,{}) or facilities[#facilities]
+						local secs=math.floor(sentenceFor(stars,{})*(if fac then fac.cfg.SentenceScale or 1 else 1))
+						case={fac=fac,secs=secs,text=tostring(player:GetAttribute("CaseCharges") or "Obstruction of justice"),stars=stars}
+						bookingCase[player]=case
+						warn("[CustodyDiag] RESET RECOVERY rebuilt the booking case for "..player.Name)
+					end
 					if case then
 						player:SetAttribute("CustodyResetRecoveryPending",nil)
 						custodyRecovery[player]=nil
@@ -12607,6 +12640,11 @@ function Justice.init()
 			end
 		end
 		player.CharacterAdded:Connect(function(char)
+			-- v212: dying while EMS had you still ends up in intake, not at a public spawn
+			if custody[player] and criticalCustody[player] and bookingCase[player] then
+				criticalCustody[player]=nil;player:SetAttribute("PoliceCritical",nil)
+				player:SetAttribute("CustodyPhase","Detainee");player:SetAttribute("BookingState","Arrested")
+			end
 			if custody[player] and not criticalCustody[player] then
 				player:SetAttribute("CustodyResetRecoveryPending",true)
 				PrisonFlow.team(player,"Intake Prisoners")
