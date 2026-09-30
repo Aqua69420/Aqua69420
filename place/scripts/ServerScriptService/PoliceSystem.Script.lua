@@ -97,7 +97,7 @@ Config.Heat = {
 	-- To lose the cops: get out of the search area around where you were last seen...
 	SearchRadius = { 110, 170, 240, 320, 420, 520 },
 	-- ...and stay unseen this long (per star level).
-	EvadeTime = { 10, 16, 24, 32, 45, 60 },
+	EvadeTime = { 25, 40, 60, 80, 112, 150 }, -- v222: losing stars takes 2.5x longer (was 10/16/24/32/45/60)
 	-- v212: killing officers at five stars or more adds this much extra heat
 	CopKillHeatAtFive = 70,
 }
@@ -12808,6 +12808,16 @@ function Justice.init()
 	-- A busted player's Reset Character action does not return them to a public
 	-- spawn. It recovers into a reserved intake cell, locks that mapped door, waits
 	-- through the normal intake hold, and resumes the same booking case.
+	-- v222: still an arrested detainee going through intake / booking?
+	function PrisonFlow.isDetainee(player: Player): boolean
+		local team=player.Team and player.Team.Name
+		if team=="Intake Prisoners" or team=="Booking Inmates" then return true end
+		local bs=tostring(player:GetAttribute("BookingState") or "")
+		if bs=="IntakeCell" or bs=="Intake" or bs=="IntakeOfficerDispatch" or bs=="IntakeTransfer" or bs=="Arrested" or bs=="Transport"
+			or bs=="Booking" or bs=="Review" or bs=="AwaitingHousing" then return true end
+		local owner=tostring(player:GetAttribute("CustodyOwner") or "")
+		return owner=="INTAKE_CELL" or owner=="INTAKE_ESCORT" or owner=="BOOKING" or owner=="BOOKING_ESCORT" or owner=="CORRECTIONAL_HOLD"
+	end
 	local function recoverCustodyRespawn(player: Player)
 		if not custody[player] or criticalCustody[player] or not player.Parent then return end
 		if custodyRecovery[player] then return end
@@ -13023,6 +13033,18 @@ function Justice.init()
 			end
 		end
 		player.CharacterAdded:Connect(function(char)
+			-- v222: anyone who is still a detainee (intake / booking, not yet sentenced)
+			-- goes back to an intake cell, even if a flag got lost on the way (custody
+			-- cleared by another flow, or a stale "critical" flag with no saved case)
+			if not sentenceEnd[player] and not releaseBusy[player] and PrisonFlow.isDetainee(player) then
+				if not custody[player] then
+					warn("[CustodyDiag] RESPAWN detainee "..player.Name.." had no custody flag - restoring intake custody")
+					custody[player]=true
+				end
+				if criticalCustody[player] and not bookingCase[player] and player:GetAttribute("BookingState")~="MedicalEMS" then
+					criticalCustody[player]=nil;player:SetAttribute("PoliceCritical",nil)
+				end
+			end
 			-- v212: dying while EMS had you still ends up in intake, not at a public spawn
 			if custody[player] and criticalCustody[player] and bookingCase[player] then
 				criticalCustody[player]=nil;player:SetAttribute("PoliceCritical",nil)
@@ -13046,6 +13068,7 @@ function Justice.init()
 				if not player.Parent or player.Character~=char then return end
 				local _,h,r=Util.charInfo(player)
 				if not h or not r or not outsidePrison(r.Position,nil) then return end
+				if not custody[player] and not sentenceEnd[player] and not releaseBusy[player] and PrisonFlow.isDetainee(player) then custody[player]=true end
 				if custody[player] and not criticalCustody[player] then
 					warn("[CustodyDiag] RESPAWN WATCHDOG: detainee "..player.Name.." still outside - restarting intake recovery")
 					custodyRecovery[player]=nil
