@@ -2041,6 +2041,8 @@ local function escortIgnore(cop: any, char: Model?, o: any): {Instance}
 		local fac=workspace:FindFirstChild("CorrectionalFacility")
 		for _,m in (fac and fac:GetDescendants() or {}) do
 			if m:IsA("Humanoid") and m.Parent and m.Parent:IsA("Model") then table.insert(Nav._humanoidProps,m.Parent) end
+			-- v211: spawn pads in cells are floor markers, not obstacles
+			if m:IsA("SpawnLocation") then table.insert(Nav._humanoidProps,m) end
 		end
 	end
 	for _,m in Nav._humanoidProps do if m.Parent then table.insert(ignore,m) end end

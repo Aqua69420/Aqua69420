@@ -10405,9 +10405,18 @@ function PrisonFlow.releaseSpawn(team: Team?): Vector3?
 	return best or fallback
 end
 
+-- v211: a random point on the city road network well away from the prison
+function PrisonFlow.releaseDest(from: Vector3, team: Team?): Vector3?
+	for _=1,25 do
+		local p=RoadGraph.randomPoint(from,350,1500)
+		if p and outsidePrison(p,nil) and Util.flat(p-from).Magnitude>=300 then return p end
+	end
+	return PrisonFlow.releaseSpawn(team)
+end
+
 function PrisonFlow.releaseRide(player: Player, team: Team?)
 	local char,hum,root=Util.charInfo(player)
-	local dest=PrisonFlow.releaseSpawn(team)
+	local dest=root and PrisonFlow.releaseDest(root.Position,team)
 	if not char or not hum or not root or not dest then return end
 	-- pull up on the nearest mapped road, not on the spot (the kerb, a fence)
 	local pickup=root.Position+root.CFrame.RightVector*8
@@ -10434,7 +10443,7 @@ function PrisonFlow.releaseRide(player: Player, team: Team?)
 	pcall(function() van.body:SetNetworkOwner(nil) end)
 	van.parts.ap.Position=van.body.Position;van.parts.ao.CFrame=van.body.CFrame.Rotation
 	local body=van.body
-	tell(player,"Custody","Released - an officer is driving you back to the city")
+	tell(player,"Custody","Released - an officer is driving you out to the city")
 	task.wait(1.5)
 	root.CFrame=body.CFrame*CFrame.new(-1.3,body.Size.Y/2+1.1,2.4);hum.Sit=true
 	custodyTransportGhost(char,true)
@@ -10442,7 +10451,7 @@ function PrisonFlow.releaseRide(player: Player, team: Team?)
 	print(("[CustodyDiag] RELEASE RIDE %s -> %s"):format(player.Name,tostring(dest)))
 	local done=false
 	local started=van:driveTo(dest,false,function() done=true end)
-	local deadline=os.clock()+240
+	local deadline=os.clock()+150
 	-- v210: never sit stuck - if the cruiser stops making progress for 12s
 	-- (blocked, off the road network), the ride ends at the spawn instead
 	local lastPos,lastMove=body.Position,os.clock()
@@ -10459,7 +10468,14 @@ function PrisonFlow.releaseRide(player: Player, team: Team?)
 		end
 		task.wait(0.5)
 	end
-	if stuck then warn("[CustodyDiag] RELEASE RIDE stalled for "..player.Name.."; dropping at spawn") end
+	if stuck then
+		-- v211: stalled once clear of the prison: let them out where the car is
+		if outsidePrison(body.Position,nil) then
+			local g=Util.groundAt(body.Position+body.CFrame.RightVector*-6,20,60)
+			if g then dest=Vector3.new(body.Position.X,g.Y,body.Position.Z)+body.CFrame.RightVector*-6 end
+		end
+		warn("[CustodyDiag] RELEASE RIDE stalled for "..player.Name.."; dropping at "..tostring(dest))
+	end
 	weld:Destroy()
 	if player.Character==char then custodyTransportGhost(char,false);hum.Sit=false end
 	if not started or os.clock()>=deadline or van.dead then warn("[CustodyDiag] RELEASE RIDE incomplete; placing "..player.Name.." at spawn") end
@@ -10516,18 +10532,18 @@ release = function(player: Player, how: string)
 			attempt+=1
 			openPrisonDoorsNear(inside,55,35)
 			if exitDoor then pcall(openFor,exitDoor,35) end
-			local moved=escortProcessing(player,"RELEASE OFFICER",goal,120,9,stillHere)
+			local moved=escortProcessing(player,"RELEASE OFFICER",goal,60,9,stillHere)
 			local _,_,root=Util.charInfo(player)
 			local close=root~=nil and (root.Position-goal).Magnitude<9
 			local outsideFacility=root~=nil and outsidePrison(root.Position,nil)
 			-- v205: standing on the goal counts even if the walk itself timed out
 			-- (the officer can't settle on the exact point); never loop forever.
 			local onGoal=root~=nil and Util.flat(root.Position-goal).Magnitude<4
-			if attempt>=4 and root and not (close or onGoal) then
+			if attempt>=2 and root and not (close or onGoal) then
 				warn(("[CustodyDiag] RELEASE STAGE FALLBACK %s stage=%s -> placed at %s"):format(player.Name,label,tostring(goal)))
 				root.CFrame=CFrame.new(goal+Vector3.new(0,3,0));close,onGoal=true,true
 			end
-			if (moved or onGoal or attempt>=4) and close and (not needsOutside or outsideFacility or attempt>=4) then
+			if (moved or onGoal or attempt>=2) and close and (not needsOutside or outsideFacility or attempt>=2) then
 				print(("[CustodyDiag] RELEASE STAGE COMPLETE %s stage=%s position=%s attempt=%d"):format(player.Name,label,tostring(root.Position),attempt))
 				return true
 			end
@@ -10541,40 +10557,8 @@ release = function(player: Player, how: string)
 	if exitDoor then pcall(openFor,exitDoor,35) end
 	if not escortUntil(outside,"outside gate",false) then releaseBusy[player]=nil;return end
 
-	-- The mapped Exterior intake door opens into the fenced prison approach, not
-	-- the public road. Continue on foot to the closest mapped road node that lies
-	-- beyond the prison bounds, and do not restore the civilian team until there.
-	local roadGoal: Vector3?=nil
-	local bestRoadDistance=math.huge
-	for _,id in RoadGraph.nodesNear(outside,1800) do
-		local point=RoadGraph.nodePos(id)
-		if point and outsidePrison(point,nil) then
-			local distance=Util.flat(point-outside).Magnitude
-			if distance<bestRoadDistance then roadGoal=point;bestRoadDistance=distance end
-		end
-	end
-	if roadGoal then
-		local ground=Util.groundAt(roadGoal,30,80)
-		if ground then roadGoal=Vector3.new(roadGoal.X,ground.Y,roadGoal.Z) end
-		print(("[CustodyDiag] RELEASE PUBLIC ROAD TARGET %s goal=%s distance=%.1f"):format(player.Name,tostring(roadGoal),bestRoadDistance))
-	else
-		warn("[CustodyDiag] RELEASE PUBLIC ROAD TARGET NOT FOUND; will hold custody until a mapped road outside the prison is available")
-	end
-	local reachedRoad=false
-	while stillHere() and not reachedRoad do
-		if not roadGoal then
-			task.wait(3)
-			bestRoadDistance=math.huge
-			for _,id in RoadGraph.nodesNear(outside,1800) do
-				local point=RoadGraph.nodePos(id)
-				if point and outsidePrison(point,nil) then local distance=Util.flat(point-outside).Magnitude;if distance<bestRoadDistance then roadGoal=point;bestRoadDistance=distance end end
-			end
-			if roadGoal then local ground=Util.groundAt(roadGoal,30,80);if ground then roadGoal=Vector3.new(roadGoal.X,ground.Y,roadGoal.Z) end end
-		else
-			reachedRoad=escortUntil(roadGoal,"public road",true)
-			if not reachedRoad then roadGoal=nil end
-		end
-	end
+	-- v211: no long walk to the public road - the release cruiser picks the
+	-- inmate up right outside the gate and drives them out the prison road.
 	if not player.Parent then releaseBusy[player]=nil return end
 
 	local target=releaseTargetTeam(player)
@@ -11509,6 +11493,41 @@ function PL.classRooms(category: string): { any }
 	return list
 end
 
+PL.guards = {}
+
+-- v211: the nearest stationed CO runs to `pos` (a prison fight), shouts, and
+-- goes back to the post. Returns the officer's model, or nil if nobody can come.
+function PL.coRespond(pos: Vector3): Model?
+	local best,bestD=nil,math.huge
+	for cop in PL.guards do
+		if cop.alive and cop.root and not cop.responding then
+			local d=(cop.root.Position-pos).Magnitude
+			if d<bestD and d<220 then best,bestD=cop,d end
+		end
+	end
+	if not best then return nil end
+	local cop=best
+	cop.responding=true
+	task.spawn(function()
+		local label=cop.model and cop.model:FindFirstChild("PrisonRoleLabel",true)
+		local text=label and label:FindFirstChildOfClass("TextLabel")
+		local old=text and text.Text
+		if text then text.Text="BREAK IT UP!" end
+		local t0=os.clock()
+		while cop.alive and os.clock()-t0<18 and (cop.root.Position-pos).Magnitude>5 do
+			openPrisonDoorsNear(cop.root.Position,14,6)
+			cop:moveTo(pos,true)
+			pcall(function() cop:updateAnim() end)
+			task.wait(0.4)
+		end
+		if cop.alive then cop:stop();pcall(function() cop:face(pos) end) end
+		task.wait(4)
+		if text and old then text.Text=old end
+		cop.responding=false
+	end)
+	return cop.model
+end
+
 function PL.startStationedGuards()
 	for _,area in PL.PRISON_LIFE.Posts do
 		task.spawn(function()
@@ -11520,10 +11539,13 @@ function PL.startStationedGuards()
 					cop.model.Name="PrisonPost_"..area
 					cop.model:SetAttribute("PrisonGuardPost",area)
 					prisonGuardPatrols[cop]=true
+					PL.guards[cop]=area
 					pcall(function() cop:setGunOut(true) end)
 					local lookAt=post+Vector3.new(math.random(-10,10),0,math.random(-10,10))
 					while cop.alive and cop.model and cop.model.Parent do
-						if Util.flat(cop.root.Position-post).Magnitude>5 then
+						if cop.responding then
+							-- answering a fight call (PL.coRespond)
+						elseif Util.flat(cop.root.Position-post).Magnitude>5 then
 							cop:moveTo(post,false)
 						else
 							cop:stop()
@@ -11534,6 +11556,7 @@ function PL.startStationedGuards()
 						task.wait(1.5)
 					end
 					prisonGuardPatrols[cop]=nil
+					PL.guards[cop]=nil
 				end
 				task.wait(PL.PRISON_LIFE.GuardRespawn)
 			end
@@ -11559,6 +11582,11 @@ function PL.buildRig(look: Model?): Model?
 		end
 	end
 	PL.animate(rig)
+	local rigHum=rig:FindFirstChildOfClass("Humanoid")
+	if rigHum then
+		-- prison NPCs never sit down on benches, seats or bunks and get stuck there
+		rigHum:SetStateEnabled(Enum.HumanoidStateType.Seated,false)
+	end
 	return rig
 end
 
@@ -11632,6 +11660,33 @@ function PL.makeInmateNpc(class: string): (Model?, Humanoid?, BasePart?)
 end
 
 -- One NPC inmate's day: common area by day, their cell at Lockdown/Count.
+-- v211: walk an NPC somewhere without getting stuck: jump out of seats, hop
+-- over snags, give up (false) after repeated stalls so the caller picks a new spot.
+function PL.walk(npc: Model, hum: Humanoid, root: BasePart, target: Vector3, timeout: number?): boolean
+	local deadline=os.clock()+(timeout or 20)
+	local last,lastMove,stalls=root.Position,os.clock(),0
+	while os.clock()<deadline and hum.Health>0 and npc.Parent do
+		if npc:GetAttribute("SocietyBusy") then return false end
+		if hum.Sit or hum.SeatPart then hum.Sit=false;hum.Jump=true end
+		if Util.flat(root.Position-target).Magnitude<3 then return true end
+		hum:MoveTo(target)
+		if Util.flat(root.Position-last).Magnitude>1 then
+			last,lastMove=root.Position,os.clock()
+		elseif os.clock()-lastMove>1.6 then
+			stalls+=1
+			hum.Jump=true
+			-- sidestep around whatever is in the way
+			local side=root.CFrame.RightVector*(if math.random()<0.5 then 4 else -4)
+			hum:MoveTo(root.Position+side)
+			task.wait(0.5)
+			lastMove=os.clock()
+			if stalls>=3 then return false end
+		end
+		task.wait(0.35)
+	end
+	return false
+end
+
 function PL.inmateLife(npc: Model, hum: Humanoid, root: BasePart, group: any, room: any, folder: Instance)
 	local door=if room.open then room.pos else PrisonFlow.approach(room)
 	local function dayPoint(): Vector3
@@ -11645,9 +11700,11 @@ function PL.inmateLife(npc: Model, hum: Humanoid, root: BasePart, group: any, ro
 			if not inCell then
 				-- lights out: walk to the cell and go in
 				if not room.open then openPrisonDoorsNear(door,10,6) end
-				hum:MoveTo(door)
-				local t=os.clock()
-				while os.clock()-t<20 and hum.Health>0 and Util.flat(root.Position-door).Magnitude>4 do task.wait(0.5);hum:MoveTo(door) end
+				npc:SetAttribute("SocietyBusy",nil)
+				npc:SetAttribute("InCell",true)
+				if not PL.walk(npc,hum,root,door,25) and Util.flat(root.Position-door).Magnitude>6 then
+					npc:PivotTo(CFrame.new(door+Vector3.new(0,3,0))) -- a CO walks them in; don't leave them roaming
+				end
 				-- open (low security) cells have no door: they stay visible on their bunk
 				if not room.open then npc.Parent=nil end
 				inCell=true
@@ -11658,11 +11715,19 @@ function PL.inmateLife(npc: Model, hum: Humanoid, root: BasePart, group: any, ro
 				-- morning: out of the cell
 				if not npc.Parent then npc:PivotTo(CFrame.new(door+Vector3.new(0,3,0)));npc.Parent=folder end
 				pcall(function() root:SetNetworkOwner(nil) end)
+				npc:SetAttribute("InCell",nil)
 				inCell=false
 			end
-			hum:MoveTo(dayPoint())
-			hum.MoveToFinished:Wait() -- fires on arrival or Roblox's 8s MoveTo timeout
-			task.wait(math.random(3,9))
+			if npc:GetAttribute("SocietyBusy") then
+				task.wait(1) -- talking / trading / fighting (PrisonSociety)
+			else
+				PL.walk(npc,hum,root,dayPoint(),20)
+				local rest=os.clock()+math.random(3,10)
+				while os.clock()<rest and not npc:GetAttribute("SocietyBusy") do
+					if hum.Sit then hum.Sit=false;hum.Jump=true end
+					task.wait(0.5)
+				end
+			end
 		end
 	end
 	if npc.Parent then task.wait(10);npc:Destroy() end
@@ -11793,7 +11858,8 @@ function PL.npcEscortTo(cop: any, npc: Model, goal: Vector3, label: string): boo
 	local stand={Character=npc,Name=npc.Name,Parent=npc.Parent}
 	openPrisonDoorsNear(cop.root.Position,24,8);openPrisonDoorsNear(goal,24,8)
 	local ok,res=pcall(function()
-		return PrisonNav.escort(cop,stand,goal,{alive=function() return cop.alive and npc.Parent~=nil end,maxTime=150,label=label,ignoreCharacter=npc})
+		local deadline=os.clock()+90 -- v211: an NPC escort never retries forever
+		return PrisonNav.escort(cop,stand,goal,{alive=function() return cop.alive and npc.Parent~=nil and os.clock()<deadline end,maxTime=90,label=label,ignoreCharacter=npc})
 	end)
 	if ok and res then return true end
 	warn(("[NPCArrest] %s escort failed (%s); short reposition"):format(label,tostring(res)))
@@ -11925,6 +11991,92 @@ function PL.startNpcArrests()
 	end)
 end
 
+---------------------------------------------------------------------------
+-- v211 CELLBLOCK FREE TIME: during the day schedule, player inmates' cell doors
+-- open so they can mix in their cellblock. Low / Medium get every free block,
+-- High only gets the Yard block, Maximum / Supermax / Death Row get none. At
+-- lockdown they have 60s to get back in; then a CO puts them in and locks up.
+---------------------------------------------------------------------------
+PL.FREE_TIME = { Low = "all", Medium = "all", High = "yard" }
+PL.freeState = {}
+PL.returnBy = {}
+
+function PL.currentBlock(): string
+	local hour=game:GetService("Lighting").ClockTime
+	for _,b in Config.PrisonSchedule.Blocks do
+		if hour>=b.Start and hour<b.Finish then return b.Name end
+	end
+	return "Lockdown"
+end
+
+function PL.cellOpenFor(class: string): boolean
+	local block=PL.currentBlock()
+	if PL.PRISON_LIFE.InCellBlocks[block] then return false end
+	local rule=PL.FREE_TIME[class]
+	return rule=="all" or (rule=="yard" and block=="Yard")
+end
+
+function PL.playerRoom(player: Player): any?
+	local cell=housingAssignment[player]
+	local pair=cell and PrisonNav.CellPairs[cell.Name]
+	local map=PrisonNav.mapRoot
+	local doors=map and map:FindFirstChild("DoorMarkers")
+	local door=pair and doors and doors:FindFirstChild(pair.door)
+	if not door then return nil end
+	return {cell=cell,door=door,pos=pair.pos,name=cell.Name,category=pair.category,open=pair.open==true}
+end
+
+function PL.startCellFreeTime()
+	task.spawn(function()
+		while prison and prison.Parent do
+			for player in housingAssignment do
+				local ok,err=pcall(function()
+					if not player.Parent or not sentenceEnd[player] or releaseBusy[player] then PL.freeState[player]=nil;return end
+					if player:GetAttribute("CustodyOwner")~="INCARCERATED" then return end
+					local room=PL.playerRoom(player)
+					if not room or room.open then return end -- low security cells have no door
+					local _,_,root=Util.charInfo(player)
+					if not root then return end
+					local class=tostring(player:GetAttribute("SecurityClass") or "")
+					local state=PL.freeState[player]
+					if PL.cellOpenFor(class) then
+						openMarkedDoor(room.door,9)
+						if state~="open" then
+							PL.freeState[player]="open"
+							tell(player,"Notice",(if class=="High" then "Yard time" else "Free time").." - your cell is open. Stay in the cellblock.")
+						end
+					elseif state=="open" then
+						if PrisonNav.isInsideCell(room,root.Position) then
+							pcall(PrisonFlow.closeCell,room)
+							PL.freeState[player]=nil
+						else
+							PL.freeState[player]="returning"
+							PL.returnBy[player]=os.clock()+60
+							openMarkedDoor(room.door,9)
+							tell(player,"Notice","LOCKDOWN - return to your cell within 60 seconds")
+						end
+					elseif state=="returning" then
+						local inside=PrisonNav.isInsideCell(room,root.Position)
+						if inside or os.clock()>(PL.returnBy[player] or 0) then
+							if not inside then
+								root.CFrame=CFrame.new(room.pos+Vector3.new(0,3,0))
+								tell(player,"Notice","A correctional officer put you back in your cell")
+							end
+							task.wait(0.3)
+							pcall(PrisonFlow.closeCell,room)
+							PL.freeState[player]=nil
+						else
+							openMarkedDoor(room.door,9)
+						end
+					end
+				end)
+				if not ok then warn("[PrisonLife] free time: "..tostring(err)) end
+			end
+			task.wait(4)
+		end
+	end)
+end
+
 startPrisonLife = function()
 	if not prison or not PrisonNav then return end
 	local t0=os.clock()
@@ -11933,6 +12085,12 @@ startPrisonLife = function()
 	PL.startStationedGuards()
 	PL.startNpcInmates()
 	PL.startNpcArrests()
+	PL.startCellFreeTime()
+	-- PrisonSociety asks for a CO when inmates fight
+	local respond=ServerStorage:FindFirstChild("PrisonCOResponse") or Instance.new("BindableFunction")
+	respond.Name="PrisonCOResponse"
+	respond.OnInvoke=function(pos) return PL.coRespond(pos) end
+	respond.Parent=ServerStorage
 end
 end -- prison life block
 
