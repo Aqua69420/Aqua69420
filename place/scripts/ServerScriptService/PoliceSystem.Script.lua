@@ -8697,10 +8697,15 @@ function PrisonFlow.restoreCivilianClothes(player: Player): boolean
 	if not character then return false end
 	local humanoid=character:FindFirstChildOfClass("Humanoid")
 	if saved and humanoid then
-		local got,description=pcall(function() return humanoid:GetAppliedDescription() end)
-		if got and description then
-			description.Shirt=saved.descShirt or 0;description.Pants=saved.descPants or 0
-			pcall(function() humanoid:ApplyDescription(description) end)
+		if saved.description then
+			-- v232: the whole avatar comes back (body shape, accessories, layered clothing)
+			pcall(function() humanoid:ApplyDescription(saved.description) end)
+		else
+			local got,description=pcall(function() return humanoid:GetAppliedDescription() end)
+			if got and description then
+				description.Shirt=saved.descShirt or 0;description.Pants=saved.descPants or 0
+				pcall(function() humanoid:ApplyDescription(description) end)
+			end
 		end
 	end
 	character=player.Character or character
@@ -8752,14 +8757,51 @@ function PrisonFlow.resolveClothing(id: any): any
 	return result
 end
 
+-- v232: dress-out turns a player's avatar into the old-school blocky body (no
+-- custom body parts, default proportions) and strips body accessories and
+-- layered clothing, so the uniform shirt and pants actually show. Hats, hair
+-- and face accessories stay.
+PrisonFlow.KEEP_ACCESSORY={[Enum.AccessoryType.Hat]=true,[Enum.AccessoryType.Hair]=true,[Enum.AccessoryType.Face]=true}
+function PrisonFlow.blockyDescription(description: HumanoidDescription)
+	for _,part in {"Head","Torso","LeftArm","RightArm","LeftLeg","RightLeg"} do
+		pcall(function() (description :: any)[part]=0 end)
+	end
+	description.HeightScale=1;description.WidthScale=1;description.DepthScale=1;description.HeadScale=1
+	description.BodyTypeScale=0;description.ProportionScale=0
+	pcall(function()
+		local keep={}
+		for _,acc in description:GetAccessories(true) do
+			if not acc.IsLayered and PrisonFlow.KEEP_ACCESSORY[acc.AccessoryType] then table.insert(keep,acc) end
+		end
+		description:SetAccessories(keep,true)
+	end)
+	for _,prop in {"ShouldersAccessory","FrontAccessory","BackAccessory","WaistAccessory","NeckAccessory"} do
+		pcall(function() (description :: any)[prop]="" end)
+	end
+	pcall(function() description.GraphicTShirt=0 end)
+end
+-- anything the description didn't cover (script-added accessories, layered items)
+function PrisonFlow.stripBodyAccessories(character: Model)
+	for _,d in character:GetChildren() do
+		if d:IsA("Accessory") then
+			local ok,t=pcall(function() return d.AccessoryType end)
+			local layered=d:FindFirstChildWhichIsA("WrapLayer",true)~=nil
+			if layered or not (ok and PrisonFlow.KEEP_ACCESSORY[t]) then d:Destroy() end
+		elseif d:IsA("ShirtGraphic") then
+			d:Destroy()
+		end
+	end
+end
+
 -- Dress a character (player or NPC) in {shirt=,pants=} uniform IDs.
-function PrisonFlow.wearUniform(character: Model, outfit: any): (boolean, Shirt?, Pants?)
+function PrisonFlow.wearUniform(character: Model, outfit: any, blocky: boolean?): (boolean, Shirt?, Pants?)
 	local humanoid=character:FindFirstChildOfClass("Humanoid")
 	local shirtInfo=PrisonFlow.resolveClothing(outfit.shirt)
 	local pantsInfo=PrisonFlow.resolveClothing(outfit.pants)
 	local descriptionApplied=false
 	if humanoid then
 		local got,description=pcall(function() return humanoid:GetAppliedDescription() end)
+		if got and description and blocky then PrisonFlow.blockyDescription(description) end
 		if got and description then
 			-- catalog items go on through the description; image IDs clear the
 			-- avatar's own clothing so the uniform texture below is what shows
@@ -8789,6 +8831,7 @@ function PrisonFlow.wearUniform(character: Model, outfit: any): (boolean, Shirt?
 	end
 	local shirt=piece("Shirt",shirtInfo,"ShirtTemplate","InmateUniformShirt")
 	local pants=piece("Pants",pantsInfo,"PantsTemplate","InmateUniformPants")
+	if blocky then PrisonFlow.stripBodyAccessories(character) end
 	return descriptionApplied,shirt,pants
 end
 
@@ -8801,11 +8844,11 @@ function PrisonFlow.applyInmateClothes(player: Player, security: string): boolea
 		local snap={shirt=s and s.ShirtTemplate or nil,pants=pa and pa.PantsTemplate or nil}
 		if h then
 			local got,d=pcall(function() return h:GetAppliedDescription() end)
-			if got and d then snap.descShirt=d.Shirt;snap.descPants=d.Pants end
+			if got and d then snap.descShirt=d.Shirt;snap.descPants=d.Pants;snap.description=d:Clone() end
 		end
 		PrisonFlow.civilianClothes[player]=snap
 	end
-	local descriptionApplied,shirt,pants=PrisonFlow.wearUniform(character,outfit)
+	local descriptionApplied,shirt,pants=PrisonFlow.wearUniform(character,outfit,true)
 	character=player.Character or character
 	player:SetAttribute("InmateShirtAssetId",outfit.shirt);player:SetAttribute("InmatePantsAssetId",outfit.pants)
 	player:SetAttribute("PrisonClothesIssued",true)
