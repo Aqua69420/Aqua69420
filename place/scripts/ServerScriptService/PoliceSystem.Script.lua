@@ -12995,10 +12995,14 @@ function Justice.init()
 				-- spawn point once it is unanchored and push that position back to the
 				-- server. For the whole intake hold, anyone found outside the cell is put
 				-- straight back in (no second recovery, which used to cancel the hold).
+				-- v234: the guard (and the client pin) stop the moment the intake hold is
+				-- over - still running while the booking officer walked the player out,
+				-- it yanked them back / fought the escort and threw them out of the jail
+				local hold={over=false}
 				task.spawn(function()
 					local cellCF=CFrame.lookAt(room.pos+Vector3.new(0,3.25,0),doorFloor+Vector3.new(0,3,0))
 					local pinned=false
-					while alive() and PrisonFlow.rooms[player]==room and player:GetAttribute("BookingState")=="IntakeCell" do
+					while not hold.over and alive() and PrisonFlow.rooms[player]==room and player:GetAttribute("BookingState")=="IntakeCell" do
 						if Util.flat(root.Position-room.pos).Magnitude>8 or math.abs(root.Position.Y-room.pos.Y)>8 then
 							root.AssemblyLinearVelocity=Vector3.zero
 							root.CFrame=cellCF
@@ -13019,7 +13023,11 @@ function Justice.init()
 					if pinned and root.Parent and player.Character==char then root.Anchored=false end
 					player:SetAttribute("CustodyPinCF",nil)
 				end)
-				if PrisonFlow.intakeHold(player,alive) and alive() then
+				local held=PrisonFlow.intakeHold(player,alive)
+				hold.over=true
+				player:SetAttribute("CustodyPinCF",nil)
+				if root.Parent and player.Character==char then root.Anchored=false end
+				if held and alive() then
 					local case=bookingCase[player]
 					if not case then
 						local stars=math.max(1,tonumber(player:GetAttribute("CustodyStars")) or 1)
@@ -13164,6 +13172,18 @@ function Justice.init()
 			end
 		end
 		player.CharacterAdded:Connect(function(char)
+			-- v234: a detainee's new character is moved into intake RIGHT NOW, before
+			-- anything yields. Waiting (even a fraction of a second) let the player's
+			-- client take over the body at its city spawn point, and every later
+			-- server teleport was overridden - the "respawned in the city" bug.
+			if not sentenceEnd[player] and not releaseBusy[player] and (custody[player] or PrisonFlow.isDetainee(player)) then
+				local ok,sp=pcall(function() return PrisonFlow.intakeSpawn and PrisonFlow.intakeSpawn() end)
+				if ok and sp then
+					local cf=CFrame.new(sp.Position+Vector3.new(0,3.4,0))
+					pcall(function() char:PivotTo(cf) end)
+					print("[CustodyDiag] RESPAWN "..player.Name.." spawned straight into intake")
+				end
+			end
 			-- v225: a detainee who dies respawns INSIDE intake (a hidden spawn on an
 			-- intake cell floor) instead of at the team spawn across the map
 			local dh=char:WaitForChild("Humanoid",5)
@@ -13171,7 +13191,11 @@ function Justice.init()
 				dh.Died:Connect(function()
 					if not sentenceEnd[player] and not releaseBusy[player] and (custody[player] or PrisonFlow.isDetainee(player)) then
 						local sp=PrisonFlow.intakeSpawn()
-						if sp then player.RespawnLocation=sp end
+						if sp then
+							-- v234: a team spawn only counts for its own team
+							PrisonFlow.team(player,"Intake Prisoners")
+							player.RespawnLocation=sp
+						end
 					elseif player.RespawnLocation and player.RespawnLocation.Name=="IntakeRespawn" then
 						player.RespawnLocation=nil
 					end
