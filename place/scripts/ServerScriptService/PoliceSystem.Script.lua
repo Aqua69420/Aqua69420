@@ -12882,7 +12882,7 @@ function Justice.init()
 				-- v223: the fresh character can still be pulled back to its spawn point in
 				-- the first moments after spawning: keep re-placing it until it stays put
 				local placedCF=root.CFrame
-				for _=1,8 do
+				for _=1,16 do
 					task.wait(0.25)
 					if not alive() then break end
 					if Util.flat(root.Position-room.pos).Magnitude>6 then
