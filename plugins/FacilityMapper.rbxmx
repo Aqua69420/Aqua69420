@@ -3,7 +3,7 @@
     <Properties>
       <string name="Name">FacilityMapper</string>
       <ProtectedString name="Source"><![CDATA[--!nocheck
--- Facility Mapper (Studio plugin)  v5
+-- Facility Mapper (Studio plugin)  v6
 -- Maps the prison, Police HQ, City Jail, law offices and city markers in the
 -- same format the game's navigation already reads (the format of the original
 -- prison map):
@@ -17,6 +17,8 @@
 -- Tools: Zone (click corners, Enter to finish), Door (click a door), Route (click
 -- points, Enter), Point (click a spot), Seat (click a seat), Select (click to pick,
 -- then Delete / Apply edits). Backspace removes the last corner, Esc cancels.
+-- Pick building: click any part of a building to make it the active facility.
+-- Door / Seat / Select show a cyan box around what the next click will use.
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local Selection = game:GetService("Selection")
@@ -37,7 +39,11 @@ local MAPPER_VERSION = 2
 -- definitions
 ---------------------------------------------------------------------------
 local FACILITY_TYPES = { "Prison", "Courthouse", "PoliceHQ", "CityJail", "LawOffice", "Bank", "City" }
-local DEFAULT_MODEL = { Prison = "CorrectionalFacility", Courthouse = "Courthouse", PoliceHQ = "PoliceHQ", CityJail = "CityJail", Bank = "Bank" }
+-- building names tried (in order) when no model has been picked yet
+local DEFAULT_MODEL = {
+	Prison = { "CorrectionalFacility" }, Courthouse = { "Courthouse" }, PoliceHQ = { "PoliceHQ", "PoliceStation" },
+	CityJail = { "CityJail" }, Bank = { "Bank" },
+}
 
 -- zone types: room = needs a door and is registered as a room/cell category;
 -- navIgnore = not a walkable nav area (sniper zones and the like)
@@ -218,7 +224,8 @@ local COLORS = {
 local state = {
 	facilityType = "Prison",
 	model = nil :: Instance?,
-	mode = "Off", -- Zone / Door / Route / Point / Seat / Select / Off
+	mode = "Off", -- Zone / Door / Route / Point / Seat / Select / Building / Off
+	prevMode = nil :: string?,
 	zoneType = "Interrogation",
 	pointType = "PrisonPhone",
 	seatRole = "JudgeSeat",
@@ -303,12 +310,33 @@ local function facilityModel(): Instance?
 	if state.model and state.model.Parent then
 		return state.model
 	end
-	local name = DEFAULT_MODEL[state.facilityType]
-	local found = name and workspace:FindFirstChild(name)
-	if found then
-		state.model = found
+	-- a building marked with this facility type earlier, else a default name
+	for _, c in workspace:GetChildren() do
+		if c:GetAttribute("FacilityType") == state.facilityType and (c:IsA("Model") or c:IsA("Folder")) then
+			state.model = c
+			return c
+		end
 	end
-	return found
+	for _, name in DEFAULT_MODEL[state.facilityType] or {} do
+		local found = workspace:FindFirstChild(name)
+		if found then
+			state.model = found
+			return found
+		end
+	end
+	return nil
+end
+
+-- the building a part belongs to: its ancestor directly under Workspace
+local function buildingOf(inst: Instance?): Instance?
+	local cur = inst
+	while cur and cur.Parent and cur.Parent ~= workspace do
+		cur = cur.Parent
+	end
+	if cur and cur.Parent == workspace and (cur:IsA("Model") or cur:IsA("Folder")) then
+		return cur
+	end
+	return nil
 end
 
 local function mapRoot(create: boolean): Instance?
@@ -542,15 +570,27 @@ for _, t in FACILITY_TYPES do
 end
 local facilityLabel = label("", false, 32)
 local modelRow = row()
+local function adoptModel(m: Instance)
+	record("set facility", function()
+		m:SetAttribute("FacilityType", state.facilityType)
+	end)
+	state.model = m
+	print(("[FacilityMapper] %s building = %s"):format(state.facilityType, m:GetFullName()))
+end
+local pickBuildingButton = button(modelRow, "Pick building", function()
+	if state.facilityType == "City" then
+		return
+	end
+	setMode(if state.mode == "Building" then "Off" else "Building")
+end)
 button(modelRow, "Use selected model", function()
 	local sel = Selection:Get()[1]
-	if sel and (sel:IsA("Model") or sel:IsA("Folder")) and state.facilityType ~= "City" then
-		record("set facility", function()
-			sel:SetAttribute("FacilityType", state.facilityType)
-		end)
-		state.model = sel
+	-- a part works too: it resolves to the building it belongs to
+	local m = if sel and sel.Parent == workspace and (sel:IsA("Model") or sel:IsA("Folder")) then sel else buildingOf(sel)
+	if m and state.facilityType ~= "City" then
+		adoptModel(m)
 	else
-		warn("[FacilityMapper] select the building's Model in the Explorer first")
+		warn("[FacilityMapper] select the building (or any part of it) first - or press 'Pick building' and click it")
 	end
 	refreshUI()
 	redraw()
@@ -576,6 +616,8 @@ for _, m in { "Zone", "Door", "Route", "Point", "Seat", "Select" } do
 	end)
 end
 local helpLabel = label("", false, 48)
+local hoverLabel = label("", false, 32)
+hoverLabel.TextColor3 = Color3.fromRGB(90, 220, 255)
 
 label("Type", true)
 local typeRow = row()
@@ -970,7 +1012,7 @@ local function guardPrison(): boolean
 		end
 	end
 	if not facilityModel() then
-		warn("[FacilityMapper] no facility model: select the building's Model in the Explorer and press 'Use selected model'")
+		warn("[FacilityMapper] no building yet: press 'Pick building' and click the building")
 		return false
 	end
 	return true
@@ -1069,6 +1111,10 @@ local function createRoute(pts: { Vector3 })
 end
 
 local function resolveDoor(part: BasePart): Instance
+	-- Shift+click links just the part you clicked
+	if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
+		return part
+	end
 	local model = facilityModel()
 	local cur: Instance? = part
 	while cur and cur ~= model and cur ~= workspace do
@@ -1180,9 +1226,34 @@ local function createPoint(pos: Vector3, cfOverride: CFrame?)
 	print(("[FacilityMapper] POINT %s type=%s"):format(name, state.pointType))
 end
 
-local function setSeatRole(part: BasePart)
-	if not (part:IsA("Seat") or part:IsA("VehicleSeat")) then
-		warn("[FacilityMapper] click a Seat (the chair's Seat part)")
+-- the Seat for whatever was clicked: the part itself, or the seat inside the clicked chair model
+local function findSeat(part: BasePart?): BasePart?
+	if not part then
+		return nil
+	end
+	if part:IsA("Seat") or part:IsA("VehicleSeat") then
+		return part
+	end
+	local chair = part.Parent
+	if chair and chair:IsA("Model") and chair ~= workspace and chair.Parent ~= workspace then
+		local best, bestDist = nil, math.huge
+		for _, d in chair:GetDescendants() do
+			if d:IsA("Seat") or d:IsA("VehicleSeat") then
+				local dist = (d.Position - part.Position).Magnitude
+				if dist < bestDist then
+					best, bestDist = d, dist
+				end
+			end
+		end
+		return best
+	end
+	return nil
+end
+
+local function setSeatRole(clicked: BasePart)
+	local part = findSeat(clicked)
+	if not part then
+		warn("[FacilityMapper] no Seat there: " .. clicked:GetFullName() .. " isn't a Seat and its chair has none")
 		return
 	end
 	local model = facilityModel()
@@ -1562,12 +1633,83 @@ local HELP = {
 	Point = "Click a spot. Aimed points (SniperPost, Spotlight, CourtCam) face where the camera looks - or use 'Point at camera'.",
 	Seat = "Click a Seat to give it the chosen role. JurorSeat numbers itself 1-12 in click order.",
 	Select = "Click a zone / door / route / point / seat to select it, then Delete or change the fields and Apply edits.",
+	Building = "Click any part of the building. The whole building (its model under Workspace) becomes the active facility.",
 }
 
+-- hover preview: a cyan box around whatever the next click would use
+local hoverBox = CoreGui:FindFirstChild("FacilityMapperHover")
+if hoverBox then
+	hoverBox:Destroy()
+end
+hoverBox = Instance.new("SelectionBox")
+hoverBox.Name = "FacilityMapperHover"
+hoverBox.Color3 = Color3.fromRGB(90, 220, 255)
+hoverBox.SurfaceColor3 = Color3.fromRGB(90, 220, 255)
+hoverBox.SurfaceTransparency = 0.85
+hoverBox.LineThickness = 0.08
+hoverBox.Parent = CoreGui
+
+local function hoverTarget(pos: Vector3?, part: BasePart?): (Instance?, string)
+	if not part then
+		return nil, ""
+	end
+	local mode = state.mode
+	if mode == "Building" then
+		local b = buildingOf(part)
+		return b, if b then "Building: " .. b.Name else "Not part of a building model: " .. part:GetFullName()
+	elseif mode == "Door" then
+		local t = resolveDoor(part)
+		local root = mapRoot(false)
+		local doors = root and root:FindFirstChild("DoorMarkers")
+		if doors then
+			for _, d in doors:GetChildren() do
+				local ov = d:FindFirstChild("DoorObject")
+				if ov and ov.Value == t then
+					return t, "Door: " .. pathOf(t) .. "  (already mapped as " .. d.Name .. ")"
+				end
+			end
+		end
+		return t, "Door: " .. pathOf(t) .. "  (Shift = just this part)"
+	elseif mode == "Seat" then
+		local s = findSeat(part)
+		if not s then
+			return nil, "No seat: " .. part:GetFullName()
+		end
+		local role = s:GetAttribute("SeatRole")
+		return s, "Seat: " .. pathOf(s) .. (if role then "  (now " .. tostring(role) .. ")" else "")
+	elseif mode == "Select" and pos then
+		local p = pick(pos, part)
+		if not p then
+			return nil, "Nothing mapped here"
+		end
+		local ov = p:FindFirstChild("DoorObject")
+		local adornee = if ov and ov:IsA("ObjectValue") then ov.Value elseif p:IsA("BasePart") then p else nil
+		return adornee, "Select: " .. p.Name
+	end
+	return nil, "Surface: " .. pathOf(part)
+end
+
+local function updateHover()
+	if state.mode == "Off" or not widget.Enabled then
+		hoverBox.Adornee = nil
+		hoverLabel.Text = ""
+		return
+	end
+	local pos, part = mouseHit()
+	local target, text = hoverTarget(pos, part)
+	hoverBox.Adornee = if target and (target:IsA("BasePart") or target:IsA("Model")) then target else nil
+	hoverLabel.Text = text
+end
+
 setMode = function(m: string)
+	if m == "Building" and state.mode ~= "Building" then
+		state.prevMode = state.mode -- go back to this tool after the building is picked
+	end
 	state.mode = m
 	state.pending = {}
 	drawPending()
+	hoverBox.Adornee = nil
+	hoverLabel.Text = ""
 	if m == "Off" then
 		plugin:Deactivate()
 	else
@@ -1581,6 +1723,8 @@ plugin.Deactivation:Connect(function()
 		state.mode = "Off"
 		state.pending = {}
 		drawPending()
+		hoverBox.Adornee = nil
+		hoverLabel.Text = ""
 		refreshUI()
 	end
 end)
@@ -1592,6 +1736,24 @@ mouse.Button1Down:Connect(function()
 	local pos, part = mouseHit()
 	if not pos then
 		return
+	end
+	if state.mode == "Building" then
+		local b = buildingOf(part)
+		if b then
+			adoptModel(b)
+			setMode(state.prevMode or "Off")
+			redraw()
+		else
+			warn("[FacilityMapper] that isn't part of a building model: " .. (if part then part:GetFullName() else "nothing"))
+		end
+		return
+	end
+	-- no building chosen yet: clicking a door / seat picks the building it belongs to
+	if (state.mode == "Door" or state.mode == "Seat") and part and state.facilityType ~= "City" and not facilityModel() then
+		local b = buildingOf(part)
+		if b then
+			adoptModel(b)
+		end
 	end
 	if state.mode == "Zone" or state.mode == "Route" then
 		if state.mode == "Zone" and #state.pending >= 3 and (pos - state.pending[1]).Magnitude < 1.5 then
@@ -1632,6 +1794,7 @@ mouse.Move:Connect(function()
 		local pos = mouseHit()
 		drawPending(pos)
 	end
+	updateHover()
 end)
 
 UserInputService.InputBegan:Connect(function(input, processed)
@@ -1650,8 +1813,10 @@ end)
 ---------------------------------------------------------------------------
 -- UI refresh
 ---------------------------------------------------------------------------
-local function typeOptions(): ({ string }, string, (string) -> ())
-	if state.mode == "Point" then
+local function typeOptions(): ({ string }?, string?, ((string) -> ())?)
+	if state.mode == "Building" then
+		return nil, nil, nil
+	elseif state.mode == "Point" then
 		return POINT_TYPES[state.facilityType], state.pointType, function(v) state.pointType = v end
 	elseif state.mode == "Seat" then
 		return SEAT_ROLES, state.seatRole, function(v) state.seatRole = v end
@@ -1670,6 +1835,9 @@ refreshUI = function()
 	for m, b in modeButtons do
 		b.BackgroundColor3 = if m == state.mode then ON else BTN
 	end
+	pickBuildingButton.Visible = state.facilityType ~= "City"
+	pickBuildingButton.BackgroundColor3 = if state.mode == "Building" then ON else BTN
+	pickBuildingButton.Text = if state.mode == "Building" then "Click the building..." else "Pick building"
 	local model = facilityModel()
 	local root = mapRoot(false)
 	facilityLabel.Text = if model
@@ -1725,6 +1893,7 @@ plugin.Unloading:Connect(function()
 	if overlay then
 		overlay:Destroy()
 	end
+	hoverBox:Destroy()
 end)
 
 refreshUI()
