@@ -772,21 +772,11 @@ See §9.7; it lives in this phase.
 - **Facilities:** Prison, Courthouse, PoliceHQ, CityJail, LawOffice (`Firm` attribute), Bank, City. Per-facility checklists in the plugin; the full list is in `plugins/MAPPING_GUIDE.md`.
 - **Nav ignores `NavIgnore` zones** (KillZone, Perimeter).
 
-### 19.1 Pending plugin fixes (requested by the user; NOT done yet)
-1. **Door picking must use exactly the part clicked.**
-   - Use the raw `mouse.Target`: no skipping transparent parts, no climbing to a parent "door" model.
-   - Show a **hover highlight** (a SelectionBox on the part under the mouse) and the hovered part's full path in the status line.
-   - Add a clear **"Pick door part"** selector button: click it, then click the door; it reports what was picked.
-2. **Multi-part doors with Shift+click.**
-   - **Picking:** while **Shift is held**, each click **adds** that part to a pending door (click again to remove it), and the pending parts are highlighted.
-   - **Finishing:** **releasing Shift finalizes** the door (Enter / the Finish button also work). A normal click with no Shift = a single-part door.
-   - **Saved data:**
-     - `DoorObject` = the parts' **lowest common ancestor** if it's a Model that isn't the facility root/workspace and most of its BaseParts are the picked parts; otherwise the first part
-     - a `DoorParts` folder with an ObjectValue per part
-     - `Center` = the bounding box of all parts
-     - a `PartCount` attribute
-   - **Duplicates and Select:** the duplicate check and Select mode must consider `DoorParts`.
-   - **Runtime door code** (`openMarkedDoor` etc.) must later open/unlock **all `DoorParts`**, not just `DoorObject`.
+### 19.1 Plugin v6 (done by the local Studio session)
+- Click-to-pick the building, hover preview, PoliceStation default.
+- **Multi-part doors:** Shift+click parts, release Shift to finish.
+- See the v6 commits and the HANDOFF.md notes for details.
+- **Still to do at runtime:** the door-opening code (`openMarkedDoor` etc.) must open/unlock **every part** of a multi-part door, not just `DoorObject`. Do this in v240 when the game starts reading the new maps.
 
 ---
 
