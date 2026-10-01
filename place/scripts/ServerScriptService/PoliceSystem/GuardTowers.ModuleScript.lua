@@ -167,19 +167,26 @@ end
 local function ruleFor(player: Player, pos: Vector3): string?
 	local escaping = player:GetAttribute("EscapeInProgress") == true
 	local inmate = ctx.isInmate(player)
-	if not escaping and not inmate then return nil end
 	local feet = pos - Vector3.new(0, 3, 0)
-	-- lethal zones win where a lethal and a stun zone overlap
-	local stun = false
-	for _, z in ctx.F.zones("Prison", "KillZone") do
-		if ctx.F.inZone(z, feet, 2) then
-			if isStunZone(z) then stun = true else return "KillZone" end
+	-- v245c: kill / stun zones are restricted ground for EVERYONE except police and
+	-- staff (a citizen climbing the fences gets the same treatment as an inmate)
+	local law = false
+	pcall(function() law = (ctx.isStaff and ctx.isStaff(player)) or ctx.Util.isLaw(player) end)
+	if not law or escaping or inmate then
+		-- lethal zones win where a lethal and a stun zone overlap
+		local stun = false
+		for _, z in ctx.F.zones("Prison", "KillZone") do
+			if ctx.F.inZone(z, feet, 2) then
+				if isStunZone(z) then stun = true else return "KillZone" end
+			end
 		end
+		for _, z in ctx.F.zones("Prison", "StunZone") do
+			if ctx.F.inZone(z, feet, 2) then stun = true end
+		end
+		if stun then return "StunZone" end
 	end
-	for _, z in ctx.F.zones("Prison", "StunZone") do
-		if ctx.F.inZone(z, feet, 2) then stun = true end
-	end
-	if stun then return "StunZone" end
+	-- the perimeter (outside the walls) only concerns inmates and escapees
+	if not escaping and not inmate then return nil end
 	if ctx.outside(pos) then return "Perimeter" end
 	for _, z in ctx.F.zones("Prison", "Perimeter") do
 		if ctx.F.inZone(z, feet, 2) then return "Perimeter" end
@@ -209,14 +216,17 @@ local function shoot(t: any, player: Player, char: Model, hum: Humanoid, part: B
 	local chance = CFG.HitChanceFar + (CFG.HitChanceNear - CFG.HitChanceFar) * math.clamp(1 - (dist - 150) / (CFG.Range - 150), 0, 1)
 	if math.random() < chance then
 		tracer(from, part.Position)
-		if hum.Health - CFG.Damage <= 0 then
+		-- v245c: only an inmate / escapee's death is a prison death (profile wipe);
+		-- a trespassing citizen just dies
+		local prisoner = player:GetAttribute("EscapeInProgress") == true or ctx.isInmate(player)
+		if prisoner and hum.Health - CFG.Damage <= 0 then
 			player:SetAttribute("PrisonKilledBy", "Tower sniper")
 			player:SetAttribute("TowerSniperKill", true)
 		end
 		hum:TakeDamage(CFG.Damage)
 		if hum.Health <= 0 then
-			print(("[GuardTowers] %s shot dead by tower %d"):format(player.Name, t.i))
-			pcall(ctx.sniperKill, player)
+			print(("[GuardTowers] %s shot dead by tower %d%s"):format(player.Name, t.i, if prisoner then "" else " (trespasser)"))
+			if prisoner then pcall(ctx.sniperKill, player) end
 		end
 	else
 		tracer(from, part.Position + Vector3.new(math.random(-6, 6), math.random(-2, 4), math.random(-6, 6)))

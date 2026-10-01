@@ -13639,6 +13639,7 @@ function Justice.init()
 					F=Justice.Facilities,Util=Util,
 					outside=function(pos) return prison~=nil and outsidePrison(pos,nil) end,
 					isInmate=function(p) return sentenceEnd[p]~=nil end,
+					isStaff=function(p) return isStaff(p) and not inPrison(p) end, -- v245c: staff may stand in the zones
 					surrendered=function(p) local h=Heat.get(p);local hum=p.Character and p.Character:FindFirstChildOfClass("Humanoid")
 						return (h~=nil and h.surrendered==true) or (hum~=nil and hum:GetAttribute("PoliceCuffed")==true) end,
 					tell=tell,
