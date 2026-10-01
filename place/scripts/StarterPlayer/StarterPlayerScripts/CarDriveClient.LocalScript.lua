@@ -105,6 +105,7 @@ local function drive(humanoid, seat)
 	local minSteer = seat:GetAttribute("MinSteerAngle")
 	local steerDirection = seat:GetAttribute("SteerDirection") or 1
 
+	local drunkSteer = 0 -- v252: the steering you actually get when impaired
 	local connection
 	connection = RunService.Heartbeat:Connect(function()
 		if humanoid.SeatPart ~= seat or not car.Parent then
@@ -141,6 +142,21 @@ local function drive(humanoid, seat)
 			local slide = if math.sin(t * 1.3) > 0.75 then pull * 0.5 else 0
 			steer = math.clamp(steer + (pull * 0.3 + shimmy + slide) * tire, -1, 1)
 			throttle *= 1 - 0.35 * tire -- the rims bite: sluggish acceleration
+		end
+		-- v252: impaired driving (Drugs sets Impairment 0..1 on the player): the
+		-- steering lags behind your hands, the car drifts, and you brake late
+		local impaired = tonumber(Players.LocalPlayer:GetAttribute("Impairment")) or 0
+		if impaired > 0.1 then
+			local t = os.clock()
+			local lag = math.clamp(impaired * 0.9, 0, 0.85)
+			drunkSteer = drunkSteer + (steer - drunkSteer) * (1 - lag)
+			local drift = (math.sin(t * 0.7) * 0.6 + math.sin(t * 1.9) * 0.4) * impaired * 0.45
+			steer = math.clamp(drunkSteer + drift, -1, 1)
+			if throttle < 0 and forwardSpeed > 2 then
+				throttle *= 1 - impaired * 0.6 -- brakes late and soft
+			end
+		else
+			drunkSteer = steer
 		end
 		-- a burning / destroyed car doesn't drive
 		if seat:GetAttribute("VehicleDestroyed") then

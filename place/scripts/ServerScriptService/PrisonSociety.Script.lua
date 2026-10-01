@@ -786,7 +786,9 @@ local function playerStrike(player: Player, blade: boolean)
 		return
 	end
 	local now = os.clock()
-	if now - (lastPunch[player] or 0) < (if blade then 0.75 else PUNCH_COOLDOWN) then
+	-- v252: on stimulants you swing faster
+	local cooldown = (if blade then 0.75 else PUNCH_COOLDOWN) * (if player:GetAttribute("StimPunch") then 0.6 else 1)
+	if now - (lastPunch[player] or 0) < cooldown then
 		return
 	end
 	lastPunch[player] = now
@@ -1229,6 +1231,9 @@ do
 		end
 		if item == "Shiv" then
 			giveShiv(player)
+		elseif item == "Hooch" or item == "Spice" or item == "Weed" then -- v252
+			local drugs = ServerStorage:FindFirstChild("Drugs")
+			if drugs then pcall(drugs.Invoke, drugs, "Give", player, item) end
 		else
 			givePills(player)
 		end
@@ -1713,6 +1718,9 @@ DialogueRE.OnServerEvent:Connect(function(player, token, choice)
 		if n.model:GetAttribute("LockpickDealer") then
 			table.insert(wares, { id = "buy_lockpick", text = ("Lockpick - $%d"):format(math.floor(PRICES.Lockpick * discount)) })
 		end
+		-- v252: hooch and spice (ServerStorage.Drugs)
+		table.insert(wares, { id = "buy_hooch", text = ("Hooch - $%d"):format(math.floor(60 * discount)) })
+		table.insert(wares, { id = "buy_spice", text = ("Spice - $%d"):format(math.floor(200 * discount)) })
 		table.insert(wares, { id = "back", text = "Nah, never mind" })
 		sendDialogue(player, s, if discount < 1 then "For you? Friends price." else "Cash only. No refunds.", wares)
 	elseif choice == "buy_lockpick" and n.model:GetAttribute("LockpickDealer") and s.stage == "shop" then
@@ -1743,6 +1751,19 @@ DialogueRE.OnServerEvent:Connect(function(player, token, choice)
 			end
 			addRep(player, n.gang, 3)
 			reply(player, s, "Pleasure. Keep it out of sight.", 0, nil, false)
+		else
+			reply(player, s, "Come back when you got the money.", 0, nil, false)
+		end
+	elseif (choice == "buy_hooch" or choice == "buy_spice") and n.dealer and s.stage == "shop" then
+		local substance = if choice == "buy_hooch" then "Hooch" else "Spice"
+		local price = math.floor((if substance == "Hooch" then 60 else 200) * (if mood == "friendly" then 0.8 else 1))
+		local drugs = ServerStorage:FindFirstChild("Drugs")
+		if not drugs then
+			reply(player, s, "Supply's dry.", 0, nil, false)
+		elseif economy("Charge", player, price) then
+			pcall(drugs.Invoke, drugs, "Give", player, substance)
+			addRep(player, n.gang, 2)
+			reply(player, s, if substance == "Spice" then "Go easy. That stuff's no joke." else "Brewed it in a trash bag. Enjoy.", 0, nil, false)
 		else
 			reply(player, s, "Come back when you got the money.", 0, nil, false)
 		end

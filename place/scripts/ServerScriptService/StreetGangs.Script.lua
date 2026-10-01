@@ -241,6 +241,29 @@ local function loadTurfs()
 	end
 end
 
+-- v251b: until territories are mapped, each gang claims a neighbourhood around
+-- existing buildings (the apartment projects, the houses, the trailer park, the motel).
+-- Mapped TerritoryXX zones replace all of these.
+local DEFAULT_TURFS = {
+	{ key = "EK", anchor = "Apartments", center = Vector3.new(2350, 0, 1050), half = 260 },
+	{ key = "IS", anchor = "Houses", center = Vector3.new(242, 0, -1932), half = 280 },
+	{ key = "DS", anchor = "Trailers", center = Vector3.new(3857, 0, 1513), half = 200 },
+	{ key = "TL", anchor = "MotelRooms", center = Vector3.new(1660, 0, -2187), half = 160 },
+}
+
+local function defaultTurfs()
+	for _, d in DEFAULT_TURFS do
+		local anchor = Workspace:FindFirstChild(d.anchor)
+		if anchor and anchor:IsA("Model") then
+			local cf = anchor:GetBoundingBox()
+			local c, h = Vector3.new(d.center.X, cf.Position.Y, d.center.Z), d.half
+			local poly = { c + Vector3.new(-h, 0, -h), c + Vector3.new(h, 0, -h), c + Vector3.new(h, 0, h), c + Vector3.new(-h, 0, h) }
+			table.insert(turfs, { key = d.key, name = d.anchor .. " (default turf)", poly = poly, center = c,
+				minY = c.Y - 80, maxY = c.Y + 120 })
+		end
+	end
+end
+
 local function turfAt(pos: Vector3): Turf?
 	for _, t in turfs do
 		if pos.Y >= t.minY and pos.Y <= t.maxY and pointInPoly(pos.X, pos.Z, t.poly) then
@@ -270,7 +293,7 @@ local function randomPointIn(t: Turf): Vector3?
 		local x, z = minX + math.random() * (maxX - minX), minZ + math.random() * (maxZ - minZ)
 		if pointInPoly(x, z, t.poly) then
 			local g = groundAt(x, z, t.center.Y)
-			if g then
+			if g and g.Y < t.center.Y + 8 then -- street level, not a rooftop
 				return g
 			end
 		end
@@ -762,6 +785,10 @@ task.spawn(function()
 		task.wait(1)
 	end
 	loadTurfs()
+	local mapped = #turfs > 0
+	if not mapped then
+		defaultTurfs()
+	end
 	local spawned = 0
 	for _, t in turfs do
 		for _ = 1, CFG.MembersPerTurf do
@@ -772,8 +799,11 @@ task.spawn(function()
 			end
 		end
 	end
-	print(("[StreetGangs] v%d: %d territory zone(s), %d member(s)%s"):format(VERSION, #turfs, spawned,
-		if #turfs == 0 then " - map City > TerritoryEK / IS / DS / TL zones with the Facility Mapper to put gangs on the streets" else ""))
+	print(("[StreetGangs] v%d: %d territor%s (%s), %d member(s)"):format(VERSION, #turfs, if #turfs == 1 then "y" else "ies",
+		if mapped then "mapped" else "default neighbourhoods - map City > TerritoryEK/IS/DS/TL to replace them", spawned))
+	for _, t in turfs do
+		print(("[StreetGangs]   %s: %s"):format(GANGS[t.key].name, t.name))
+	end
 	while true do
 		local now = os.clock()
 		for _, m in members do

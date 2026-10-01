@@ -118,8 +118,31 @@ local function pillOffer(name, strengths)
 	}
 end
 
+-- v252: the rest of the menu goes through the Drugs script (ServerStorage.Drugs)
+local function drugOffer(substance, name, priceRange, potencyRange)
+	local potency = math.random(potencyRange[1], potencyRange[2]) / 100
+	local price = round(math.random(priceRange[1], priceRange[2]) * potency)
+	return {
+		label = ("%s (%d%% strength) - $%d"):format(name, round(potency * 100), price),
+		item = name, price = price, substance = substance, potency = potency,
+	}
+end
+
 local function rollStock()
-	return { methOffer(), pillOffer("Percocet", PERCOCET_MG), pillOffer("Oxycodone", OXYCODONE_MG) }
+	local stock = { methOffer(), pillOffer("Percocet", PERCOCET_MG), pillOffer("Oxycodone", OXYCODONE_MG) }
+	table.insert(stock, drugOffer("Weed", "Joint", { 20, 40 }, { 70, 130 }))
+	if math.random() < 0.7 then
+		table.insert(stock, drugOffer("PartyPills", "Party Pills", { 40, 80 }, { 70, 140 }))
+	end
+	if math.random() < 0.4 then
+		table.insert(stock, drugOffer("Heroin", "Black Tar", { 90, 160 }, { 60, 150 }))
+	end
+	return stock
+end
+
+local function drugsFn()
+	local fn = ServerStorage:FindFirstChild("Drugs")
+	return if fn and fn:IsA("BindableFunction") then fn else nil
 end
 
 local function sellTo(player, offer)
@@ -129,6 +152,15 @@ local function sellTo(player, offer)
 	local backpack = player:FindFirstChildOfClass("Backpack")
 	if not backpack then
 		return false, "Try again in a second"
+	end
+	if offer.substance then
+		local fn = drugsFn()
+		if fn then
+			pcall(function()
+				fn:Invoke("Give", player, offer.substance, offer.item, offer.potency)
+			end)
+		end
+		return true, "Got the " .. offer.item
 	end
 	local tool = Instance.new("Tool")
 	tool.Name = offer.item
@@ -149,6 +181,14 @@ local function sellTo(player, offer)
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 		if not humanoid or humanoid.Health <= 0 or tool.Parent ~= character then return end
 		consumed = true
+		-- v252: it gets you high too (meth = stimulants, pills = opioids)
+		local fn = drugsFn()
+		if fn then
+			pcall(function()
+				fn:Invoke("Use", player, if offer.kind == "speed" then "Stims" else "Opioids",
+					math.clamp((offer.strength or 20) / (if offer.kind == "speed" then 60 else 90), 0.4, 2.2))
+			end)
+		end
 		if offer.kind == "heal" then
 			humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + (offer.strength or 0))
 		elseif offer.kind == "speed" then
