@@ -10824,12 +10824,17 @@ function PrisonFlow.hqRide(player: Player, dest: Vector3, alive: () -> boolean):
 	if not char or not hum or not root then return "no character" end
 	local pickup: Vector3? = nil
 	local bestD = math.huge
-	for _, id in RoadGraph.nodesNear(root.Position, 160) do
-		local p = RoadGraph.nodePos(id)
-		if p then
-			local d = Util.flat(p - root.Position).Magnitude
-			if d >= 10 and d < bestD then pickup, bestD = p, d end
+	-- v245f: look further out when the arrest is off the road network (prison
+	-- fences, rooftops, yards): the nearest road gets the cruiser, wherever it is
+	for _, radius in { 160, 500, 1500 } do
+		for _, id in RoadGraph.nodesNear(root.Position, radius) do
+			local p = RoadGraph.nodePos(id)
+			if p then
+				local d = Util.flat(p - root.Position).Magnitude
+				if d >= 10 and d < bestD then pickup, bestD = p, d end
+			end
 		end
+		if pickup then break end
 	end
 	if not pickup then return "no road near the arrest" end
 	local g = Util.groundAt(pickup, 30, 80)
@@ -10849,6 +10854,15 @@ function PrisonFlow.hqRide(player: Player, dest: Vector3, alive: () -> boolean):
 	local W = van.cfg.Size.X
 	-- the arresting officer walks them to the rear door, then they're seated and welded in
 	local door = body.CFrame:PointToWorldSpace(Vector3.new(-(W / 2 + 2.2), 0, 1.5))
+	-- v245f: a long way from the road: they're brought to the cruiser instead of a
+	-- minutes-long cuffed walk (fences and walls in between can't be walked anyway)
+	if Util.flat(door - root.Position).Magnitude > 70 then
+		local beside = door + Util.safeUnit(Util.flat(door - body.Position), Vector3.xAxis) * 3
+		local gb = Util.groundAt(beside, 10, 40)
+		root.CFrame = CFrame.lookAt((gb or beside) + Vector3.new(0, 3, 0), door + Vector3.new(0, 3, 0))
+		print(("[Custody] RIDE PICKUP %s brought %.0f studs to the cruiser"):format(player.Name, bestD))
+		task.wait(0.2)
+	end
 	local cop = escortCop(door + Util.safeUnit(root.Position - door, Vector3.zAxis) * 4, root.Position - door)
 	tell(player, "Custody", "Under arrest - being placed in the car")
 	walkPrisoner(player, door, cop, 12, alive)
@@ -14206,7 +14220,8 @@ function Justice.init()
 				local team=player.Team
 				if player.Parent and team and (inmateTeamColors[team.Name] or team.Name==JCFG.PrisonerTeam)
 					and not sentenceEnd[player] and not custody[player] and not releaseBusy[player] and not bookingBusy[player]
-					and not player:GetAttribute("CustodyOwner") and not player:GetAttribute("EscapeInProgress") then
+					and not player:GetAttribute("CustodyOwner") and not player:GetAttribute("EscapeInProgress")
+				and not PrisonFlow.hq[player] then -- v245f: HQ / City Jail custody is custody too
 					local t=releaseTargetTeam(player)
 					if t and t~=team then
 						warn(("[CustodyDiag] TEAM FIX %s was on %s with no sentence -> %s"):format(player.Name,team.Name,t.Name))

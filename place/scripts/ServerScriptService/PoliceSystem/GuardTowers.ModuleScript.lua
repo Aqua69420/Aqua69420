@@ -186,6 +186,14 @@ local function ruleFor(player: Player, pos: Vector3): string?
 	local escaping = player:GetAttribute("EscapeInProgress") == true
 	local inmate = ctx.isInmate(player)
 	local feet = pos - Vector3.new(0, 3, 0)
+	-- v245f: cuffed / in custody = handled, the towers hold fire
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local stage = player:GetAttribute("CustodyStage")
+	local inCustody = stage ~= nil and stage ~= "Free" and stage ~= "Serving" and stage ~= "Release"
+	if (hum and hum:GetAttribute("PoliceCuffed")) or (inCustody and not escaping) then
+		return nil
+	end
 	-- v245c: kill / stun zones are restricted ground for EVERYONE except police and
 	-- staff (a citizen climbing the fences gets the same treatment as an inmate)
 	local law = false
@@ -360,7 +368,16 @@ local function step(now: number)
 			elseif now >= g.nextShot then
 				local since = now - st.at
 				if e.rule == "StunZone" then
-					if since >= CFG.StunDelay then
+					-- v245f: rubber rounds only from the 2 closest guards, and never at
+					-- someone already down - they stay down for the officers to cuff
+					local down = e.hum:GetAttribute("PoliceStunned") == true or e.hum.PlatformStand
+					local rank = 0
+					for g2, e2 in engaged do
+						if e2.player == e.player and g2 ~= g and (g2.eye - e.part.Position).Magnitude < (g.eye - e.part.Position).Magnitude then
+							rank += 1
+						end
+					end
+					if not down and rank < 2 and since >= CFG.StunDelay then
 						g.nextShot = now + CFG.StunInterval + math.random() -- guards don't fire in unison
 						stunShot(g, e.player, e.hum, e.part)
 					end
