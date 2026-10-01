@@ -244,6 +244,10 @@ local function startPicking(player, door)
 	local isPrisonDoor=door:GetAttribute("PrisonDoor")==true
 	-- v241: mapped doors of other facilities carry their own tumbler count (City Jail = 12)
 	gui.Locks.Complexity.Value = tonumber(door:GetAttribute("LockComplexity")) or (if isPrisonDoor then PRISON_LOCK_COMPLEXITY else LOCK_COMPLEXITY)
+	-- v250: a gang Lieutenant taught you to feel the pins - 3 fewer tumblers (min 4)
+	if player:GetAttribute("SkillLockpicking") then
+		gui.Locks.Complexity.Value = math.max(4, gui.Locks.Complexity.Value - 3)
+	end
 	gui.Locks.Lock.Disabled = false -- the template ships with the minigame switched off
 	gui.ResetOnSpawn = true
 	sessions[player] = { door = door, gui = gui, started = os.clock() }

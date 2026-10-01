@@ -33,6 +33,10 @@ local GANGS = {
 	TL = { key = "TL", name = "The Lifers", color = Color3.fromRGB(30, 80, 205), rival = "DS" },
 }
 local GANG_ORDER = { "EK", "IS", "DS", "TL" }
+-- v250 gang ranks (Associate -> Soldier -> Lieutenant -> Shot-caller), tasks,
+-- challenges, paid backup and what high ranks teach. Filled in further down;
+-- one table so the main chunk stays far from Luau's 200-local limit.
+local Ranks: any = {}
 local UNAFFILIATED_CHANCE = 0.25
 local DEALER_CHANCE = 0.22
 
@@ -332,7 +336,9 @@ local function setupPrompt(n: Npc)
 		end)
 	end
 	local gang = n.gang and GANGS[n.gang]
-	prompt.ObjectText = n.name .. (if gang then " · " .. gang.name else "") .. (if n.dealer then " (dealer)" else "")
+	local rankName = if gang and Ranks.npcRankName then Ranks.npcRankName(n) else nil
+	prompt.ObjectText = n.name .. (if gang then " · " .. gang.name else "") .. (if rankName then " · " .. rankName else "")
+		.. (if n.dealer then " (dealer)" else "")
 end
 
 local function register(model: Instance)
@@ -368,6 +374,7 @@ local function register(model: Instance)
 	local gang = n.gang and GANGS[n.gang]
 	hum.DisplayName = (if gang then "[" .. n.gang .. "] " else "") .. n.name
 	addBandana(model, n.gang)
+	if Ranks.assignNpc then Ranks.assignNpc(n) end -- v250
 	setupPrompt(n)
 	model.Destroying:Connect(function()
 		npcs[model] = nil
@@ -736,6 +743,7 @@ local function onPlayerHit(player: Player, model: Model, damage: number)
 	if not n then
 		return
 	end
+	if Ranks.onHit then Ranks.onHit(player, n) end -- v250: beatdown tasks, challenges
 	if n.gang then
 		riotHeat(0.6, n.gang, 1, nil)
 		local killed = hum.Health <= 0
@@ -793,7 +801,9 @@ local function playerStrike(player: Player, blade: boolean)
 	if troot then
 		hitSound(troot, blade)
 	end
-	onPlayerHit(player, target, if blade then SHIV_DAMAGE else FIST_DAMAGE)
+	-- v250: a Soldier taught to make a proper blade hits harder with it
+	local shivDamage = SHIV_DAMAGE + (if player:GetAttribute("SkillShivCraft") then 8 else 0)
+	onPlayerHit(player, target, if blade then shivDamage else FIST_DAMAGE)
 	local thum = target:FindFirstChildOfClass("Humanoid")
 	PunchRE:FireClient(player, "hit", target.Name, thum and thum.Health or 0, thum and thum.MaxHealth or 100)
 end
@@ -824,6 +834,11 @@ local function coNear(cop: Model?, pos: Vector3, radius: number): boolean
 end
 
 local function confiscate(player: Player)
+	-- v250: taught by a Lieutenant - half the time a search misses what you've stashed
+	if player:GetAttribute("SkillHideContraband") and math.random() < 0.5 then
+		notice(player, "They searched you... and missed your stash")
+		return
+	end
 	local found = false
 	for _, container in { player:FindFirstChildOfClass("Backpack"), player.Character } do
 		if container then
@@ -955,12 +970,14 @@ attack = function(n: Npc, player: Player, duration: number, lethal: boolean?)
 		duration = math.max(duration, 45)
 	end
 	attacking[player] = (attacking[player] or 0) + 1
+	n.model:SetAttribute("AttackingUserId", player.UserId) -- v250: paid backup knows who to hit
 	say(n.model, if lethal then pick({ "You're done.", "Word came down. Nothing personal.", "This is for my people." }) else pick(LINES.taunt), 3)
 	local deadline = os.clock() + duration
 	local cop: Model? = nil
 	local called = false
 	local nextHit = 0
-	while os.clock() < deadline and n.model.Parent and n.hum.Health > 0 and not n.model:GetAttribute("InCell") do
+	while os.clock() < deadline and n.model.Parent and n.hum.Health > 0 and not n.model:GetAttribute("InCell")
+		and not n.model:GetAttribute("Yielded") do -- v250: a beaten challenger / backed-off attacker stops
 		local phum, proot = charInfo(player.Character)
 		if not phum or not proot or not player.Parent then
 			break
@@ -1009,6 +1026,10 @@ attack = function(n: Npc, player: Player, duration: number, lethal: boolean?)
 	n.hum:MoveTo(n.root.Position)
 	if shiv then
 		shiv:Destroy()
+	end
+	if n.model.Parent then
+		n.model:SetAttribute("AttackingUserId", nil)
+		n.model:SetAttribute("Yielded", nil)
 	end
 	attacking[player] = math.max(0, (attacking[player] or 1) - 1)
 	releaseNpc(n)
@@ -1300,6 +1321,11 @@ local function mainOptions(player: Player, n: Npc): { { id: string, text: string
 	end
 	if n.gang and player:GetAttribute("PrisonGang") ~= n.gang then
 		table.insert(opts, { id = "join", text = "I want in with " .. GANGS[n.gang].name })
+	end
+	if Ranks.options then
+		for _, o in Ranks.options(player, n) do -- v250: work, challenges, backup, lessons
+			table.insert(opts, o)
+		end
 	end
 	table.insert(opts, { id = "trash", text = "Talk trash" })
 	table.insert(opts, { id = "leave", text = "Walk away" })
@@ -1664,6 +1690,9 @@ DialogueRE.OnServerEvent:Connect(function(player, token, choice)
 			if player.Character then
 				addBandana(player.Character, gang.key)
 			end
+			-- v250: everybody starts at the bottom
+			player:SetAttribute("GangRank", 1)
+			player:SetAttribute("GangPoints", 0)
 			notice(player, "You're with " .. gang.name .. " now")
 			reply(player, s, "Welcome to " .. gang.name .. ". Wear the colors.", 0, nil, false)
 		else
@@ -1704,7 +1733,8 @@ DialogueRE.OnServerEvent:Connect(function(player, token, choice)
 		end
 	elseif (choice == "buy_shiv" or choice == "buy_pills") and n.dealer and s.stage == "shop" then
 		local item = if choice == "buy_shiv" then "Shiv" else "Pills"
-		local price = math.floor(PRICES[item] * (if mood == "friendly" then 0.8 else 1))
+		local price = math.floor(PRICES[item] * (if mood == "friendly" then 0.8 else 1)
+			* (if item == "Shiv" and player:GetAttribute("SkillShivCraft") then 0.5 else 1)) -- v250: you know what it's worth
 		if economy("Charge", player, price) then
 			if item == "Shiv" then
 				giveShiv(player)
@@ -1719,8 +1749,527 @@ DialogueRE.OnServerEvent:Connect(function(player, token, choice)
 	elseif choice == "back" then
 		s.stage = "main"
 		reply(player, s, "Suit yourself.", 0, nil, true)
+	elseif string.sub(choice, 1, 3) == "rk_" and Ranks.choose then
+		-- v250: say the NPC's answer, close the box, then act
+		local text, after = Ranks.choose(player, n, choice)
+		reply(player, s, text or "...", 0, nil, false)
+		if after then
+			task.delay(0.6, after)
+		end
 	end
 end)
+
+---------------------------------------------------------------------------
+-- v250 GANG RANKS
+-- Associate -> Soldier -> Lieutenant -> Shot-caller (one per gang). NPC gang
+-- members carry a rank too. Respect path: work for higher ranks (beatdowns, debt
+-- collection, smuggling a package, holding a blade through a search). Fight path:
+-- challenge the rank right above you; the shot-caller's two bodyguards come first.
+-- Money buys backup. Soldiers and up learn skills, Lieutenants get contacts and
+-- escape intel. Player attributes: GangRank (1-4), GangPoints, Skill*, Contact_*,
+-- EscapeIntel. (StreetGangs saves them, so standing follows you out and back in.)
+---------------------------------------------------------------------------
+Ranks.NAMES = { "Associate", "Soldier", "Lieutenant", "Shot-caller" }
+Ranks.SHORT = { "", "Sol.", "Lt.", "Boss" }
+Ranks.PROMOTE = { [2] = { points = 60, rep = 50 }, [3] = { points = 180, rep = 70 } }
+Ranks.BACKUP_PRICE = 2000
+Ranks.BACKUP_SECONDS = 180
+Ranks.TASK_SECONDS = 300
+Ranks.task = {} :: { [Player]: any }
+Ranks.duel = {} :: { [Player]: any }
+Ranks.backup = {} :: { [Player]: any }
+
+function Ranks.rankOf(player: Player): number
+	if not player:GetAttribute("PrisonGang") then
+		return 0
+	end
+	return math.clamp(tonumber(player:GetAttribute("GangRank")) or 1, 1, 4)
+end
+
+function Ranks.npcRank(n: Npc): number
+	return math.clamp(tonumber(n.model:GetAttribute("GangRank")) or 1, 1, 4)
+end
+
+function Ranks.npcRankName(n: Npc): string?
+	if not n.gang then
+		return nil
+	end
+	return Ranks.NAMES[Ranks.npcRank(n)]
+end
+
+-- a player holds this gang's top seat
+function Ranks.playerBoss(gang: string): Player?
+	for _, p in Players:GetPlayers() do
+		if p:GetAttribute("PrisonGang") == gang and Ranks.rankOf(p) == 4 then
+			return p
+		end
+	end
+	return nil
+end
+
+function Ranks.label(n: Npc)
+	local r = Ranks.npcRank(n)
+	n.hum.DisplayName = "[" .. tostring(n.gang) .. "] " .. (if Ranks.SHORT[r] ~= "" then Ranks.SHORT[r] .. " " else "") .. n.name
+	setupPrompt(n)
+end
+
+-- one shot-caller per gang (unless a player holds the seat), two lieutenants, ~40% soldiers
+function Ranks.assignNpc(n: Npc)
+	if not n.gang then
+		return
+	end
+	if n.model:GetAttribute("GangRank") == nil then
+		local boss, lts = false, 0
+		for _, o in npcs do
+			if o ~= n and o.gang == n.gang then
+				local r = Ranks.npcRank(o)
+				if r == 4 then boss = true elseif r == 3 then lts += 1 end
+			end
+		end
+		local r = 1
+		if not boss and not Ranks.playerBoss(n.gang) then
+			r = 4
+		elseif lts < 2 and math.random() < 0.35 then
+			r = 3
+		elseif math.random() < 0.4 then
+			r = 2
+		end
+		n.model:SetAttribute("GangRank", r)
+	end
+	Ranks.label(n)
+end
+
+function Ranks.setPlayerRank(player: Player, r: number)
+	player:SetAttribute("GangRank", r)
+	notice(player, ("You're a %s of the %s now"):format(Ranks.NAMES[r], GANGS[player:GetAttribute("PrisonGang")].name))
+end
+
+function Ranks.kickOut(player: Player, why: string)
+	local gang = player:GetAttribute("PrisonGang")
+	player:SetAttribute("PrisonGang", nil)
+	player:SetAttribute("GangRank", nil)
+	player:SetAttribute("GangPoints", nil)
+	if type(gang) == "string" and GANGS[gang] then
+		addRep(player, gang, -30, why)
+		notice(player, "The " .. GANGS[gang].name .. " threw you out")
+	end
+	if player.Character then
+		addBandana(player.Character, nil)
+	end
+end
+
+function Ranks.addPoints(player: Player, pts: number)
+	local gang = player:GetAttribute("PrisonGang")
+	if type(gang) ~= "string" or not GANGS[gang] then
+		return
+	end
+	local total = (tonumber(player:GetAttribute("GangPoints")) or 0) + pts
+	player:SetAttribute("GangPoints", total)
+	local r = Ranks.rankOf(player)
+	local nextUp = Ranks.PROMOTE[r + 1]
+	if nextUp and total >= nextUp.points and getRep(player, gang) >= nextUp.rep then
+		Ranks.setPlayerRank(player, r + 1)
+		print(("[PrisonSociety] RANK %s promoted to %s (%s)"):format(player.Name, Ranks.NAMES[r + 1], gang))
+	elseif nextUp and total >= nextUp.points then
+		notice(player, ("Work's done - you need %d respect with them for %s"):format(nextUp.rep, Ranks.NAMES[r + 1]))
+	end
+end
+
+-- tasks ------------------------------------------------------------------
+function Ranks.finishTask(player: Player, ok: boolean, why: string)
+	local t = Ranks.task[player]
+	if not t then
+		return
+	end
+	Ranks.task[player] = nil
+	if t.tool and t.tool.Parent then
+		t.tool:Destroy()
+	end
+	if ok then
+		addRep(player, t.gang, 8, why)
+		Ranks.addPoints(player, t.points)
+		notice(player, ("Job done for %s: +%d standing"):format(t.giverName, t.points))
+	else
+		addRep(player, t.gang, -10, why)
+		notice(player, "Job failed: " .. why)
+	end
+	print(("[PrisonSociety] TASK %s %s %s (%s)"):format(player.Name, t.kind, if ok then "DONE" else "FAILED", why))
+end
+
+function Ranks.giveTask(player: Player, giver: Npc): string
+	local gang = player:GetAttribute("PrisonGang") :: string
+	local rival = GANGS[gang].rival
+	local rivals, others = {}, {}
+	for _, o in npcs do
+		if o ~= giver and o.hum.Health > 0 then
+			if o.gang == rival then table.insert(rivals, o) end
+			if o.gang ~= gang then table.insert(others, o) end
+		end
+	end
+	local kinds = { "smuggle", "hold" }
+	if #rivals > 0 then table.insert(kinds, "beatdown") end
+	if #others > 0 then table.insert(kinds, "collect"); table.insert(kinds, "smuggle") end
+	local kind = pick(kinds)
+	local t = { kind = kind, gang = gang, giverName = giver.name, deadline = os.clock() + Ranks.TASK_SECONDS, points = 30 }
+	local text
+	if kind == "beatdown" then
+		t.target = pick(rivals)
+		t.points = 40
+		text = ("%s from the %s has been running his mouth. Put him on the floor."):format(t.target.name, GANGS[rival].name)
+	elseif kind == "collect" then
+		t.target = pick(others)
+		text = ("%s owes me. Go get what's mine - however you have to."):format(t.target.name)
+	elseif kind == "smuggle" then
+		t.target = if #others > 0 then pick(others) else nil
+		local tool = contrabandTool("Package", Vector3.new(0.7, 0.4, 0.5), Color3.fromRGB(150, 120, 80), "Don't open it. Don't lose it.")
+		tool.Parent = player:FindFirstChildOfClass("Backpack")
+		t.tool = tool
+		if t.target then
+			text = ("Get this to %s. Keep it away from the COs."):format(t.target.name)
+		else
+			t.kind = "hold"
+			text = "Hold this package for me. Five minutes. Don't let them find it."
+		end
+	end
+	if t.kind == "hold" and not t.tool then
+		giveShiv(player)
+		local bp = player:FindFirstChildOfClass("Backpack")
+		t.tool = bp and bp:FindFirstChild("Shiv")
+		t.points = 35
+		text = "Hold my blade for five minutes. They're shaking down the block - if they find it, you don't know me."
+	end
+	Ranks.task[player] = t
+	notice(player, "New job: " .. text)
+	print(("[PrisonSociety] TASK %s got %s from %s"):format(player.Name, t.kind, giver.name))
+	return text
+end
+
+-- a player's hit landed on an NPC
+function Ranks.onHit(player: Player, n: Npc)
+	local t = Ranks.task[player]
+	if t and t.target == n and (t.kind == "beatdown" or (t.kind == "collect" and t.stage == "beat"))
+		and n.hum.Health <= n.hum.MaxHealth * 0.45 then
+		n.model:SetAttribute("Yielded", true)
+		say(n.model, if t.kind == "collect" then "ALRIGHT! Take it, take it!" else "Okay! Okay! I'm done!", 3)
+		Ranks.finishTask(player, true, if t.kind == "collect" then "collected the debt" else "delivered the beatdown")
+	end
+	local d = Ranks.duel[player]
+	if d and d.current == n and n.hum.Health <= n.hum.MaxHealth * 0.25 then
+		n.model:SetAttribute("Yielded", true)
+		say(n.model, "Enough... enough.", 3)
+		d.beaten = true
+	end
+end
+
+-- challenges -------------------------------------------------------------
+function Ranks.challenge(player: Player, target: Npc)
+	if Ranks.duel[player] then
+		return
+	end
+	local gang = player:GetAttribute("PrisonGang") :: string
+	local myRank = Ranks.rankOf(player)
+	local opponents = {}
+	if Ranks.npcRank(target) == 4 then
+		-- the boss doesn't fight alone: his two closest soldiers go first
+		local guards = freeNpcsNear(target.root.Position, 90, function(o)
+			return o.gang == gang and o ~= target and Ranks.npcRank(o) >= 2
+		end)
+		table.sort(guards, function(a, b)
+			return (a.root.Position - target.root.Position).Magnitude < (b.root.Position - target.root.Position).Magnitude
+		end)
+		for i = 1, math.min(2, #guards) do
+			table.insert(opponents, guards[i])
+		end
+	end
+	table.insert(opponents, target)
+	local d = { target = target, opponents = opponents }
+	Ranks.duel[player] = d
+	print(("[PrisonSociety] CHALLENGE %s (%s) -> %s (%s), %d fight(s)"):format(player.Name, Ranks.NAMES[myRank],
+		target.name, Ranks.NAMES[Ranks.npcRank(target)], #opponents))
+	for _, o in freeNpcsNear(target.root.Position, 40) do
+		if math.random() < 0.5 then say(o.model, pick({ "Oh, it's a challenge!", "Somebody's getting demoted!", "Make a circle!" }), 3) end
+	end
+	local won = true
+	for i, opp in opponents do
+		d.current, d.beaten = opp, false
+		if i < #opponents then
+			say(opp.model, "You gotta go through me first.", 3)
+		end
+		task.spawn(attack, opp, player, 75)
+		local deadline = os.clock() + 75
+		while os.clock() < deadline and player.Parent and not d.beaten do
+			local phum = charInfo(player.Character)
+			if not phum or phum.Health <= 15 then
+				won = false
+				break
+			end
+			if opp.hum.Health <= 0 then
+				d.beaten = true
+				break
+			end
+			task.wait(0.25)
+		end
+		if opp.model.Parent then opp.model:SetAttribute("Yielded", true) end
+		if not d.beaten then
+			won = false
+			break
+		end
+		task.wait(1.5)
+	end
+	Ranks.duel[player] = nil
+	if not player.Parent or player:GetAttribute("PrisonGang") ~= gang then
+		return
+	end
+	if won then
+		local theirRank = Ranks.npcRank(target)
+		target.model:SetAttribute("GangRank", math.max(1, myRank))
+		Ranks.label(target)
+		Ranks.setPlayerRank(player, theirRank)
+		addRep(player, gang, 10, "took the spot")
+		if theirRank == 4 then
+			for _, p in Players:GetPlayers() do
+				if isInmate(p) then notice(p, ("%s took over the %s"):format(player.Name, GANGS[gang].name)) end
+			end
+			-- some of the old boss's people won't accept it
+			if math.random() < 0.4 then
+				local loyal = freeNpcsNear(target.root.Position, 60, function(o) return o.gang == gang and o ~= target end)
+				if #loyal > 0 then
+					notice(player, "Not everyone's happy about the new boss...")
+					task.delay(20, function()
+						if loyal[1].model.Parent then task.spawn(attack, loyal[1], player, 45, true) end
+					end)
+				end
+			end
+		end
+		print(("[PrisonSociety] CHALLENGE WON %s is now %s"):format(player.Name, Ranks.NAMES[theirRank]))
+	else
+		say(target.model, pick({ "Know your place.", "Try that again and you're done.", "Back to the bottom." }), 4)
+		if myRank <= 1 then
+			Ranks.kickOut(player, "lost a challenge")
+		else
+			Ranks.setPlayerRank(player, myRank - 1)
+		end
+		if math.random() < 0.3 then
+			startFeud(player, gang, 300)
+			notice(player, "You made enemies today. Watch your back.")
+		end
+		print(("[PrisonSociety] CHALLENGE LOST %s"):format(player.Name))
+	end
+end
+
+-- paid backup ------------------------------------------------------------
+function Ranks.hireBackup(player: Player, from: Npc)
+	local gang = player:GetAttribute("PrisonGang") :: string
+	local _, root = charInfo(player.Character)
+	if not root then
+		return
+	end
+	local crew = freeNpcsNear(root.Position, 60, function(o) return o.gang == gang and o ~= from end)
+	local list = {}
+	for i = 1, math.min(2, #crew) do
+		if take(crew[i]) then
+			table.insert(list, crew[i])
+		end
+	end
+	if #list == 0 then
+		notice(player, "Nobody from your crew is around to back you up")
+		return
+	end
+	Ranks.backup[player] = { npcs = list, untilT = os.clock() + Ranks.BACKUP_SECONDS }
+	notice(player, ("%d of your crew have your back for %d minutes"):format(#list, Ranks.BACKUP_SECONDS // 60))
+	print(("[PrisonSociety] BACKUP %s hired %d"):format(player.Name, #list))
+end
+
+task.spawn(function()
+	while true do
+		task.wait(0.5)
+		local now = os.clock()
+		for player, b in Ranks.backup do
+			local _, root = charInfo(player.Character)
+			if not player.Parent or not root or now > b.untilT or not isInmate(player) then
+				for _, n in b.npcs do releaseNpc(n) end
+				Ranks.backup[player] = nil
+				if player.Parent then notice(player, "Your backup went back to their business") end
+				continue
+			end
+			-- whoever is attacking the player
+			local threat: Npc? = nil
+			for _, o in npcs do
+				if o.model:GetAttribute("AttackingUserId") == player.UserId and o.hum.Health > 0
+					and (o.root.Position - root.Position).Magnitude < 40 then
+					threat = o
+					break
+				end
+			end
+			for _, n in b.npcs do
+				if not n.model.Parent or n.hum.Health <= 0 or n.model:GetAttribute("InCell") then
+					continue
+				end
+				local goal = if threat then threat.root.Position else root.Position
+				local dist = (goal - n.root.Position).Magnitude
+				if threat and dist <= PUNCH_RANGE then
+					n.hum:MoveTo(n.root.Position)
+					n.root.CFrame = CFrame.lookAt(n.root.Position, Vector3.new(goal.X, n.root.Position.Y, goal.Z))
+					if math.random() < 0.6 then
+						swing(n.model)
+						hitSound(threat.root, false)
+						threat.hum.Health = math.max(10, threat.hum.Health - 8)
+						if threat.hum.Health <= threat.hum.MaxHealth * 0.3 then
+							threat.model:SetAttribute("Yielded", true)
+						end
+					end
+				elseif threat or dist > 7 then
+					n.hum:MoveTo(goal)
+				end
+			end
+		end
+		-- jobs: time limits, lost contraband, held blades
+		for player, t in Ranks.task do
+			if not player.Parent then
+				Ranks.task[player] = nil
+			elseif (t.kind == "smuggle" or t.kind == "hold") and not (t.tool and t.tool.Parent) then
+				t.tool = nil
+				Ranks.finishTask(player, false, "lost the goods")
+			elseif t.target and not t.target.model.Parent then
+				Ranks.finishTask(player, false, t.target.name .. " is gone")
+			elseif now > t.deadline then
+				if t.kind == "hold" then
+					Ranks.finishTask(player, true, "kept it safe")
+				else
+					Ranks.finishTask(player, false, "took too long")
+				end
+			end
+		end
+	end
+end)
+
+-- lessons ----------------------------------------------------------------
+Ranks.LESSONS = {
+	{ attr = "SkillShivCraft", rank = 2, text = "A blade's all in the grip and the edge. Yours'll cut deeper now - and don't overpay for one again." },
+	{ attr = "SkillHideContraband", rank = 2, text = "Hide it where they don't want to look. Half their searches will come up empty." },
+	{ attr = "SkillLockpicking", rank = 2, text = "Feel the pins, don't force them. You'll pick locks faster." },
+	{ attr = "SkillVisitSmuggling", rank = 3, text = "Visits are a door. Your people can bring more in, and the COs search you less after." },
+	{ attr = "Contact_PlateMaker", rank = 3, text = "Out there, there's a man who makes plates that don't exist. Tell him I sent you." },
+	{ attr = "Contact_Fixer", rank = 3, text = "Need something to go away? There's a fixer. Here's how you reach him." },
+	{ attr = "Contact_ChopShop", rank = 3, text = "Hot car? There's a chop shop that asks no questions." },
+	{ attr = "EscapeIntel", rank = 3, text = "" }, -- filled in when taught
+}
+
+function Ranks.teach(player: Player, n: Npc): string
+	local myRank = Ranks.rankOf(player)
+	for _, l in Ranks.LESSONS do
+		if not player:GetAttribute(l.attr) and myRank >= l.rank then
+			local text = l.text
+			if l.attr == "EscapeIntel" then
+				-- a real weak spot: a CO name, a patrol gap, a door
+				local coName = "Petrov"
+				local list = {}
+				for _, c in cos do table.insert(list, c) end
+				if #list > 0 then coName = string.gsub(pick(list).name, "^C%.O%. ", "") end
+				local gap = math.random(2, 4)
+				text = ("C.O. %s takes money. Night count leaves a %d-minute gap at the yard fence. You didn't hear it from me."):format(coName, gap)
+				player:SetAttribute("EscapeIntel", text)
+				player:SetAttribute("BribableCO", coName)
+			else
+				player:SetAttribute(l.attr, true)
+			end
+			print(("[PrisonSociety] LESSON %s learned %s from %s"):format(player.Name, l.attr, n.name))
+			notice(player, "Learned: " .. string.gsub(string.gsub(l.attr, "^Skill", ""), "^Contact_", "contact: "))
+			return text
+		end
+	end
+	return "I've got nothing else to teach you. Not yet."
+end
+
+-- dialogue ---------------------------------------------------------------
+function Ranks.options(player: Player, n: Npc): { { id: string, text: string } }
+	local out = {}
+	local gang = player:GetAttribute("PrisonGang")
+	local myRank = Ranks.rankOf(player)
+	local t = Ranks.task[player]
+	if t and t.target == n then
+		if t.kind == "collect" and t.stage ~= "beat" then
+			table.insert(out, { id = "rk_collect", text = "You owe " .. t.giverName .. ". Pay up." })
+		elseif t.kind == "smuggle" then
+			table.insert(out, { id = "rk_deliver", text = "Package from " .. t.giverName })
+		end
+	end
+	if not n.gang or n.gang ~= gang then
+		return out
+	end
+	local theirRank = Ranks.npcRank(n)
+	table.insert(out, { id = "rk_status", text = "Where do I stand?" })
+	if theirRank > myRank and not t then
+		table.insert(out, { id = "rk_work", text = "Got any work for me?" })
+	end
+	if theirRank == myRank + 1 and not Ranks.duel[player] then
+		table.insert(out, { id = "rk_challenge", text = ("I'm taking your spot (%s)"):format(Ranks.NAMES[theirRank]) })
+	end
+	if theirRank >= 2 and not Ranks.backup[player] then
+		table.insert(out, { id = "rk_backup", text = ("I need backup ($%d)"):format(Ranks.BACKUP_PRICE) })
+	end
+	if theirRank >= 3 and myRank >= 2 then
+		table.insert(out, { id = "rk_learn", text = "Teach me something" })
+	end
+	return out
+end
+
+-- returns what the NPC says, and optionally something to do after the box closes
+function Ranks.choose(player: Player, n: Npc, choice: string): (string, (() -> ())?)
+	local gang = player:GetAttribute("PrisonGang")
+	local t = Ranks.task[player]
+	if choice == "rk_collect" and t and t.target == n then
+		if math.random() < 0.55 then
+			Ranks.finishTask(player, true, "collected the debt")
+			return pick({ "Fine. Here. Tell him we're square.", "Alright, alright. Take it." })
+		end
+		t.stage = "beat"
+		return pick({ "I ain't paying nothing.", "Tell him to come get it himself." }), function()
+			attack(n, player, 40)
+		end
+	elseif choice == "rk_deliver" and t and t.target == n and t.kind == "smuggle" then
+		if t.tool and t.tool.Parent then
+			t.tool:Destroy()
+			t.tool = nil
+			Ranks.finishTask(player, true, "made the delivery")
+			return "Good. You weren't followed?"
+		end
+		return "Where's the package?"
+	end
+	if type(gang) ~= "string" or n.gang ~= gang then
+		return "You're not one of us."
+	end
+	local myRank = Ranks.rankOf(player)
+	if choice == "rk_status" then
+		local nextUp = Ranks.PROMOTE[myRank + 1]
+		local pts = tonumber(player:GetAttribute("GangPoints")) or 0
+		return if nextUp then ("You're a %s. %d/%d work done, %d/%d respect for %s."):format(Ranks.NAMES[myRank], pts, nextUp.points,
+			getRep(player, gang), nextUp.rep, Ranks.NAMES[myRank + 1])
+			elseif myRank == 3 then "Lieutenant. Only way up from here is through the boss."
+			else ("You're a %s."):format(Ranks.NAMES[myRank])
+	elseif choice == "rk_work" and not t and Ranks.npcRank(n) > myRank then
+		return Ranks.giveTask(player, n)
+	elseif choice == "rk_challenge" and Ranks.npcRank(n) == myRank + 1 then
+		return pick({ "You sure about that?", "Big mistake.", "Alright. Let's see what you got." }), function()
+			Ranks.challenge(player, n)
+		end
+	elseif choice == "rk_backup" and Ranks.npcRank(n) >= 2 then
+		if economy("Charge", player, Ranks.BACKUP_PRICE) then
+			return "Money talks. My people will watch you.", function()
+				Ranks.hireBackup(player, n)
+			end
+		end
+		return "Come back when you've got the money."
+	elseif choice == "rk_learn" and Ranks.npcRank(n) >= 3 and myRank >= 2 then
+		return Ranks.teach(player, n)
+	end
+	return "Not now."
+end
+
+-- inmates registered before this block existed get their ranks now
+for _, n in npcs do
+	Ranks.assignNpc(n)
+end
 
 ---------------------------------------------------------------------------
 -- chatter, approaches and hostility

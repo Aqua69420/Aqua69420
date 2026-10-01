@@ -32,7 +32,15 @@ Read this first in a new Claude session. Working branch: `claude/roblox-cuffwalk
   no seat roles). Police HQ, prison additions, courthouse, jail, bank, law offices, city: not mapped yet.
   The user is mapping Police HQ (`Workspace.PoliceStation`) next; v240 waits on that.
 - Allow HTTP Requests was OFF in the place; the user needs to turn it on.
-- Next: v240 multi-building (Police HQ etc. from the user's mapped place), v241 arrest scene. See ROADMAP.md.
+- 2026-10-01: v240–v249 were built in Studio by another session and exported to the repo on this date
+  (Facilities, Records, GuardTowers, Interrogation...). Studio "Test1" place = source; repo now matches it.
+- v245b–f: City Jail gate (FacilityGates script), tower stun/lethal zones, 3 guards per tower,
+  zone = crime (PrisonTrespass / PrisonFenceBreach), prison gates are station exits, off-road arrest pickup.
+- v250 gang ranks live in PrisonSociety (`Ranks` table); v251 street gangs + saved gang standing in
+  StreetGangs.Script (DataStore LasVegas_Gangs_v1). City territories need TerritoryEK/IS/DS/TL zones mapped.
+- Studio sync trick: run a localhost file server and `HttpService:GetAsync` the repo file in Studio
+  (HTTP is ON in the place); export goes the other way with PostAsync.
+- Next: v252 drugs. (old note: v240 multi-building (Police HQ etc. from the user's mapped place), v241 arrest scene. See ROADMAP.md.
 
 ## With the Studio MCP server connected
 **User rule: do NOT start play tests unless the user explicitly asks** (they burn usage). The user plays and reports.
