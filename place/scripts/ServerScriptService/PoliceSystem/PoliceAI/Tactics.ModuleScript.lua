@@ -20,6 +20,53 @@ local Ctx, Tuning, Log, Util, Knowledge, Threat, CopAI, Config
 function Tactics.bind(ctx)
 	Ctx = ctx
 	Tuning, Log, Util, Knowledge, Threat, CopAI, Config = ctx.Tuning, ctx.Log, ctx.Util, ctx.Knowledge, ctx.Threat, ctx.CopAI, ctx.Config
+	task.defer(function() pcall(Tactics.markDoors) end)
+	task.delay(12, function() pcall(Tactics.markDoors) end) -- BankServer tags its doors a little later
+end
+
+---------------------------------------------------------------------------
+-- v250 doors police can open are PASS-THROUGH for pathfinding: a closed bank
+-- staff door used to make "no path" (lobby -> vault = NoPath), so officers ran
+-- straight at the suspect into walls. Doors still open as officers reach them
+-- (PoliceDoorAccess). Prison / City Jail doors are left alone (prison nav).
+---------------------------------------------------------------------------
+local CollectionService = game:GetService("CollectionService")
+local DOOR_NAMES = { BankDoor = true, GNCDoor = true, FrontDoor = true, RestrictedDoor = true }
+local function custodial(inst: Instance): boolean
+	return inst:FindFirstAncestor("CorrectionalFacility") ~= nil or inst:FindFirstAncestor("City Jail") ~= nil
+		or inst:GetAttribute("PrisonDoor") == true
+end
+local function passThrough(inst: Instance): number
+	local n = 0
+	local parts = if inst:IsA("BasePart") then { inst } else inst:GetDescendants()
+	for _, p in parts do
+		if p:IsA("BasePart") and not p:FindFirstChild("PoliceDoorPassThrough") then
+			local m = Instance.new("PathfindingModifier")
+			m.Name = "PoliceDoorPassThrough"
+			m.Label = "PoliceDoor"
+			m.PassThrough = true
+			m.Parent = p
+			n += 1
+		end
+	end
+	return n
+end
+local doorsHooked = false
+function Tactics.markDoors()
+	local n = 0
+	for _, d in CollectionService:GetTagged("PoliceAutoDoor") do
+		if not custodial(d) then n += passThrough(d) end
+	end
+	for _, d in workspace:GetDescendants() do
+		if DOOR_NAMES[d.Name] and (d:IsA("BasePart") or d:IsA("Model")) and not custodial(d) then n += passThrough(d) end
+	end
+	if not doorsHooked then
+		doorsHooked = true
+		CollectionService:GetInstanceAddedSignal("PoliceAutoDoor"):Connect(function(d)
+			if not custodial(d) then passThrough(d) end
+		end)
+	end
+	Log.event("DOORS", "%d door part(s) pass-through for police pathfinding", n)
 end
 
 local function flat(v: Vector3): Vector3
@@ -285,6 +332,62 @@ local function rooftop(cop,center)
  return nil
 end
 
+---------------------------------------------------------------------------
+-- v250 indoor entry: when the suspect is inside a building, slots on a straight
+-- line from the first officer land inside walls and everyone funnels the same way.
+-- Instead the squad takes the real walking route in: shield / contact rush along
+-- it, two cover officers hold the corners at the last bend before the suspect,
+-- less-lethal and support stack behind, everyone else rings the building outside.
+---------------------------------------------------------------------------
+-- the building the suspect is in (something solid overhead), or nil
+function Tactics.indoor(center: Vector3): (Instance?, Vector3?, Vector3?)
+	local hit = workspace:Raycast(center + Vector3.new(0, 3, 0), Vector3.new(0, 36, 0), castParams())
+	if not hit then return nil end
+	local b: Instance = hit.Instance
+	while b.Parent and b.Parent ~= workspace do b = b.Parent end
+	if b.Parent ~= workspace then return nil end
+	if b:IsA("Model") then
+		local cf, size = b:GetBoundingBox()
+		if math.max(size.X, size.Z) > 600 then return nil end -- a whole map chunk, not a building
+		return b, cf.Position, size
+	elseif b:IsA("BasePart") then
+		return b, b.Position, b.Size
+	end
+	return nil
+end
+
+-- the walking route from the contact officer to the suspect (cached 4 s)
+function Tactics.entryRoute(inc: any, from: Vector3, center: Vector3, now: number): { Vector3 }?
+	local r = inc.entryRoute
+	if r and now - r.at < 4 and flat(r.center - center).Magnitude < 8 then return r.points end
+	local path = Pathfinding:CreatePath({ AgentRadius = 1.7, AgentHeight = 5, AgentCanJump = true, AgentCanClimb = true, WaypointSpacing = 3 })
+	local ok = pcall(function() path:ComputeAsync(from, center) end)
+	local points = nil
+	if ok and path.Status == Enum.PathStatus.Success then
+		points = {}
+		for _, w in path:GetWaypoints() do table.insert(points, w.Position) end
+		if #points < 2 then points = nil end
+	end
+	path:Destroy()
+	inc.entryRoute = { at = now, center = center, points = points }
+	return points
+end
+
+-- a point `back` studs before the end of the route, and the walking direction there
+local function alongRoute(points: { Vector3 }, back: number): (Vector3, Vector3)
+	local remaining = back
+	for i = #points, 2, -1 do
+		local a, b = points[i - 1], points[i]
+		local seg = (b - a).Magnitude
+		if seg >= remaining and seg > 0.01 then
+			local dir = Util.safeUnit(flat(b - a), Vector3.xAxis)
+			return b + (a - b) * (remaining / seg), dir
+		end
+		remaining -= seg
+	end
+	return points[1], Util.safeUnit(flat(points[2] - points[1]), Vector3.xAxis)
+end
+
 function Tactics.planFoot(inc,free,now)
  local center=inc.knowledge.pos
  if #free==0 then return end
@@ -348,6 +451,17 @@ function Tactics.planFoot(inc,free,now)
   ringSlot[cop]=center+dirOf(a)*ringRadius
  end
  local containing=#perimeterList>=2 or inc.pursuit.swatRequested==true
+ -- v250: indoor suspect -> follow the real route in, ring the building outside
+ local building,bCenter,bSize=nil,nil,nil
+ if not inc.knowledge.inVehicle then building,bCenter,bSize=Tactics.indoor(center) end
+ local route=if building then Tactics.entryRoute(inc,contact.root.Position,center,now) else nil
+ local hasShield=false
+ for _,cop in free do if roles[cop]=="SHIELD" then hasShield=true end end
+ local coverSide=1
+ local outsideCount,outsideIndex=0,0
+ if route and bCenter and bSize then
+  for _,cop in free do local r=roles[cop];if r=="PERIMETER" or r=="RESERVE" or r=="SNIPER" then outsideCount+=1 end end
+ end
  local claimed={};local sniperAssigned=false
  for index,cop in free do
   local role=roles[cop]
@@ -357,22 +471,49 @@ function Tactics.planFoot(inc,free,now)
   if not dangerous then depth=math.max(10,depth-8) end
   local desired=ringSlot[cop] or (center+direction*depth+side*(if role=="CONTACT" then 0 else flank*(8+math.floor(index/2)*6)))
   local old=inc.units[cop]
-  local cover=Tactics.coverNear(desired,center+Vector3.new(0,2,0))
-  local candidate=cover or snap(desired)
-  if role=="SNIPER" then
+  local onRoute=false
+  local cover,candidate
+  if route and bCenter and bSize then
+   if role=="PERIMETER" or role=="RESERVE" or role=="SNIPER" then
+    -- the outside ring: evenly around the building, covering its exits
+    outsideIndex+=1
+    local a=outsideIndex/math.max(1,outsideCount)*math.pi*2
+    local radius=math.max(bSize.X,bSize.Z)/2+14
+    desired=Vector3.new(bCenter.X,center.Y,bCenter.Z)+dirOf(a)*radius
+    cover=nil;candidate=snap(desired)
+   else
+    local back=if role=="SHIELD" then 3 elseif role=="CONTACT" then (if hasShield then 7 else 4) elseif role=="LESSLETHAL" then 9
+     elseif role=="COVER" then 12 elseif role=="SUPPORT" then 16 else 14
+    local p,dirAt=alongRoute(route,back)
+    local sideAt=Vector3.new(-dirAt.Z,0,dirAt.X)
+    if role=="COVER" then p+=sideAt*(2.5*coverSide);coverSide=-coverSide end -- the two corners of the doorway
+    cover=nil;candidate=p;onRoute=true
+   end
+  else
+   cover=Tactics.coverNear(desired,center+Vector3.new(0,2,0))
+   candidate=cover or snap(desired)
+  end
+  if role=="SNIPER" and not route then
    if not cop.roofCheckAt or now>=cop.roofCheckAt then cop.roofCheckAt=now+30;cop.roofSlot=rooftop(cop,center) end
    candidate=cop.roofSlot or candidate;cover=cop.roofSlot or cover
   end
   local separate=true
-  for _,occupied in claimed do if flat(candidate-occupied).Magnitude<7 then separate=false end end
-  if not separate or not Tactics.reachable(cop,candidate) then
+  local minSep=if onRoute then 2.5 else 7
+  for _,occupied in claimed do if flat(candidate-occupied).Magnitude<minSep then separate=false end end
+  if onRoute and separate then
+   -- on the route by construction: no extra reachability check
+  elseif not separate or not Tactics.reachable(cop,candidate) then
    candidate=if old and old.slot and flat(old.slot-center).Magnitude>12 then old.slot else cop.root.Position
    cover=nil
   end
   table.insert(claimed,candidate);setRole(inc,cop,role,candidate,now)
   inc.units[cop].covered=cover~=nil
  end
- phase(inc,if Tactics.coverReady(inc,contact,now) then (if containing then "CONTAIN_AND_CONTROL" else "COVER_AND_CONTROL") else (if containing then "CONTAIN" else "ESTABLISH_COVER"),now)
+ if route then
+  phase(inc,"INDOOR_ENTRY",now)
+ else
+  phase(inc,if Tactics.coverReady(inc,contact,now) then (if containing then "CONTAIN_AND_CONTROL" else "COVER_AND_CONTROL") else (if containing then "CONTAIN" else "ESTABLISH_COVER"),now)
+ end
  -- A roof and a nearby designated entry identify a structure; staging still
  -- requires physical paths and recent reported/seen information.
  if not inc.knowledge.inVehicle and (inc.pursuit.stars or 0)>=3 and not inc.breach then

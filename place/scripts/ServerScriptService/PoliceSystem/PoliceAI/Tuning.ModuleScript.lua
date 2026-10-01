@@ -24,8 +24,16 @@ Tuning.Tick = 0.2 -- incident brain cadence (knowledge, compliance). Heavier wor
 Tuning.Perception = {
 	DetectRange = 260, -- first notice of a suspect (needs FOV)
 	TrackRange = 2500, -- v116: an officer on the call keeps eyes on you this far with clear LOS
-	NoticeRange = 24, -- sees you even behind him this close
-	FOV = 150,
+	-- v245 vision: clear sight in a 110 degree cone, slower noticing out to 150 degrees, a small
+	-- all-round bubble (bigger when you're loud), darkness shortens sight, walking is quieter
+	NoticeRange = 7, -- sees you even behind him this close
+	LoudNoticeRange = 22, -- ...this close when you're loud (sprinting, driving, shooting)
+	FOV = 110,
+	PeripheralFOV = 150, -- 110-150 degrees: noticed only after PeripheralChecks sightings in a row
+	PeripheralChecks = 2,
+	NightDetectScale = 0.6, -- detect range at night (lit by headlights / streetlights not modelled yet)
+	WalkDetectScale = 0.75, -- detect range when you're walking, not sprinting
+	RadioTurnTime = 0.8, -- seconds for an officer to turn toward a radio report
 	TrackMemory = 4, -- seconds an officer keeps looking where he last saw you (FOV ignored)
 	IntervalNear = 0.2, -- LOS checks per officer per incident (LOD by distance)
 	IntervalMid = 0.4,

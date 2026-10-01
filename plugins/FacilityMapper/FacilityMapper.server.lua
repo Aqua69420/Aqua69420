@@ -67,10 +67,11 @@ local ZONE_INFO = {
 	ContactVisit = { room = true }, VisitPrisoner = { room = true }, VisitVisitor = { room = true },
 	-- special, not walkable navigation
 	KillZone = { navIgnore = true }, Perimeter = { navIgnore = true },
+	StunZone = { navIgnore = true }, -- towers fire rubber rounds and call in troops
 }
 local ZONE_TYPES = {
 	Prison = {
-		"Interrogation", "Courtroom", "CourtHolding", "LegalVisit", "GuardTower", "KillZone", "Perimeter",
+		"Interrogation", "Courtroom", "CourtHolding", "LegalVisit", "GuardTower", "KillZone", "StunZone", "Perimeter",
 		"ProtectiveCustody", "JuryRoom", "JudgeChambers", "Hallway", "Stairs", "Room", "Walkway", "Yard",
 		"IntakeCell", "BookingCell", "OverflowHolding", "LongTermHolding", "LowSecurity", "MediumSecurity",
 		"HighSecurity", "MaximumSecurity", "Supermax", "Solitary", "DeathRow", "ExecutionRoom",
@@ -132,6 +133,7 @@ local CHECKLIST = {
 		{ kind = "zone", type = "GuardTower", min = 1 }, { kind = "point", type = "SniperPost", min = 1 },
 		{ kind = "point", type = "Spotlight", min = 1 }, { kind = "zone", type = "KillZone", min = 1 },
 		{ kind = "zone", type = "Perimeter", min = 1 }, { kind = "point", type = "PrisonPhone", min = 2 },
+		{ kind = "zone", type = "StunZone", min = 0, optional = true },
 		{ kind = "zone", type = "ProtectiveCustody", min = 0, optional = true },
 		{ kind = "point", type = "CourtCam", min = 0, optional = true },
 	},

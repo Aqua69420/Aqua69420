@@ -242,7 +242,8 @@ local function startPicking(player, door)
 	local gui = pickGui:Clone()
 	gui.Door.Value = door
 	local isPrisonDoor=door:GetAttribute("PrisonDoor")==true
-	gui.Locks.Complexity.Value = if isPrisonDoor then PRISON_LOCK_COMPLEXITY else LOCK_COMPLEXITY
+	-- v241: mapped doors of other facilities carry their own tumbler count (City Jail = 12)
+	gui.Locks.Complexity.Value = tonumber(door:GetAttribute("LockComplexity")) or (if isPrisonDoor then PRISON_LOCK_COMPLEXITY else LOCK_COMPLEXITY)
 	gui.Locks.Lock.Disabled = false -- the template ships with the minigame switched off
 	gui.ResetOnSpawn = true
 	sessions[player] = { door = door, gui = gui, started = os.clock() }
@@ -335,7 +336,7 @@ local function setupLockedDoor(door, bankTag)
 	end)
 end
 
-local function setupPrisonDoor(marker)
+local function setupPrisonDoor(marker, complexity)
 	if not marker or marker:GetAttribute("PrisonDoorMarker")~=true then return end
 	local value=marker:FindFirstChild("DoorObject")
 	local target=value and value.Value
@@ -346,6 +347,7 @@ local function setupPrisonDoor(marker)
 	lockDoorAnchors[target]=anchor
 	target:SetAttribute("Lockable",true)
 	target:SetAttribute("PrisonDoor",true)
+	if complexity then target:SetAttribute("LockComplexity",complexity) end
 	for _,part in ipairs(if target:IsA("BasePart") then {target} else target:GetDescendants()) do
 		if part:IsA("BasePart") then lockedDoorParts[part]=target end
 	end
@@ -387,6 +389,28 @@ else
 		end
 		warn("[BankServer] no mapped prison DoorMarkers found; prison lockpicks remain unavailable")
 	end)
+end
+
+-- v241: City Jail doors mapped with the Facility Mapper can be picked too - harder
+-- than a staff door (8), easier than the prison (16)
+do
+	local CITY_JAIL_LOCK_COMPLEXITY=12
+	local count=0
+	for _,building in ipairs(workspace:GetChildren()) do
+		local map=building:FindFirstChild("FacilityMap")
+		if map and (map:GetAttribute("FacilityType") or building:GetAttribute("FacilityType"))=="CityJail" then
+			local markers=map:FindFirstChild("DoorMarkers")
+			if markers then
+				for _,marker in ipairs(markers:GetChildren()) do
+					local before=prisonDoorCount
+					setupPrisonDoor(marker,CITY_JAIL_LOCK_COMPLEXITY)
+					count+=prisonDoorCount-before
+				end
+				markers.ChildAdded:Connect(function(marker) task.defer(setupPrisonDoor,marker,CITY_JAIL_LOCK_COMPLEXITY) end)
+			end
+		end
+	end
+	print(("[BankServer] %d mapped city jail door(s) can be lockpicked (%d tumblers)"):format(count,CITY_JAIL_LOCK_COMPLEXITY))
 end
 
 local doorCount = 0

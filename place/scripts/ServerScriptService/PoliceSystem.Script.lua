@@ -97,7 +97,7 @@ Config.Heat = {
 	-- To lose the cops: get out of the search area around where you were last seen...
 	SearchRadius = { 110, 170, 240, 320, 420, 520 },
 	-- ...and stay unseen this long (per star level).
-	EvadeTime = { 25, 40, 60, 80, 112, 150 }, -- v222: losing stars takes 2.5x longer (was 10/16/24/32/45/60)
+	EvadeTime = { 125, 200, 300, 400, 560, 750 }, -- v250: 5x longer again (v222 was 25/40/60/80/112/150)
 	-- v212: killing officers at five stars or more adds this much extra heat
 	CopKillHeatAtFive = 70,
 }
@@ -181,6 +181,20 @@ Config.Justice = {
 	EscapeMargin = 60, -- studs outside the prison's walls counts as escaping
 	HoldGuns = true, -- guns are taken while inside, returned on release
 	StaffTeams = { "Prison Staff", "U.S. Marshal Service", "USM", "LVPD", "SWAT", "Chief of Police" }, -- can work prison doors
+	-- v241 arrest scene + routing. Minor cases (no felony, stars <= HQMaxStars) are held at
+	-- the mapped Police HQ instead of going to prison; everything else keeps the prison flow.
+	HQMaxStars = 2,
+	HQHoldScale = 0.5, -- HQ hold = prison sentence x this
+	HQHoldMax = 300,
+	CompliedScale = 0.85, -- hands up before the cuffs = shorter time
+	EscapeRadius = 90, -- studs from the HQ holding cell that counts as escaping
+	SeizeTools = { Lockpick = true }, -- contraband taken at the frisk (guns are always held)
+	-- v242 HQ processing
+	CiteFineBase = 250, -- cite & release fine per star (halved when you turned yourself in)
+	TurnInScale = 0.7, -- turning yourself in at the HQ front desk = shorter time
+	RepeatOffenderStep = 0.15, -- +15% time per prior arrest (max x2)
+	CityJailMaxSeconds = 1800, -- v243: held sentences up to this go to the City Jail (if mapped)
+	BusGatherSeconds = 120, -- v244: the prison transfer leaves this long after the first prisoner reaches transfer holding
 }
 
 -- Hands up: stops the shooting at ANY wanted level. Cops move in and cuff you.
@@ -308,8 +322,9 @@ Config.Arrest = {
 ---------------------------------------------------------------------------
 Config.Vision = {
 	Range = 230,
-	FOV = 150, -- degrees; once a cop knows about you, FOV no longer matters
-	NoticeRange = 22, -- sees you even behind them this close
+	FOV = 110, -- degrees (v245, was 150); once a cop knows about you, FOV no longer matters
+	NoticeRange = 7, -- sees you even behind them this close (v245, was 22)
+	LoudNoticeRange = 22, -- v245: ...this close when you're loud (sprinting / in a moving car)
 	MemoryTime = 6,
 }
 
@@ -3152,6 +3167,8 @@ function Heat.addCrime(player: Player, crimeName: string, pos: Vector3?, extraHe
 	if not root then
 		return false
 	end
+	-- v248: the secret crime log (who did what, with whom)
+	if State.onCrime then pcall(State.onCrime, player, crimeName, pos or root.Position, crime) end
 	local p = Heat.get(player) or create(player)
 	p.heat += crime.Heat
 	-- v212: killing officers only makes it worse - at five stars it brings the military
@@ -4136,7 +4153,8 @@ function Cop:perceive(now: number)
 		local visible = false
 		if dist <= Config.Vision.Range then
 			local recentlyAware = mem ~= nil and now - mem.seen < Config.Vision.MemoryTime
-			local inView = dist <= Config.Vision.NoticeRange
+			local isLoud = root.AssemblyLinearVelocity.Magnitude > (if hum.SeatPart then 8 else 18)
+			local inView = dist <= (if isLoud then Config.Vision.LoudNoticeRange else Config.Vision.NoticeRange)
 				or recentlyAware
 				or look:Dot(Util.safeUnit(delta, look)) >= FOV_COS
 			if inView then
@@ -7142,6 +7160,7 @@ local LANDMARK_NAMES = {
 	{ "Trailers", "the trailer park" }, { "BigHouses", "the hills" }, { "Houses", "the suburbs" },
 	{ "Mugs Coffee", "Mugs Coffee" }, { "EstateAgency", "the estate agency" }, { "BB&B", "the gun store" },
 	{ "PetrolShop", "the gas station" }, { "Car Park", "the parking garage" }, { "Crane", "the construction site" },
+	{ "City Jail", "the city jail" }, { "Courthouse", "the courthouse" }, -- v240
 }
 
 local function buildLandmarks()
@@ -7159,6 +7178,11 @@ local function buildLandmarks()
 end
 
 function Justice.placeName(pos: Vector3): string
+	-- v240: inside a mapped building, say which room ("inside the police station sally port")
+	if Justice.Facilities then
+		local ok, inside = pcall(Justice.Facilities.describe, pos)
+		if ok and inside then return inside end
+	end
 	local best, bestD = nil, 450
 	for _, l in landmarks do
 		local d = Util.flat(l.pos - pos).Magnitude
@@ -10471,7 +10495,12 @@ end
 
 -- Arrest someone. `officer` is the arresting player (nil = AI police).
 function Justice.jail(player: Player, officer: Player?, preferredTransport: any?)
-	if custody[player] or inPrison(player) or not player.Parent then
+	-- v241: an inmate arrested for a crime inside the prison goes to solitary
+	if inPrison(player) and player.Parent and not custody[player] then
+		PrisonFlow.solitaryForCrime(player)
+		return
+	end
+	if custody[player] or inPrison(player) or not player.Parent or PrisonFlow.hq[player] then
 		return
 	end
 	local p = Heat.get(player)
@@ -10481,6 +10510,25 @@ function Justice.jail(player: Player, officer: Player?, preferredTransport: any?
 	local fac = pickFacility(stars, keys)
 	local secs = math.floor(sentenceFor(stars, list) * (if fac then fac.cfg.SentenceScale or 1 else 1))
 	local text = chargesText(list)
+	-- v241 arrest scene: hands up before the cuffs = complied
+	local scene = { complied = p ~= nil and p.surrendered == true, pos = nil :: Vector3? }
+	do local _,_,r=Util.charInfo(player); scene.pos = r and r.Position end
+	-- v242: turned themselves in at the HQ front desk = complied + shorter time
+	scene.turnedIn = player:GetAttribute("TurnedIn") == true
+	player:SetAttribute("TurnedIn", nil)
+	if scene.turnedIn then scene.complied = true end
+	scene.route = PrisonFlow.arrestRoute(player, stars, keys, scene.pos)
+	if scene.complied then secs = math.floor(secs * (JCFG.CompliedScale or 1)) end
+	if scene.turnedIn then secs = math.floor(secs * (JCFG.TurnInScale or 0.7)) end
+	-- v242: the permanent record; repeat offenders get longer
+	if Justice.Records then
+		local okR, idx = pcall(Justice.Records.addArrest, player, { charges = text, stars = stars, route = scene.route,
+			complied = scene.complied, turnedIn = scene.turnedIn, where = Justice.placeName(scene.pos or Vector3.zero) })
+		if okR then scene.recIndex = idx end
+		local priors = Justice.Records.priorArrests(player)
+		if priors > 0 then secs = math.floor(secs * math.min(2, 1 + (JCFG.RepeatOffenderStep or 0.15) * priors)) end
+		if scene.turnedIn then Justice.Records.note(player, "turnedIn") end
+	end
 	-- Preserve the pre-arrest team now.  v90 waited until housing, by which time
 	-- the player could already be on Prisoners and release lost the real team.
 	if player.Team and player.Team.Name~=JCFG.PrisonerTeam and not inmateTeamColors[player.Team.Name] then previousTeam[player]=player.Team end
@@ -10512,7 +10560,9 @@ function Justice.jail(player: Player, officer: Player?, preferredTransport: any?
 		local n = (tonumber(officer:GetAttribute("Arrests")) or 0) + 1
 		officer:SetAttribute("Arrests", n)
 	end
-	radio(string.format("%s in custody (%s) - going to %s", player.Name, if officer then officer.Name else "patrol", if fac then fac.name else "prison"), nil, 0)
+	radio(string.format("%s in custody (%s) - going to %s", player.Name, if officer then officer.Name else "patrol",
+		if scene.route == "HQ" or scene.route == "HQThenPrison" then "the police station" elseif fac then fac.name else "prison"), nil, 0)
+	PrisonFlow.arrestScene(player, scene) -- frisk (before takeGuns, so the guns are listed), Miranda
 	takeGuns(player)
 
 	task.spawn(function()
@@ -10521,6 +10571,52 @@ function Justice.jail(player: Player, officer: Player?, preferredTransport: any?
 			print("[CustodyDiag] RESET RECOVERY owns post-arrest processing "..player.Name)
 			return
 		end
+		-- v241: minor cases are held at Police HQ (their own custody leg, not the prison pipeline)
+		local solo = not sharedTransportOwner[player] and not sharedTransportCompanion[player]
+		if scene.route == "HQ" and solo then
+			local hqSecs = math.clamp(math.floor(secs * (JCFG.HQHoldScale or 0.5)), 20, JCFG.HQHoldMax or 300)
+			local okHQ, errHQ = pcall(PrisonFlow.hqCustody, player, hqSecs, text,
+				{ mode = "minor", stars = stars, complied = scene.complied, turnedIn = scene.turnedIn, recIndex = scene.recIndex })
+			if okHQ and errHQ ~= false then return end
+			warn("[Custody] HQ custody failed for "..player.Name.." ("..tostring(errHQ)..") - prison flow instead")
+			PrisonFlow.hq[player] = nil
+			custody[player] = true
+			player:SetAttribute("BookingState","Arrested")
+		elseif scene.route == "HQThenPrison" and solo then
+			-- v242: serious cases are booked at HQ first; the prison transport then leaves from HQ
+			local caseData = bookingCase[player]
+			local okHQ, res = pcall(PrisonFlow.hqCustody, player, secs, text,
+				{ mode = "transfer", stars = stars, complied = scene.complied, turnedIn = scene.turnedIn, recIndex = scene.recIndex })
+			if okHQ and res == true then return end -- escaped / left during the HQ stop
+			if not okHQ or res ~= "transfer" then
+				warn("[Custody] HQ booking stop failed for "..player.Name.." ("..tostring(res)..") - straight to prison")
+			elseif PrisonFlow.hq[player] then
+				-- v244: City Jail transfer holding, then the scheduled prison transfer
+				local tOpts = { recIndex = scene.recIndex, keys = keys, stars = stars,
+					priors = if Justice.Records then Justice.Records.priorArrests(player) else 0 }
+				local okT, resT = pcall(PrisonFlow.transferHold, player, text, tOpts)
+				if okT and resT == true then return end
+				if not okT then warn("[Custody] transfer holding failed for "..player.Name..": "..tostring(resT)) end
+				-- v246/v249: the interview changes the case (deals, false statements)
+				local ir = tOpts.result
+				if ir then
+					secs = math.max(20, math.floor(secs * (ir.secsScale or 1)))
+					if ir.extraCharges and #ir.extraCharges > 0 then text = text .. ", " .. table.concat(ir.extraCharges, ", ") end
+					if caseData then caseData.secs = secs; caseData.text = text end
+					player:SetAttribute("CaseCharges", text)
+					print(("[Custody] CASE after interview %s: %ds, %s"):format(player.Name, secs, text))
+				end
+			end
+			if not player.Parent then return end
+			PrisonFlow.hq[player] = nil
+			player:SetAttribute("CustodySite", nil)
+			player:SetAttribute("HQHoldEnds", nil)
+			custody[player] = true
+			bookingCase[player] = caseData
+			player:SetAttribute("BookingState","Arrested")
+			cuff(player)
+		end
+		if scene.route ~= "HQ" and Justice.Records then pcall(Justice.Records.setOutcome, player, scene.recIndex, "Prison") end
 		print(("[PoliceSystem] CUSTODY: %s stars=%d facility=%s"):format(player.Name,stars,fac and fac.name or "NONE"))
 		local owner=sharedTransportOwner[player]
 		if owner then
@@ -10579,6 +10675,819 @@ local function clearJusticeState(player: Player)
 	bookingCase[player]=nil;bookingBusy[player]=nil;housingAssignment[player]=nil
 	PrisonFlow.escortCollision(player,false);PrisonFlow.waiters[player]=nil;PrisonFlow.claimCharacters[player]=nil;PrisonFlow.rooms[player]=nil;PrisonFlow.reserved[player]=nil;PrisonFlow.jobs[player]=nil;player:SetAttribute("CustodyOwner",nil);player:SetAttribute("CustodyAutoMove",nil)
 	if PrisonFlow.pending[player] then PrisonFlow.pending[player]:despawn("custody ended");PrisonFlow.pending[player]=nil end
+	-- v248: co-defendants may chat again once custody is over
+	if Justice.Interrogation then pcall(Justice.Interrogation.isolate,player,false) end
+end
+
+---------------------------------------------------------------------------
+-- v241 ARREST SCENE + ROUTING + POLICE HQ CUSTODY
+--   escapee -> prison; felony / > HQMaxStars -> prison (v242 adds the HQ booking stop);
+--   minor -> Police HQ holding (if mapped); inmate arrested inside -> solitary.
+-- HQ detainees are tracked in PrisonFlow.hq, NOT custody[], so none of the prison
+-- intake / reset-recovery code touches them. Logs: [Custody] ROUTE / ARREST SCENE / HQ.
+---------------------------------------------------------------------------
+PrisonFlow.hq = setmetatable({}, {__mode="k"})
+
+function PrisonFlow.arrestRoute(player: Player, stars: number, keys: {[string]: boolean}, pos: Vector3?): string
+	local F = Justice.Facilities
+	local felony = false
+	for k in keys do if JCFG.Felonies[k] then felony = true end end
+	local route, why
+	local hqOk = F and F.isMapped("PoliceHQ") and F.zone("PoliceHQ", "HoldingCell", true)
+	if keys.PrisonEscape then route, why = "Prison", "escapee"
+	elseif not hqOk then route, why = "Prison", "no Police HQ map"
+	elseif felony or stars > (JCFG.HQMaxStars or 2) then route, why = "HQThenPrison", "serious case: booked at HQ, then prison" -- v242
+	else route, why = "HQ", "minor case" end
+	player:SetAttribute("ArrestRoute", route)
+	print(("[Custody] ROUTE %s -> %s (%s, stars=%d)"):format(player.Name, route, why, stars))
+	return route
+end
+
+-- comply / resist, frisk + seize contraband, Miranda; PrisonFlow.onArrestScene(player, scene) is the lawyer hook
+function PrisonFlow.arrestScene(player: Player, scene: any)
+	local seized = {}
+	for _, container in { player:FindFirstChildOfClass("Backpack"), player.Character, player:FindFirstChild("StarterGear") } do
+		if container then
+			for _, t in container:GetChildren() do
+				if t:IsA("Tool") then
+					local own = container.Name ~= "StarterGear"
+					if Util.isGun(t) and not t:GetAttribute("Issued") then
+						if own then table.insert(seized, t.Name) end
+					elseif JCFG.SeizeTools and JCFG.SeizeTools[t.Name] then
+						if own then table.insert(seized, t.Name) end
+						t:Destroy()
+					end
+				end
+			end
+		end
+	end
+	player:SetAttribute("ArrestCompliance", if scene.complied then "Complied" else "Resisted")
+	player:SetAttribute("SeizedProperty", if #seized > 0 then table.concat(seized, ", ") else nil)
+	print(("[Custody] ARREST SCENE %s complied=%s seized=[%s] route=%s"):format(player.Name, tostring(scene.complied), table.concat(seized, ","), tostring(scene.route)))
+	task.spawn(function()
+		task.wait(0.8)
+		tell(player, "Custody", if scene.complied then "You complied - the officers note your cooperation" else "You resisted - the officers pin you down")
+		task.wait(1.4)
+		tell(player, "Custody", if #seized > 0 then "Frisked - seized: " .. table.concat(seized, ", ") else "Frisked - nothing found")
+		task.wait(1.6)
+		tell(player, "Custody", "You have the right to remain silent. Anything you say can and will be used against you. You have the right to an attorney.")
+	end)
+	if PrisonFlow.onArrestScene then pcall(PrisonFlow.onArrestScene, player, scene) end
+end
+
+function PrisonFlow.solitaryForCrime(player: Player)
+	if Heat.get(player) then Heat.clear(player, "Busted") end
+	mirror(player, 0)
+	charges[player] = nil
+	crimeKeys[player] = nil
+	print(("[Custody] ROUTE %s -> Solitary (crime inside the prison)"):format(player.Name))
+	local X = PrisonFlow.extras
+	if X and X.solitaryPlayer then
+		task.spawn(X.solitaryPlayer, player, "a crime committed inside the prison")
+	else
+		tell(player, "Custody", "Written up for a crime inside the prison")
+	end
+end
+
+function PrisonFlow.hqEnd(player: Player, how: string)
+	local site = (PrisonFlow.hq[player] or {}).site
+	PrisonFlow.hq[player] = nil
+	clearJusticeState(player)
+	player:SetAttribute("CustodySite", nil)
+	player:SetAttribute("HQHoldEnds", nil)
+	local t = releaseTargetTeam(player)
+	previousTeam[player] = nil
+	if t then player.Neutral = false; player.Team = t end
+	if how == "released" then returnGuns(player) else heldGuns[player] = nil end
+	uncuff(player)
+	tell(player, "Released", how)
+	tell(player, "Custody", if how ~= "released" then "You escaped from police custody!"
+		elseif site == "CityJail" then "Released from the City Jail" else "Released from the police station")
+	print(("[Custody] HQ END %s (%s)"):format(player.Name, how))
+end
+
+-- v241b: walk a cuffed prisoner inside a multi-floor building. walkPrisoner's ground
+-- snap casts down from ~9 studs above the body, which lands on the slab of the floor
+-- ABOVE in the HQ (players ended up in the ceiling two floors up). This follows the
+-- pathfinding waypoints' own heights, only probes just below the feet, and teleports
+-- the prisoner to the goal when there's no path or the walk times out.
+function PrisonFlow.hqWalk(player: Player, goal: Vector3, escort: any?, maxTime: number, alive: () -> boolean): string
+	local _, _, root = Util.charInfo(player)
+	if not root then return "no root" end
+	local function place(pos: Vector3)
+		root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+	end
+	local path = PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = false, WaypointSpacing = 3 })
+	local ok = pcall(function() path:ComputeAsync(root.Position - Vector3.new(0, 3, 0), goal) end)
+	if not ok or path.Status ~= Enum.PathStatus.Success then
+		place(goal)
+		return "teleported (no path)"
+	end
+	local started = os.clock()
+	for _, wp in path:GetWaypoints() do
+		local target = wp.Position + Vector3.new(0, 3, 0) -- waypoints sit on the floor; the root is 3 above
+		local last = os.clock()
+		while alive() do
+			if os.clock() - started > maxTime then
+				place(goal)
+				return "teleported (timeout)"
+			end
+			local now = os.clock(); local dt = now - last; last = now
+			local delta = target - root.Position
+			if delta.Magnitude < 1.2 then break end
+			local step = delta.Unit * math.min(delta.Magnitude, 7 * dt)
+			local nextPos = root.Position + step
+			root.CFrame = CFrame.lookAt(nextPos, Vector3.new(target.X, nextPos.Y, target.Z))
+			if escort and escort.alive then
+				local back = Util.safeUnit(Util.flat(delta), Vector3.zAxis)
+				escort:moveTo(root.Position - back * 3 + root.CFrame.RightVector * 1.5, false)
+				escort:updateAnim()
+			end
+			RunService.Heartbeat:Wait()
+		end
+		if not alive() then return "cancelled" end
+	end
+	if (root.Position - (goal + Vector3.new(0, 3, 0))).Magnitude > 6 then
+		place(goal)
+		return "teleported (ended off target)"
+	end
+	return "walked"
+end
+
+-- v241c: the cruiser ride to HQ, owned by PoliceSystem (PrisonExtras' X.ride only exists
+-- once the prison nav has built, ~50 s after start, so early arrests were teleported)
+function PrisonFlow.hqRide(player: Player, dest: Vector3, alive: () -> boolean): string
+	local char, hum, root = Util.charInfo(player)
+	if not char or not hum or not root then return "no character" end
+	local pickup: Vector3? = nil
+	local bestD = math.huge
+	for _, id in RoadGraph.nodesNear(root.Position, 160) do
+		local p = RoadGraph.nodePos(id)
+		if p then
+			local d = Util.flat(p - root.Position).Magnitude
+			if d >= 10 and d < bestD then pickup, bestD = p, d end
+		end
+	end
+	if not pickup then return "no road near the arrest" end
+	local g = Util.groundAt(pickup, 30, 80)
+	if g then pickup = Vector3.new(pickup.X, g.Y, pickup.Z) end
+	local van = Van.spawnPatrol(pickup, 1, true, Util.safeUnit(Util.flat(dest - pickup), Vector3.zAxis))
+	if not van then return "no cruiser" end
+	van.driveToken += 1; van.mode = "respond"; van.crewTotal = 1; van.crewOut = 0
+	van.transporting = true; van.parked = false
+	van.model:SetAttribute("CustodyTransport", true)
+	van.parts.ap.Enabled = true; van.parts.ao.Enabled = true
+	for _, part in van.model:GetDescendants() do
+		if part:IsA("BasePart") then part.Anchored = false; part.CanCollide = false; part.CanTouch = false end
+	end
+	pcall(function() van.body:SetNetworkOwner(nil) end)
+	van.parts.ap.Position = van.body.Position; van.parts.ao.CFrame = van.body.CFrame.Rotation
+	local body = van.body
+	local W = van.cfg.Size.X
+	-- the arresting officer walks them to the rear door, then they're seated and welded in
+	local door = body.CFrame:PointToWorldSpace(Vector3.new(-(W / 2 + 2.2), 0, 1.5))
+	local cop = escortCop(door + Util.safeUnit(root.Position - door, Vector3.zAxis) * 4, root.Position - door)
+	tell(player, "Custody", "Under arrest - being placed in the car")
+	walkPrisoner(player, door, cop, 12, alive)
+	if cop then cop:despawn("boarded") end
+	local function finish()
+		task.delay(6, function() van.transporting = false; pcall(function() van:destroy() end) end)
+	end
+	if not alive() then finish(); return "cancelled" end
+	root.Anchored = false
+	root.CFrame = body.CFrame * CFrame.new(-1.3, body.Size.Y / 2 + 1.1, 2.4); hum.Sit = true
+	custodyTransportGhost(char, true)
+	local weld = Instance.new("WeldConstraint"); weld.Name = "HQRideSeat"; weld.Part0 = body; weld.Part1 = root; weld.Parent = body
+	tell(player, "Custody", "Being driven to the police station")
+	radio(("Transporting %s to the police station"):format(player.Name), nil, 0)
+	local done = false
+	local started = van:driveTo(dest, false, function() done = true end)
+	local deadline = os.clock() + 180
+	local lastPos, lastMove = body.Position, os.clock()
+	local how = "drove"
+	while started and not done and alive() and player.Character == char and not van.dead do
+		if Util.flat(body.Position - dest).Magnitude < 25 then break end
+		if os.clock() > deadline then how = "timeout"; break end
+		if Util.flat(body.Position - lastPos).Magnitude > 4 then lastPos, lastMove = body.Position, os.clock() end
+		if os.clock() - lastMove > 15 then how = "stuck"; break end
+		task.wait(0.5)
+	end
+	if not started then how = "no route" end
+	-- v245a: never leave the cruiser stuck (closed gate, bad road): teleport the car,
+	-- with the prisoner still welded in, onto the destination road and finish there
+	if (how == "stuck" or how == "timeout" or how == "no route") and alive() and not van.dead and body.Parent then
+		local look = Util.safeUnit(Util.flat(dest - body.Position), body.CFrame.LookVector)
+		local g = Util.groundAt(dest, 30, 80)
+		local at = Vector3.new(dest.X, (if g then g.Y else dest.Y) + body.Size.Y / 2 + 1, dest.Z)
+		van.driveToken += 1
+		van.parts.ap.Position = at; van.parts.ao.CFrame = CFrame.lookAt(Vector3.zero, look)
+		body.CFrame = CFrame.lookAt(at, at + look)
+		body.AssemblyLinearVelocity = Vector3.zero
+		print(("[Custody] RIDE TELEPORT %s (%s) -> %s"):format(player.Name, how, tostring(dest)))
+		how = "drove"
+		task.wait(0.3)
+	end
+	weld:Destroy()
+	if player.Character == char then pcall(custodyTransportGhost, char, false); hum.Sit = false end
+	-- step out beside the cruiser (or at the road point if it never got there)
+	local out = if how == "drove" then body.CFrame:PointToWorldSpace(Vector3.new(-(W / 2 + 2.8), 0, 0)) else dest
+	local og = Util.groundAt(out, 6, 30)
+	root.CFrame = CFrame.new((og or out) + Vector3.new(0, 3, 0))
+	finish()
+	return how
+end
+
+-- v242: "Turn yourself in" prompt at the HQ front desk (TurnInPoint, or the Lobby centre)
+function PrisonFlow.setupTurnIn()
+	local F = Justice.Facilities
+	if not F or not F.isMapped("PoliceHQ") then return end
+	local pos, _, how = F.point("PoliceHQ", "TurnInPoint", true)
+	if not pos then return end
+	local hit = Util.cast(pos + Vector3.new(0, 1, 0), Vector3.new(0, -9, 0), Util.playerCharacters(), true)
+	local floor = if hit then hit.Position else pos - Vector3.new(0, 3, 0)
+	local old = Workspace:FindFirstChild("HQTurnInDesk")
+	if old then old:Destroy() end
+	local part = Instance.new("Part")
+	part.Name = "HQTurnInDesk"
+	part.Size = Vector3.new(2, 4, 2)
+	part.Transparency = 1
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+	part.CFrame = CFrame.new(floor + Vector3.new(0, 2, 0))
+	part.Parent = Workspace
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ActionText = "Turn yourself in"
+	prompt.ObjectText = "Police front desk"
+	prompt.HoldDuration = 1.5
+	prompt.MaxActivationDistance = 10
+	prompt.RequiresLineOfSight = false
+	prompt.Parent = part
+	prompt.Triggered:Connect(function(player: Player)
+		if custody[player] or inPrison(player) or PrisonFlow.hq[player] then return end
+		local stars = tonumber(player:GetAttribute("WantedStars")) or 0
+		if stars <= 0 then
+			tell(player, "Notice", "You're not wanted - nothing to turn yourself in for")
+			return
+		end
+		print(("[Custody] TURN IN %s at the HQ front desk (%d stars)"):format(player.Name, stars))
+		player:SetAttribute("TurnedIn", true)
+		Justice.jail(player, nil)
+	end)
+	print(("[Custody] HQ turn-in desk ready (%s)"):format(tostring(how)))
+end
+
+-- returns false if it couldn't start (the caller falls back to the prison flow)
+-- v242 opts = { mode = "minor" | "transfer", stars, complied, turnedIn, recIndex }
+--   minor:    holding -> booking desk -> cite & release (first-timers) or hold the rest -> walked out
+--   transfer: holding -> booking desk -> returns "transfer" (the prison transport takes over)
+function PrisonFlow.hqCustody(player: Player, secs: number, text: string, opts: any?): any
+	opts = opts or {}
+	local F = Justice.Facilities
+	local hold = F and F.zone("PoliceHQ", "HoldingCell", true)
+	if not hold then return false end
+	-- every goal is a FLOOR position, found with a short ray just below it (never from above)
+	local function floorAt(p: Vector3): Vector3
+		local hit = Util.cast(p + Vector3.new(0, 1, 0), Vector3.new(0, -9, 0), Util.playerCharacters(), true)
+		return if hit then hit.Position else p
+	end
+	local holdFloor = floorAt(hold.center + Vector3.new(0, 1, 0))
+	local holdPos = holdFloor + Vector3.new(0, 3, 0)
+	local dropFloor = floorAt(F.point("PoliceHQ", "VehicleDropoff", true) or holdFloor)
+	local exitFloor = floorAt(F.point("PoliceHQ", "TurnInPoint", true) or dropFloor)
+	-- leave the prison pipeline: HQ owns this custody from here
+	custody[player] = nil
+	bookingCase[player] = nil
+	local rec = { secs = secs, text = text, hold = holdPos }
+	PrisonFlow.hq[player] = rec
+	player:SetAttribute("CustodySite", "HQ")
+	player:SetAttribute("BookingState", "HQTransport")
+	local function alive(): boolean return player.Parent ~= nil and PrisonFlow.hq[player] == rec end
+	local function openHQDoors(secsOpen: number)
+		local station = Workspace:FindFirstChild("PoliceStation")
+		if station and openFor then
+			for _, c in station:GetChildren() do
+				if c:IsA("Model") and (c.Name == "RestrictedDoor" or c.Name == "CellDoor") then pcall(openFor, c, secsOpen) end
+			end
+		end
+		for _, d in F.doors("PoliceHQ") do
+			if d.target and openFor then pcall(openFor, d.target, secsOpen) end
+		end
+	end
+
+	-- the ride: a cruiser to the road in front of the HQ drop-off
+	local road = dropFloor
+	local node = RoadGraph.ready and RoadGraph.nearest(dropFloor, 300)
+	if node then road = RoadGraph.nodePos(node) or dropFloor end
+	local okRide, rode = true, "already at HQ"
+	do
+		local _, _, rNow = Util.charInfo(player)
+		if not rNow or Util.flat(rNow.Position - dropFloor).Magnitude > 150 then
+			okRide, rode = pcall(PrisonFlow.hqRide, player, road, alive)
+		end
+	end
+	if rode == "already at HQ" then
+		-- turned themselves in at the front desk: no ride
+	elseif not okRide or (rode ~= "drove" and rode ~= "cancelled") then
+		-- no drive possible: put them at the road in front of HQ so the walk-in still happens
+		local _, _, r = Util.charInfo(player)
+		if r and alive() then r.CFrame = CFrame.new(road + Vector3.new(0, 3, 0)) end
+	end
+	if not alive() then return true end
+	cuff(player)
+	print(("[Custody] HQ ARRIVAL %s (ride=%s)"):format(player.Name, tostring(rode)))
+
+	-- walk in: drop-off -> holding cell
+	openHQDoors(40)
+	local _, _, r0 = Util.charInfo(player)
+	local cop = r0 and nameEscort(escortCop(r0.Position + Vector3.new(3, 0, 3), dropFloor - r0.Position), "BOOKING OFFICER")
+	tell(player, "Custody", "Being walked into the police station")
+	local legA = PrisonFlow.hqWalk(player, dropFloor, cop, 40, alive)
+	local legB = PrisonFlow.hqWalk(player, holdFloor, cop, 60, alive)
+	if cop then cop:despawn("delivered") end
+	if not alive() then return true end
+	-- make sure they really are in the holding cell (right floor, inside the polygon)
+	do
+		local _, _, rIn = Util.charInfo(player)
+		if rIn and not F.inZone(hold, rIn.Position - Vector3.new(0, 3, 0), 1) then
+			rIn.CFrame = CFrame.new(holdPos)
+			legB = legB .. " + placed in cell"
+		end
+	end
+	print(("[Custody] HQ WALK %s sallyport=%s holding=%s"):format(player.Name, legA, legB))
+
+	local Rec = Justice.Records
+	local deskFloor = floorAt(F.point("PoliceHQ", "BookingDesk", true) or holdFloor)
+	do local c = player.Character; rec.char = c end
+
+	-- hold in the cell for `seconds` -> "done" | "escaped" | "gone"
+	local function holdIn(seconds: number, label: string): string
+		local ends = os.time() + seconds
+		player:SetAttribute("BookingState", "HQHolding")
+		player:SetAttribute("HQHoldEnds", ends)
+		uncuff(player)
+		tell(player, "Jailed", seconds, text, 0)
+		tell(player, "Custody", label)
+		do
+			local _, _, rh = Util.charInfo(player)
+			print(("[Custody] HQ HOLD %s %ds at %s pos=%s cell=%s"):format(player.Name, seconds, hold.name,
+				tostring(rh and rh.Position), tostring(holdPos)))
+		end
+		-- v241c escape check: only after a 5 s settle, only when OUTSIDE every Police HQ zone
+		-- and far from holding, for 3 checks in a row (a single bad reading never counts)
+		local graceUntil = os.clock() + 5
+		local outside = 0
+		while os.time() < ends do
+			if not alive() then return "gone" end
+			local char, h, r = Util.charInfo(player)
+			if char and h and r and h.Health > 0 then
+				if rec.char ~= char then
+					-- a new character (reset) goes back to the holding cell
+					rec.char = char
+					r.CFrame = CFrame.new(holdPos)
+					uncuff(player)
+					graceUntil = os.clock() + 5
+					outside = 0
+				elseif os.clock() > graceUntil then
+					local feet = r.Position - Vector3.new(0, 3, 0)
+					local _, inBuilding = F.zoneAt(feet)
+					local far = Util.flat(r.Position - holdPos).Magnitude > (JCFG.EscapeRadius or 90) or math.abs(r.Position.Y - holdPos.Y) > 40
+					if far and not (inBuilding and inBuilding.type == "PoliceHQ") then
+						outside += 1
+						if outside >= 3 then
+							local at = r.Position
+							print(("[Custody] HQ ESCAPE %s at %s (%.0f studs from holding)"):format(player.Name, tostring(at), Util.flat(at - holdPos).Magnitude))
+							if Rec then Rec.setOutcome(player, opts.recIndex, "Escaped") end
+							PrisonFlow.hqEnd(player, "escaped")
+							Heat.addCrime(player, "PrisonEscape", at)
+							return "escaped"
+						end
+					else
+						outside = 0
+					end
+				end
+			end
+			task.wait(1)
+		end
+		return "done"
+	end
+	-- cuffed walk between HQ spots with an officer
+	local function escortTo(goal: Vector3, title: string, say: string): string
+		cuff(player)
+		openHQDoors(30)
+		local _, _, rw = Util.charInfo(player)
+		local c = rw and nameEscort(escortCop(rw.Position + Vector3.new(3, 0, 3), goal - rw.Position), title)
+		tell(player, "Custody", say)
+		local how = PrisonFlow.hqWalk(player, goal, c, 45, alive)
+		if c then c:despawn("done") end
+		return how
+	end
+	local function walkOut(say: string)
+		player:SetAttribute("BookingState", "HQRelease")
+		escortTo(exitFloor, "RELEASE OFFICER", say)
+		if alive() then PrisonFlow.hqEnd(player, "released") end
+	end
+
+	-- 1. holding cell (30-60 s) before booking
+	local preHold = math.clamp(math.floor(secs * 0.4), 30, 60)
+	if holdIn(preHold, ("Holding cell - waiting to be booked (%ds)"):format(preHold)) ~= "done" then return true end
+
+	-- 2. booking desk: mugshot, fingerprints, property, record check
+	player:SetAttribute("BookingState", "HQBooking")
+	local legC = escortTo(deskFloor, "BOOKING OFFICER", "Walked to the booking desk")
+	if not alive() then return true end
+	local priors = if Rec then Rec.priorArrests(player) else 0
+	for _, line in {
+		"Booking: mugshot taken",
+		"Booking: fingerprints scanned",
+		"Booking: property logged - " .. tostring(player:GetAttribute("SeizedProperty") or "nothing"),
+		if priors > 0 and Rec then "Record check: " .. Rec.summary(player) else "Record check: no priors",
+	} do
+		if not alive() then return true end
+		tell(player, "Custody", line)
+		task.wait(1.8)
+	end
+	print(("[Custody] HQ BOOKED %s desk=%s priors=%d mode=%s"):format(player.Name, legC, priors, tostring(opts.mode)))
+
+	-- 3. decision
+	if opts.mode == "transfer" then
+		tell(player, "Custody", "Booked - being transferred to the State Prison")
+		return "transfer"
+	end
+	local stars = tonumber(opts.stars) or 1
+	local citable = (priors == 0 and (stars <= 1 or opts.complied))
+		or (opts.turnedIn == true and priors <= 1)
+	if citable then
+		local fine = math.floor((JCFG.CiteFineBase or 250) * stars * (if opts.turnedIn then 0.5 else 1))
+		if charge(player, fine) then
+			if Rec then Rec.setOutcome(player, opts.recIndex, "Cited", { fine = fine }) end
+			print(("[Custody] HQ DECISION %s cite & release, fine $%d"):format(player.Name, fine))
+			tell(player, "Custody", ("Cited and released - $%d fine paid. Court date to follow."):format(fine))
+			walkOut("Being walked out to the lobby")
+			return true
+		end
+		tell(player, "Custody", ("You can't pay the $%d fine - held instead"):format(fine))
+	end
+	local rest = math.max(15, secs - preHold)
+	-- v243: held sentences are served at the City Jail when it's mapped (under 30 real minutes)
+	if F.isMapped("CityJail") and F.zone("CityJail", "JailCell", true) and rest <= (JCFG.CityJailMaxSeconds or 1800) then
+		if Rec then Rec.setOutcome(player, opts.recIndex, "CityJail", { seconds = rest }) end
+		print(("[Custody] HQ DECISION %s -> City Jail %ds (priors=%d stars=%d)"):format(player.Name, rest, priors, stars))
+		tell(player, "Custody", ("Sentenced to %ds at the City Jail - transport arranged"):format(rest))
+		return PrisonFlow.jailCustody(player, rest, text, opts)
+	end
+	if Rec then Rec.setOutcome(player, opts.recIndex, "HeldHQ", { seconds = secs }) end
+	print(("[Custody] HQ DECISION %s held %ds (priors=%d stars=%d)"):format(player.Name, rest, priors, stars))
+	escortTo(holdFloor, "BOOKING OFFICER", "Back to the holding cell")
+	do
+		local _, _, rIn = Util.charInfo(player)
+		if rIn and not F.inZone(hold, rIn.Position - Vector3.new(0, 3, 0), 1) then rIn.CFrame = CFrame.new(holdPos) end
+	end
+	if holdIn(rest, ("Held at the police station for %ds (%s)"):format(rest, text)) ~= "done" then return true end
+	walkOut("Time served - being walked out")
+	return true
+end
+
+---------------------------------------------------------------------------
+-- v243 CITY JAIL: short sentences. Driven from HQ, walked in through the sally port
+-- to a free JailCell; half the time in the cell, half in the day room; walked out
+-- through the release area. Same robust escape check as HQ (outside every City Jail
+-- zone and far away, 3 readings in a row). Tracked in PrisonFlow.hq (site = CityJail).
+---------------------------------------------------------------------------
+PrisonFlow.jailCells = {} -- [zone instance] = player
+
+function PrisonFlow.jailCustody(player: Player, secs: number, text: string, opts: any?): any
+	opts = opts or {}
+	local F = Justice.Facilities
+	local Rec = Justice.Records
+	local rec = PrisonFlow.hq[player]
+	if not F or not rec then return false end
+	local function floorAt(p: Vector3): Vector3
+		local hit = Util.cast(p + Vector3.new(0, 1, 0), Vector3.new(0, -9, 0), Util.playerCharacters(), true)
+		return if hit then hit.Position else p
+	end
+	-- a free cell (another player isn't in it)
+	local cell = nil
+	for _, z in F.zones("CityJail", "JailCell", true) do
+		local who = PrisonFlow.jailCells[z.instance]
+		if not who or not who.Parent or PrisonFlow.hq[who] == nil or who == player then cell = z; break end
+	end
+	cell = cell or F.zone("CityJail", "JailCell", true)
+	if not cell then return false end
+	PrisonFlow.jailCells[cell.instance] = player
+	local cellFloor = floorAt(cell.center + Vector3.new(0, 1, 0))
+	local cellPos = cellFloor + Vector3.new(0, 3, 0)
+	local dropFloor = floorAt(F.point("CityJail", "VehicleDropoff", true) or cellFloor)
+	local releaseFloor = floorAt(F.point("CityJail", "ReleasePoint", true) or dropFloor)
+	local day = F.zone("CityJail", "DayRoom", true)
+	local dayFloor = if day then floorAt(day.center + Vector3.new(0, 1, 0)) else cellFloor
+	rec.site = "CityJail"
+	rec.hold = cellPos -- respawnAnchor puts a reset here
+	player:SetAttribute("CustodySite", "CityJail")
+	player:SetAttribute("BookingState", "JailTransport")
+	local function alive(): boolean return player.Parent ~= nil and PrisonFlow.hq[player] == rec end
+	local function openJailDoors(secsOpen: number)
+		for _, d in F.doors("CityJail") do
+			if d.target and openFor then pcall(openFor, d.target, secsOpen) end
+		end
+	end
+	local function escortTo(goal: Vector3, title: string, say: string): string
+		cuff(player)
+		openJailDoors(30)
+		local _, _, rw = Util.charInfo(player)
+		local c = rw and nameEscort(escortCop(rw.Position + Vector3.new(3, 0, 3), goal - rw.Position), title)
+		tell(player, "Custody", say)
+		local how = PrisonFlow.hqWalk(player, goal, c, 45, alive)
+		if c then c:despawn("done") end
+		return how
+	end
+	-- the van ride from HQ
+	local road = dropFloor
+	local node = RoadGraph.ready and RoadGraph.nearest(dropFloor, 300)
+	if node then road = RoadGraph.nodePos(node) or dropFloor end
+	-- v245a: the ride ends on the road in front of the vehicle gate (FacilityGates
+	-- marks it); the officer walks them in through the gate from there
+	local gateFront: Vector3? = nil
+	for _, d in F.doors("CityJail") do
+		local front = d.instance and d.instance:GetAttribute("VehicleGateFront")
+		if typeof(front) == "Vector3" then gateFront = front; road = front; break end
+	end
+	if gateFront then
+		local gs = game:GetService("ServerScriptService"):FindFirstChild("FacilityGates")
+		local fn = gs and gs:FindFirstChild("OpenFacilityGates")
+		task.spawn(function()
+			-- keep the gate open while the prisoner is walked in from the road
+			for _ = 1, 12 do
+				if not alive() then break end
+				local _, _, rr = Util.charInfo(player)
+				if fn and rr and (rr.Position - gateFront).Magnitude < 70 then pcall(function() fn:Invoke(gateFront, 60, 12) end) end
+				task.wait(10)
+			end
+		end)
+	end
+	cuff(player)
+	local okRide, rode = pcall(PrisonFlow.hqRide, player, road, alive)
+	if not okRide or (rode ~= "drove" and rode ~= "cancelled") then
+		local _, _, r = Util.charInfo(player)
+		if r and alive() then r.CFrame = CFrame.new(road + Vector3.new(0, 3, 0)) end
+	end
+	if not alive() then return true end
+	print(("[Custody] JAIL ARRIVAL %s (ride=%s) cell=%s"):format(player.Name, tostring(rode), cell.name))
+	local legA = escortTo(dropFloor, "JAIL OFFICER", "Arrived at the City Jail - being walked in")
+	local legB = escortTo(cellFloor, "JAIL OFFICER", "Being placed in a cell")
+	if not alive() then return true end
+	do
+		local _, _, rIn = Util.charInfo(player)
+		if rIn and not F.inZone(cell, rIn.Position - Vector3.new(0, 3, 0), 1) then rIn.CFrame = CFrame.new(cellPos); legB ..= " + placed in cell" end
+	end
+	print(("[Custody] JAIL WALK %s sallyport=%s cell=%s"):format(player.Name, legA, legB))
+	rec.char = player.Character
+
+	-- serve time at `spot` for `seconds` -> "done" | "escaped" | "gone"
+	local function serve(seconds: number, spot: Vector3, state: string, label: string): string
+		local ends = os.time() + seconds
+		player:SetAttribute("BookingState", state)
+		player:SetAttribute("HQHoldEnds", ends)
+		rec.hold = spot
+		uncuff(player)
+		tell(player, "Jailed", seconds, text, 0)
+		tell(player, "Custody", label)
+		print(("[Custody] JAIL %s %s %ds"):format(state, player.Name, seconds))
+		local graceUntil = os.clock() + 5
+		local outside = 0
+		while os.time() < ends do
+			if not alive() then return "gone" end
+			local char, h, r = Util.charInfo(player)
+			if char and h and r and h.Health > 0 then
+				if rec.char ~= char then
+					rec.char = char
+					r.CFrame = CFrame.new(spot)
+					uncuff(player)
+					graceUntil = os.clock() + 5
+					outside = 0
+				elseif os.clock() > graceUntil then
+					local _, inBuilding = F.zoneAt(r.Position - Vector3.new(0, 3, 0))
+					local far = Util.flat(r.Position - spot).Magnitude > (JCFG.EscapeRadius or 90) or math.abs(r.Position.Y - spot.Y) > 40
+					if far and not (inBuilding and inBuilding.type == "CityJail") then
+						outside += 1
+						if outside >= 3 then
+							local at = r.Position
+							print(("[Custody] JAIL ESCAPE %s at %s"):format(player.Name, tostring(at)))
+							if Rec then Rec.setOutcome(player, opts.recIndex, "Escaped") end
+							PrisonFlow.jailCells[cell.instance] = nil
+							PrisonFlow.hqEnd(player, "escaped")
+							Heat.addCrime(player, "PrisonEscape", at)
+							return "escaped"
+						end
+					else
+						outside = 0
+					end
+				end
+			end
+			task.wait(1)
+		end
+		return "done"
+	end
+
+	local cellTime = math.max(10, math.floor(secs / 2))
+	if serve(cellTime, cellPos, "JailCell", ("City Jail cell - %ds"):format(cellTime)) ~= "done" then return true end
+	PrisonFlow.jailCells[cell.instance] = nil
+	if day then
+		escortTo(dayFloor, "JAIL OFFICER", "Day room time")
+		if not alive() then return true end
+		if serve(math.max(10, secs - cellTime), dayFloor + Vector3.new(0, 3, 0), "JailDayRoom", "Day room - you can move around") ~= "done" then return true end
+	end
+	player:SetAttribute("BookingState", "JailRelease")
+	escortTo(releaseFloor, "RELEASE OFFICER", "Time served - being walked out of the City Jail")
+	if alive() then PrisonFlow.hqEnd(player, "released") end
+	return true
+end
+
+---------------------------------------------------------------------------
+-- v244 PRISON TRANSFER: serious cases booked at HQ wait in City Jail transfer
+-- holding for the next scheduled transfer to the State Prison. The first prisoner
+-- to arrive starts the gather clock (BusGatherSeconds); everyone waiting when it
+-- runs out leaves together and goes through the normal prison transport + intake.
+-- Returns "bus" (prison flow takes over), true (escaped / left) or false (no City Jail).
+---------------------------------------------------------------------------
+PrisonFlow.bus = { departAt = nil :: number?, riders = {} :: {[Player]: boolean} }
+
+function PrisonFlow.transferHold(player: Player, text: string, opts: any?): any
+	opts = opts or {}
+	local F = Justice.Facilities
+	local Rec = Justice.Records
+	local rec = PrisonFlow.hq[player]
+	if not F or not rec or not F.isMapped("CityJail") then return false end
+	local function floorAt(p: Vector3): Vector3
+		local hit = Util.cast(p + Vector3.new(0, 1, 0), Vector3.new(0, -9, 0), Util.playerCharacters(), true)
+		return if hit then hit.Position else p
+	end
+	local holding = F.zone("CityJail", "TransferHolding", true) or F.zone("CityJail", "JailCell", true)
+	if not holding then return false end
+	local holdFloor = floorAt(holding.center + Vector3.new(0, 1, 0))
+	local holdPos = holdFloor + Vector3.new(0, 3, 0)
+	local dropFloor = floorAt(F.point("CityJail", "VehicleDropoff", true) or holdFloor)
+	local departFloor = floorAt(F.point("CityJail", "BusDeparture", true) or dropFloor)
+	rec.site = "CityJail"
+	rec.hold = holdPos
+	player:SetAttribute("CustodySite", "CityJail")
+	player:SetAttribute("BookingState", "JailTransport")
+	local function alive(): boolean return player.Parent ~= nil and PrisonFlow.hq[player] == rec end
+	local function escortTo(goal: Vector3, title: string, say: string): string
+		cuff(player)
+		for _, d in F.doors("CityJail") do
+			if d.target and openFor then pcall(openFor, d.target, 30) end
+		end
+		local _, _, rw = Util.charInfo(player)
+		local c = rw and nameEscort(escortCop(rw.Position + Vector3.new(3, 0, 3), goal - rw.Position), title)
+		tell(player, "Custody", say)
+		local how = PrisonFlow.hqWalk(player, goal, c, 45, alive)
+		if c then c:despawn("done") end
+		return how
+	end
+	-- van from HQ to the City Jail
+	local road = dropFloor
+	local node = RoadGraph.ready and RoadGraph.nearest(dropFloor, 300)
+	if node then road = RoadGraph.nodePos(node) or dropFloor end
+	-- v245a: the ride ends on the road in front of the vehicle gate (FacilityGates
+	-- marks it); the officer walks them in through the gate from there
+	local gateFront: Vector3? = nil
+	for _, d in F.doors("CityJail") do
+		local front = d.instance and d.instance:GetAttribute("VehicleGateFront")
+		if typeof(front) == "Vector3" then gateFront = front; road = front; break end
+	end
+	if gateFront then
+		local gs = game:GetService("ServerScriptService"):FindFirstChild("FacilityGates")
+		local fn = gs and gs:FindFirstChild("OpenFacilityGates")
+		task.spawn(function()
+			-- keep the gate open while the prisoner is walked in from the road
+			for _ = 1, 12 do
+				if not alive() then break end
+				local _, _, rr = Util.charInfo(player)
+				if fn and rr and (rr.Position - gateFront).Magnitude < 70 then pcall(function() fn:Invoke(gateFront, 60, 12) end) end
+				task.wait(10)
+			end
+		end)
+	end
+	cuff(player)
+	local okRide, rode = pcall(PrisonFlow.hqRide, player, road, alive)
+	if not okRide or (rode ~= "drove" and rode ~= "cancelled") then
+		local _, _, r = Util.charInfo(player)
+		if r and alive() then r.CFrame = CFrame.new(road + Vector3.new(0, 3, 0)) end
+	end
+	if not alive() then return true end
+	escortTo(dropFloor, "JAIL OFFICER", "City Jail - being walked to transfer holding")
+	if not alive() then return true end
+	-- v246: interrogation first (serious crimes, accomplices, thin evidence). Each
+	-- co-defendant gets their own room; the result is handed back in opts.result.
+	local IM = Justice.Interrogation
+	if IM and opts.keys then
+		local should, why = IM.shouldInterrogate(player, opts.keys, opts.stars or 3)
+		local room = if should then IM.reserveRoom(player) else nil
+		print(("[Custody] INTERROGATION %s: %s (%s)%s"):format(player.Name, tostring(should), why,
+			if should and not room then " - no free interview room" else ""))
+		if room then
+			local roomFloor = floorAt(room.center + Vector3.new(0, 1, 0))
+			escortTo(roomFloor, "DETECTIVE", "Taken to an interview room")
+			if alive() then
+				rec.hold = roomFloor + Vector3.new(0, 3, 0)
+				player:SetAttribute("BookingState", "Interrogation")
+				local det = nameEscort(escortCop(roomFloor + Vector3.new(4, 0, 0), Vector3.new(-1, 0, 0)), "DETECTIVE")
+				local okI, res = pcall(IM.run, player, { keys = opts.keys, priors = opts.priors, alive = alive })
+				if det then det:despawn("done") end
+				if okI then
+					opts.result = res
+					if Rec and res then
+						Rec.setOutcome(player, opts.recIndex, "Prison", { confessed = res.confessed, lawyered = res.lawyered,
+							deal = res.secsScale, named = table.concat(res.named or {}, ", ") })
+					end
+				else
+					warn("[Custody] interrogation error for " .. player.Name .. ": " .. tostring(res))
+				end
+			end
+			IM.releaseRoom(room)
+			if not alive() then return true end
+		end
+	end
+	local leg = escortTo(holdFloor, "JAIL OFFICER", "Transfer holding - waiting for the prison transfer")
+	if not alive() then return true end
+	do
+		local _, _, rIn = Util.charInfo(player)
+		if rIn and not F.inZone(holding, rIn.Position - Vector3.new(0, 3, 0), 1) then rIn.CFrame = CFrame.new(holdPos); leg ..= " + placed" end
+	end
+	-- join (or start) the next transfer
+	local bus = PrisonFlow.bus
+	if not bus.departAt or os.time() >= bus.departAt then
+		bus.departAt = os.time() + (JCFG.BusGatherSeconds or 120)
+		bus.riders = {}
+	end
+	bus.riders[player] = true
+	local departAt = bus.departAt :: number
+	print(("[Custody] TRANSFER HOLD %s at %s (%s) bus leaves in %ds"):format(player.Name, holding.name, leg, departAt - os.time()))
+	player:SetAttribute("BookingState", "TransferHolding")
+	player:SetAttribute("HQHoldEnds", departAt)
+	rec.char = player.Character
+	uncuff(player)
+	tell(player, "Jailed", departAt - os.time(), text, 0)
+	tell(player, "Custody", ("Transfer holding - the prison transfer leaves in %ds"):format(departAt - os.time()))
+	local graceUntil = os.clock() + 5
+	local outside = 0
+	while os.time() < departAt do
+		if not alive() then bus.riders[player] = nil; return true end
+		local char, h, r = Util.charInfo(player)
+		if char and h and r and h.Health > 0 then
+			if rec.char ~= char then
+				rec.char = char
+				r.CFrame = CFrame.new(holdPos)
+				uncuff(player)
+				graceUntil = os.clock() + 5
+				outside = 0
+			elseif os.clock() > graceUntil then
+				local _, inBuilding = F.zoneAt(r.Position - Vector3.new(0, 3, 0))
+				local far = Util.flat(r.Position - holdPos).Magnitude > (JCFG.EscapeRadius or 90) or math.abs(r.Position.Y - holdPos.Y) > 40
+				if far and not (inBuilding and inBuilding.type == "CityJail") then
+					outside += 1
+					if outside >= 3 then
+						local at = r.Position
+						print(("[Custody] TRANSFER ESCAPE %s at %s"):format(player.Name, tostring(at)))
+						if Rec then Rec.setOutcome(player, opts.recIndex, "Escaped") end
+						bus.riders[player] = nil
+						PrisonFlow.hqEnd(player, "escaped")
+						Heat.addCrime(player, "PrisonEscape", at)
+						return true
+					end
+				else
+					outside = 0
+				end
+			end
+		end
+		task.wait(1)
+	end
+	bus.riders[player] = nil
+	-- board: walked out to the departure point, the prison transport takes it from there
+	player:SetAttribute("BookingState", "TransferDeparture")
+	escortTo(departFloor, "TRANSPORT OFFICER", "Prison transfer departing - being walked out")
+	if not alive() then return true end
+	-- v244b: the prison transport only stages a cruiser within 220 studs of a mapped
+	-- road, and the City Jail sits further out than that (transport was "HELD" forever).
+	-- Walk them to the nearest road point first (placed there if there's no path).
+	do
+		local nodeOut = RoadGraph.ready and RoadGraph.nearest(departFloor, 800)
+		local roadOut = nodeOut and RoadGraph.nodePos(nodeOut)
+		if roadOut then
+			local gr = Util.groundAt(roadOut, 10, 40)
+			local roadFloor = if gr then Vector3.new(roadOut.X, gr.Y, roadOut.Z) else roadOut
+			local how = escortTo(roadFloor, "TRANSPORT OFFICER", "Walked out to the transport")
+			print(("[Custody] TRANSFER ROAD %s %.0f studs from the jail (%s)"):format(player.Name, Util.flat(roadFloor - departFloor).Magnitude, how))
+		else
+			warn("[Custody] TRANSFER ROAD: no mapped road within 800 studs of the City Jail departure point")
+		end
+	end
+	if not alive() then return true end
+	print(("[Custody] TRANSFER DEPART %s -> State Prison"):format(player.Name))
+	radio(("Prison transfer leaving the City Jail with %s"):format(player.Name), nil, 0)
+	return "bus"
 end
 
 local function releaseImmediate(player: Player, how: string)
@@ -12671,6 +13580,7 @@ startPrisonLife = function()
 				custodyTransportGhost=custodyTransportGhost,prisonExit=prisonExit,prison=prison,
 			})
 			PrisonFlow.execute=X.execute
+			PrisonFlow.extras=X -- v241: HQ rides (X.ride), solitary for crimes inside (X.solitaryPlayer)
 		end)
 		if not ok then warn("[PrisonExtras] failed to start: "..tostring(err));PL.startNpcInmates() end
 	else
@@ -12693,6 +13603,61 @@ function Justice.init()
 	if extrasModule then pcall(require,extrasModule) end
 	findPrison()
 	loadFacilities()
+	-- v240: every building mapped with the Facility Mapper (HQ, city jail, courthouse,
+	-- law offices, bank, city). Unmapped buildings keep their old behaviour.
+	do
+		local fm=script:FindFirstChild("Facilities")
+		if fm then
+			local ok,F=pcall(require,fm)
+			if ok then Justice.Facilities=F;State.Facilities=F;task.delay(4,function() pcall(F.report) end)
+			else warn("[Facilities] failed to load: "..tostring(F)) end
+		end
+		-- v242: permanent criminal record + turn yourself in at the HQ front desk
+		local rm=script:FindFirstChild("Records")
+		if rm then
+			local ok,R=pcall(require,rm)
+			if ok then Justice.Records=R else warn("[Records] failed to load: "..tostring(R)) end
+		end
+		task.delay(5,function() pcall(PrisonFlow.setupTurnIn) end)
+		-- v246-v249: crime log, interrogation, QTEs, snitching
+		local im=script:FindFirstChild("Interrogation")
+		if im then
+			local ok,IM=pcall(require,im)
+			if ok then
+				Justice.Interrogation=IM;State.onCrime=IM.onCrime
+				IM.init({F=Justice.Facilities,Heat=Heat,
+					inCustody=function(p) return custody[p]==true or PrisonFlow.hq[p]~=nil or sentenceEnd[p]~=nil end})
+			else warn("[Interrogation] failed to load: "..tostring(IM)) end
+		end
+		-- v245: guard tower snipers + spotlights (towers from the prison map)
+		local gt=script:FindFirstChild("GuardTowers")
+		if gt then
+			task.delay(6,function()
+				local ok,GT=pcall(require,gt)
+				if not ok or not Justice.Facilities then warn("[GuardTowers] failed to load: "..tostring(GT));return end
+				local okInit,err=pcall(GT.init,{
+					F=Justice.Facilities,Util=Util,
+					outside=function(pos) return prison~=nil and outsidePrison(pos,nil) end,
+					isInmate=function(p) return sentenceEnd[p]~=nil end,
+					surrendered=function(p) local h=Heat.get(p);local hum=p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+						return (h~=nil and h.surrendered==true) or (hum~=nil and hum:GetAttribute("PoliceCuffed")==true) end,
+					tell=tell,
+					notifyAll=function(text) for _,pl in Players:GetPlayers() do tell(pl,"Notice",text) end end,
+					alarm=function(p,pos) radio(("PRISON ALARM - %s at the perimeter, towers engaging"):format(p.Name),pos,3) end,
+					-- spec 1.8: shot dead by a tower while escaping = prison death (profile wipe)
+					sniperKill=function(p)
+						if sentenceEnd[p] then return end -- the Died handler already wipes inmates killed in prison
+						warn(("[PrisonDeath] %s was shot dead by a tower sniper while escaping - profile reset"):format(p.Name))
+						resetExecutedPlayer(p);clearJusticeState(p);releaseBusy[p]=nil;pcall(uncuff,p)
+						for _,name in {"EscapeInProgress","EscapeDetected","EscapeRemainingSentence","PrisonKilledBy","TowerSniperKill"} do p:SetAttribute(name,nil) end
+						if Heat.get(p) then Heat.clear(p,"Busted") end
+						pcall(tell,p,"Released","killed")
+					end,
+				})
+				if not okInit then warn("[GuardTowers] init failed: "..tostring(err)) end
+			end)
+		end
+	end
 	buildLandmarks()
 	loadTeamGuns()
 	setupDoors()
@@ -12920,6 +13885,10 @@ function Justice.init()
 		MedicalEMS="Medical",MedicalRecovery="Medical",MedicalOfficerDispatch="Medical",MedicalTransport="Medical",
 		Housed="Serving",DeathRowExecution="Serving",
 		Release="Release",Executed="Free",
+		HQTransport="Transport",HQHolding="Station",HQBooking="Station",HQRelease="Release", -- v241/v242 Police HQ custody
+		JailTransport="Transport",JailCell="Detention",JailDayRoom="Detention",JailRelease="Release", -- v243 City Jail
+		TransferHolding="Detention",TransferDeparture="Transport", -- v244 prison transfer
+		Interrogation="Station", -- v246
 	}
 	-- where the NEW character appears for each stage
 	PrisonFlow.RESPAWN_AT={
@@ -12949,6 +13918,9 @@ function Justice.init()
 	end
 	-- the spot a new character is placed at for its stage (nil = leave it alone)
 	function PrisonFlow.respawnAnchor(player: Player, stage: string): CFrame?
+		-- v241: Police HQ detainees respawn in the HQ holding cell, never at prison intake
+		local hqRec=PrisonFlow.hq[player]
+		if hqRec then return CFrame.new(hqRec.hold) end
 		local where=PrisonFlow.RESPAWN_AT[stage]
 		if where=="Intake" then
 			local sp=PrisonFlow.intakeSpawn()
@@ -14192,6 +15164,18 @@ function Dispatcher.refreshWorld()
 		end
 	end
 
+	-- v240: mapped Police HQ points (PoliceSpawn, else VehicleDropoff) when there's no PoliceSpawns folder
+	if #stations == 0 and State.Facilities then
+		for _, kind in { "PoliceSpawn", "VehicleDropoff" } do
+			for _, p in State.Facilities.points("PoliceHQ", kind) do
+				table.insert(stations, groundCf(p.position + Vector3.new(0, 2, 0), p.cframe.LookVector) or p.cframe)
+			end
+			if #stations > 0 then
+				State.log("stations from mapped Police HQ", kind, #stations)
+				break
+			end
+		end
+	end
 	if #stations == 0 then
 		-- No PoliceSpawns folder: every top-level model named like a police station gets exits around it.
 		local found: { Instance } = {}

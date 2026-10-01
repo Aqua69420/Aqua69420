@@ -23,9 +23,11 @@ for i = 1, complexity do
 	t.Size = UDim2.new(width, 0, 0.8, 0)
 	t.Visible = true
 	-- Every tumbler is different: its own sweep speed, zone height and zone size.
-	t:SetAttribute("SweepTime", if prisonLock then 0.48 + math.random() * 0.62 else 0.55 + math.random() * 0.9) -- seconds bottom->top
+	-- v241: 12+ tumblers (city jail) sit between staff doors and the prison
+	local jailLock = not prisonLock and complexity >= 12
+	t:SetAttribute("SweepTime", if prisonLock then 0.48 + math.random() * 0.62 elseif jailLock then 0.52 + math.random() * 0.75 else 0.55 + math.random() * 0.9) -- seconds bottom->top
 	local zone = t.UnlockZone
-	local zoneSize = if prisonLock then 0.065 + math.random() * 0.045 else 0.1 + math.random() * 0.08
+	local zoneSize = if prisonLock then 0.065 + math.random() * 0.045 elseif jailLock then 0.085 + math.random() * 0.06 else 0.1 + math.random() * 0.08
 	zone.Size = UDim2.new(1, 0, zoneSize, 0)
 	local top = math.floor(8)
 	local bottom = math.floor((0.85 - zoneSize) * 100)

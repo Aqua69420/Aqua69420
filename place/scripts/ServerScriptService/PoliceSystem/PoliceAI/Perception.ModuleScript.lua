@@ -10,11 +10,23 @@ local Perception = {}
 local Ctx, Tuning, Log, Util, Knowledge
 
 local FOV_COS = 0
+local PERI_COS = 0
+local Lighting = game:GetService("Lighting")
 
 function Perception.bind(ctx)
 	Ctx = ctx
 	Tuning, Log, Util, Knowledge = ctx.Tuning, ctx.Log, ctx.Util, ctx.Knowledge
 	FOV_COS = math.cos(math.rad(Tuning.Perception.FOV / 2))
+	PERI_COS = math.cos(math.rad((Tuning.Perception.PeripheralFOV or Tuning.Perception.FOV) / 2))
+end
+
+-- v245: loud = sprinting, in a moving vehicle, or fired a gun in the last few seconds
+local function loud(player: Player, hum: Humanoid, root: BasePart): boolean
+	local speed = root.AssemblyLinearVelocity.Magnitude
+	if hum.SeatPart and speed > 8 then return true end
+	if speed > 18 then return true end
+	local shot = player:GetAttribute("LastShotAt")
+	return type(shot) == "number" and os.clock() - shot < 4
 end
 
 local function sightEntry(cop: any, inc: any): any
@@ -67,16 +79,38 @@ function Perception.officer(cop: any, inc: any, now: number, force: boolean?): b
 		dist = delta.Magnitude
 		local assigned = cop.pursuit == inc.pursuit
 		local tracking = now - e.seen < P.TrackMemory
-		local range = if assigned or tracking then P.TrackRange else P.DetectRange
+		local isLoud = loud(inc.player, hum, root)
+		local detect = P.DetectRange
+		local t = Lighting.ClockTime
+		if t < 6.5 or t > 18.5 then detect *= (P.NightDetectScale or 1) end
+		if not isLoud and root.AssemblyLinearVelocity.Magnitude < 12 then detect *= (P.WalkDetectScale or 1) end
+		local range = if assigned or tracking then P.TrackRange else detect
 		if dist <= range then
-			local inView = dist <= P.NoticeRange or tracking
+			local bubble = if isLoud then (P.LoudNoticeRange or P.NoticeRange) else P.NoticeRange
+			local inView = dist <= bubble or tracking
 			if not inView then
+				local look = cop.root.CFrame.LookVector
 				if assigned and Knowledge.fresh(inc) then
-					-- the radio says where he is: the officer looks there
-					inView = true
+					-- v245: the radio makes the officer TURN toward the report (it takes a moment);
+					-- he still needs you inside his cone from there
+					e.turnStart = e.turnStart or now
+					if now - e.turnStart >= (P.RadioTurnTime or 0) then
+						local k = inc.knowledge
+						look = Util.safeUnit(Util.flat((k and k.pos or part.Position) - eye), look)
+					end
 				else
-					local look = cop.root.CFrame.LookVector
-					inView = look:Dot(Util.safeUnit(delta, look)) >= FOV_COS
+					e.turnStart = nil
+				end
+				local dot = look:Dot(Util.safeUnit(delta, look))
+				if dot >= FOV_COS then
+					inView = true
+					e.peri = 0
+				elseif dot >= PERI_COS then
+					-- peripheral band: noticed only after a couple of sightings in a row
+					e.peri = (e.peri or 0) + 1
+					inView = e.peri >= (P.PeripheralChecks or 1)
+				else
+					e.peri = 0
 				end
 			end
 			if inView then
