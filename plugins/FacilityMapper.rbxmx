@@ -19,6 +19,8 @@
 -- then Delete / Apply edits). Backspace removes the last corner, Esc cancels.
 -- Pick building: click any part of a building to make it the active facility.
 -- Door / Seat / Select show a cyan box around what the next click will use.
+-- Multi-part doors: hold Shift and click each part, release Shift to group them
+-- into one door Model and map it.
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local Selection = game:GetService("Selection")
@@ -237,6 +239,7 @@ local state = {
 	height = 20,
 	flatten = true,
 	pending = {} :: { Vector3 },
+	doorParts = {} :: { BasePart }, -- Shift+clicked parts of the door being built
 	selected = nil :: Instance?,
 	overlay = true,
 	labels = true,
@@ -616,6 +619,7 @@ for _, m in { "Zone", "Door", "Route", "Point", "Seat", "Select" } do
 	end)
 end
 local helpLabel = label("", false, 48)
+helpLabel.AutomaticSize = Enum.AutomaticSize.Y
 local hoverLabel = label("", false, 32)
 hoverLabel.TextColor3 = Color3.fromRGB(90, 220, 255)
 
@@ -866,6 +870,11 @@ local function drawPending(hover: Vector3?)
 			line(pendingFolder, pts[i - 1], p, COLORS.pending, 4)
 		end
 	end
+	for _, p in state.doorParts do
+		if p.Parent then
+			box(pendingFolder, p.CFrame, p.Size + Vector3.new(0.2, 0.2, 0.2), COLORS.pending, 0.35)
+		end
+	end
 	if hover and #pts > 0 then
 		line(pendingFolder, pts[#pts], hover, COLORS.pending, 2)
 		if state.mode == "Zone" and #pts >= 2 then
@@ -1110,11 +1119,11 @@ local function createRoute(pts: { Vector3 })
 	print(("[FacilityMapper] ROUTE %s type=%s points=%d"):format(name, state.routeType, #pts))
 end
 
+local function shiftDown(): boolean
+	return UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
+end
+
 local function resolveDoor(part: BasePart): Instance
-	-- Shift+click links just the part you clicked
-	if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
-		return part
-	end
 	local model = facilityModel()
 	local cur: Instance? = part
 	while cur and cur ~= model and cur ~= workspace do
@@ -1140,7 +1149,7 @@ local function pathOf(inst: Instance): string
 	return table.concat(parts, ".")
 end
 
-local function createDoor(part: BasePart)
+local function createDoor(part: BasePart, explicitTarget: Instance?)
 	if not guardPrison() then
 		return
 	end
@@ -1151,7 +1160,7 @@ local function createDoor(part: BasePart)
 	end
 	local root = mapRoot(true) :: Instance
 	local doors = root:FindFirstChild("DoorMarkers") :: Instance
-	local target = resolveDoor(part)
+	local target = explicitTarget or resolveDoor(part)
 	for _, d in doors:GetChildren() do
 		local ov = d:FindFirstChild("DoorObject")
 		if ov and ov.Value == target then
@@ -1196,6 +1205,75 @@ local function createDoor(part: BasePart)
 		state.selected = m
 	end)
 	print(("[FacilityMapper] DOOR %s -> %s"):format(name, pathOf(target)))
+end
+
+-- Shift+click collects parts; releasing Shift (or Enter) makes them one door.
+-- Several parts are grouped into a Model (the game links each door marker to one
+-- object), unless they already are exactly one Model.
+local function finishMultiDoor()
+	local parts = {}
+	for _, p in state.doorParts do
+		if p.Parent then
+			table.insert(parts, p)
+		end
+	end
+	table.clear(state.doorParts)
+	drawPending()
+	if #parts == 0 or not guardPrison() then
+		return
+	end
+	local fm = facilityModel()
+	if state.facilityType ~= "City" and fm then
+		for _, p in parts do
+			if not p:IsDescendantOf(fm) then
+				warn("[FacilityMapper] " .. p:GetFullName() .. " isn't inside the active facility (" .. fm.Name .. ") - door not made")
+				return
+			end
+		end
+	end
+	if #parts == 1 then
+		createDoor(parts[1], parts[1])
+	else
+		local target: Instance? = nil
+		local common = parts[1].Parent
+		local sameParent = true
+		for _, p in parts do
+			if p.Parent ~= common then
+				sameParent = false
+				break
+			end
+		end
+		if sameParent and common and common:IsA("Model") and common ~= facilityModel() and common.Parent ~= workspace then
+			local count = 0
+			for _, d in common:GetDescendants() do
+				if d:IsA("BasePart") then
+					count += 1
+				end
+			end
+			if count == #parts then
+				target = common -- they already are exactly one model
+			end
+		end
+		if not target then
+			local groupName = if nameBox.Text ~= "" then safeName(nameBox.Text) else state.doorType .. "Door"
+			local ok = record("group door parts", function()
+				local m = Instance.new("Model")
+				m.Name = groupName
+				for _, p in parts do
+					p.Parent = m
+				end
+				m.Parent = common
+				target = m
+			end)
+			if not ok then
+				return
+			end
+			print(("[FacilityMapper] grouped %d parts into %s"):format(#parts, pathOf(target :: Instance)))
+		end
+		createDoor(parts[1], target)
+	end
+	redraw()
+	refreshUI()
 end
 
 local function createPoint(pos: Vector3, cfOverride: CFrame?)
@@ -1415,6 +1493,10 @@ placeAtCamera = function()
 end
 
 finishPending = function()
+	if state.mode == "Door" then
+		finishMultiDoor()
+		return
+	end
 	if state.mode == "Zone" then
 		createZone(state.pending)
 	elseif state.mode == "Route" then
@@ -1428,6 +1510,7 @@ end
 
 cancelPending = function()
 	state.pending = {}
+	table.clear(state.doorParts)
 	drawPending()
 	refreshUI()
 end
@@ -1628,7 +1711,7 @@ end
 local HELP = {
 	Off = "Pick a tool. Colours: blue = rooms, green = areas, red = sniper zones, orange = doors, purple = routes, yellow = points, pink = seats.",
 	Zone = "Click the corners of the floor area, then Enter. Backspace removes a corner, Esc cancels. Rooms (blue) need a door on their edge.",
-	Door = "Click a door (or gate). The whole door model is linked. Set Door type / Access first.",
+	Door = "Click a door (or gate): the cyan box is what gets linked. Door made of loose parts: hold Shift and click each part, let go of Shift to make the door (Enter also finishes, Esc cancels). Set Door type / Access first.",
 	Route = "Click points along the walking path (e.g. up a staircase), then Enter. BusUnloadLine = the walk from the prison bus bay to intake.",
 	Point = "Click a spot. Aimed points (SniperPost, Spotlight, CourtCam) face where the camera looks - or use 'Point at camera'.",
 	Seat = "Click a Seat to give it the chosen role. JurorSeat numbers itself 1-12 in click order.",
@@ -1658,6 +1741,11 @@ local function hoverTarget(pos: Vector3?, part: BasePart?): (Instance?, string)
 		local b = buildingOf(part)
 		return b, if b then "Building: " .. b.Name else "Not part of a building model: " .. part:GetFullName()
 	elseif mode == "Door" then
+		if shiftDown() or #state.doorParts > 0 then
+			local inList = table.find(state.doorParts, part) ~= nil
+			return part, ("%s part: %s  (%d picked - release Shift to make the door)"):format(
+				if inList then "Remove" else "Add", pathOf(part), #state.doorParts)
+		end
 		local t = resolveDoor(part)
 		local root = mapRoot(false)
 		local doors = root and root:FindFirstChild("DoorMarkers")
@@ -1669,7 +1757,7 @@ local function hoverTarget(pos: Vector3?, part: BasePart?): (Instance?, string)
 				end
 			end
 		end
-		return t, "Door: " .. pathOf(t) .. "  (Shift = just this part)"
+		return t, "Door: " .. pathOf(t) .. "  (hold Shift to pick the door's parts yourself)"
 	elseif mode == "Seat" then
 		local s = findSeat(part)
 		if not s then
@@ -1707,6 +1795,7 @@ setMode = function(m: string)
 	end
 	state.mode = m
 	state.pending = {}
+	table.clear(state.doorParts)
 	drawPending()
 	hoverBox.Adornee = nil
 	hoverLabel.Text = ""
@@ -1722,6 +1811,7 @@ plugin.Deactivation:Connect(function()
 	if state.mode ~= "Off" then
 		state.mode = "Off"
 		state.pending = {}
+		table.clear(state.doorParts)
 		drawPending()
 		hoverBox.Adornee = nil
 		hoverLabel.Text = ""
@@ -1764,7 +1854,17 @@ mouse.Button1Down:Connect(function()
 		drawPending()
 		refreshUI()
 	elseif state.mode == "Door" then
-		if part then
+		if part and shiftDown() then
+			-- collect parts; clicking a picked part again removes it
+			local i = table.find(state.doorParts, part)
+			if i then
+				table.remove(state.doorParts, i)
+			else
+				table.insert(state.doorParts, part)
+			end
+			drawPending()
+			updateHover()
+		elseif part then
 			createDoor(part)
 			redraw()
 			refreshUI()
@@ -1807,6 +1907,15 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		undoPoint()
 	elseif input.KeyCode == Enum.KeyCode.Escape then
 		cancelPending()
+	end
+end)
+
+-- letting go of Shift finishes a multi-part door
+UserInputService.InputEnded:Connect(function(input)
+	if (input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift)
+		and state.mode == "Door" and #state.doorParts > 0 and not shiftDown() then
+		finishMultiDoor()
+		updateHover()
 	end
 end)
 
