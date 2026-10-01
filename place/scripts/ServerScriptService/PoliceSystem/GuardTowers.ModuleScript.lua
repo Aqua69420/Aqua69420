@@ -261,14 +261,19 @@ local function stunShot(t: any, player: Player, hum: Humanoid, part: BasePart)
 	tracer(from, part.Position)
 	local dmg = math.min(CFG.StunDamage, math.max(0, hum.Health - CFG.StunMinHealth))
 	if dmg > 0 then hum:TakeDamage(dmg) end
-	hum.PlatformStand = true
+	-- v245e: the police rubber-round ragdoll, so responding officers treat them as downed
+	local okR, ragdolled = false, false
+	if ctx.rubberStun then okR, ragdolled = pcall(ctx.rubberStun, player, CFG.StunKnockdown) end
+	if not (okR and ragdolled) then
+		hum.PlatformStand = true
+		task.delay(CFG.StunKnockdown, function()
+			if hum.Parent and not hum:GetAttribute("PoliceCuffed") then hum.PlatformStand = false end
+		end)
+	end
 	player:SetAttribute("TowerStunned", true)
+	task.delay(CFG.StunKnockdown, function() player:SetAttribute("TowerStunned", nil) end)
 	pcall(ctx.tell, player, "Custody", "TOWER: Rubber rounds! Stay down - officers are on the way.")
-	print(("[GuardTowers] %s hit with a rubber round by tower %d"):format(player.Name, t.i))
-	task.delay(CFG.StunKnockdown, function()
-		if hum.Parent then hum.PlatformStand = false end
-		player:SetAttribute("TowerStunned", nil)
-	end)
+	print(("[GuardTowers] %s hit with a rubber round by tower %d guard %d"):format(player.Name, t.tower and t.tower.i or 0, t.i))
 end
 
 local function lampAt(tw: any, at: Vector3)
@@ -312,6 +317,18 @@ local function step(now: number)
 							pcall(ctx.tell, player, "Custody", "TOWER: STOP! Get on the ground!")
 						end
 						print(("[GuardTowers] %s spotted by tower %d guard %d (%s, %.0f studs)"):format(player.Name, first.tower.i, first.i, rule, firstD))
+						-- v245e: being in a zone is a crime for anyone who isn't already in custody
+						local prisoner = player:GetAttribute("EscapeInProgress") == true or ctx.isInmate(player)
+						if not prisoner and ctx.crime and rule ~= "Perimeter" then
+							local crime = if rule == "StunZone" then "PrisonTrespass" else "PrisonFenceBreach"
+							local okC, counted = pcall(ctx.crime, player, crime, root.Position)
+							print(("[GuardTowers] %s charged with %s (%s)"):format(player.Name, crime, if okC and counted then "wanted" else "not counted"))
+						end
+					end
+					-- keep dispatch on them while a tower has eyes on them
+					if ctx.spotted and now - (st.reported or 0) > 1.5 then
+						st.reported = now
+						pcall(ctx.spotted, player, root.Position)
 					end
 				end
 			else

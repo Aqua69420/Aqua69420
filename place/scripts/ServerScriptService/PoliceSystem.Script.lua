@@ -119,6 +119,9 @@ Config.Crimes = {
 	Murder = { Heat = 35, MinStars = 2, Hostile = true, Witness = false, Deadly = true, Charge = "Murder" },
 	Robbery = { Heat = 45, MinStars = 2, Hostile = true, Witness = false, Deadly = "armed", Charge = "Armed robbery" },
 	PrisonEscape = { Heat = 150, MinStars = 3, Hostile = true, Witness = false, Deadly = "armed", Charge = "Escape from custody" },
+	-- v245e: spotted by a guard tower inside the prison's stun zone / lethal zone
+	PrisonTrespass = { Heat = 60, MinStars = 2, Hostile = true, Witness = false, Charge = "Trespassing on correctional property" },
+	PrisonFenceBreach = { Heat = 110, MinStars = 3, Hostile = true, Witness = false, Deadly = "armed", Charge = "Breaching a prison perimeter" },
 	BankRobbery = { Heat = 160, MinStars = 3, Hostile = true, Witness = false, Deadly = "armed", Charge = "Bank robbery" },
 	HelicopterDown = { Heat = 200, MinStars = 5, Hostile = true, Witness = false, Deadly = true, Charge = "Destroying a police aircraft" },
 	ResistingArrest = { Heat = 18, MinStars = 2, Hostile = true, Witness = false, Charge = "Resisting arrest" },
@@ -13640,6 +13643,10 @@ function Justice.init()
 					outside=function(pos) return prison~=nil and outsidePrison(pos,nil) end,
 					isInmate=function(p) return sentenceEnd[p]~=nil end,
 					isStaff=function(p) return isStaff(p) and not inPrison(p) end, -- v245c: staff may stand in the zones
+					-- v245e: towers make you wanted, keep dispatch updated and use the police rubber-round ragdoll
+					crime=function(p,name,pos) return Heat.addCrime(p,name,pos) end,
+					spotted=function(p,pos) Heat.spotted(p,pos,"VISUAL") end,
+					rubberStun=function(p,secs) return Heat.rubberStun(p,secs,false) end,
 					surrendered=function(p) local h=Heat.get(p);local hum=p.Character and p.Character:FindFirstChildOfClass("Humanoid")
 						return (h~=nil and h.surrendered==true) or (hum~=nil and hum:GetAttribute("PoliceCuffed")==true) end,
 					tell=tell,
@@ -15211,6 +15218,29 @@ function Dispatcher.refreshWorld()
 				end
 			end
 			State.log("station auto-detected:", best:GetFullName(), #stations - before, "exits")
+		end
+	end
+
+	-- v245e: the prison's vehicle gates are a station exit too, so trouble at the
+	-- prison (tower kill / stun zones, escapes) gets ground units rolling out of the prison
+	do
+		local prisonModel = Workspace:FindFirstChild("CorrectionalFacility")
+		if prisonModel and prisonModel:IsA("Model") then
+			local pcf = prisonModel:GetBoundingBox()
+			local added = 0
+			for _, d in prisonModel:GetChildren() do
+				local n = string.upper(d.Name)
+				if (n == "GATE" or n == "GATE1" or n == "GATE2") and (d:IsA("Model") or d:IsA("BasePart")) then
+					local gpos = if d:IsA("Model") then d:GetPivot().Position else (d :: BasePart).Position
+					local out = Util.safeUnit(Vector3.new(gpos.X - pcf.Position.X, 0, gpos.Z - pcf.Position.Z), Vector3.zAxis)
+					local cf = groundCf(gpos + out * 25 + Vector3.new(0, 2, 0), out)
+					if cf then
+						table.insert(stations, cf)
+						added += 1
+					end
+				end
+			end
+			if added > 0 then State.log("prison station exits", added) end
 		end
 	end
 
