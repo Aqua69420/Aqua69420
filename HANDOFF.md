@@ -25,6 +25,13 @@ Read this first in a new Claude session. Working branch: `claude/roblox-cuffwalk
 ## State (as of v239)
 - v239: custody stage machine (`PrisonFlow.stageOf` / `CustodyStage` attribute); each stage owns where a new character spawns.
 - Known leftover: resetting in solitary respawns in the home cell.
+- Facility Mapper v6 (plugin): Pick building button, cyan hover preview, PoliceHQ finds `PoliceStation`,
+  multi-part doors (hold Shift + click parts, release Shift → grouped into one door Model).
+  Install: copy `plugins/FacilityMapper.rbxmx` to `%LOCALAPPDATA%\Roblox\Plugins\`, restart Studio.
+- Mapping status (2026-09-30): only `CorrectionalFacility.PrisonMap` exists (144 restored zones, 156 doors, 3 routes, 0 points,
+  no seat roles). Police HQ, prison additions, courthouse, jail, bank, law offices, city: not mapped yet.
+  The user is mapping Police HQ (`Workspace.PoliceStation`) next; v240 waits on that.
+- Allow HTTP Requests was OFF in the place; the user needs to turn it on.
 - Next: v240 multi-building (Police HQ etc. from the user's mapped place), v241 arrest scene. See ROADMAP.md.
 
 ## With the Studio MCP server connected
