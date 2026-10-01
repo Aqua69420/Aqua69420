@@ -27,7 +27,7 @@ local Workspace = game:GetService("Workspace")
 local Debris = game:GetService("Debris")
 
 local T = {}
-T.VERSION = 245 -- v245b: stun zones
+T.VERSION = "245d" -- v245b: stun zones
 
 local CFG = {
 	Range = 450, -- studs a tower covers
@@ -49,11 +49,13 @@ local CFG = {
 	StunMinHealth = 15, -- rubber bullets never take you below this
 	StunKnockdown = 3, -- seconds on the ground
 	StunHitChance = 0.75,
+	GuardsPerTower = nil :: number?, -- nil = 3 on a big cab, else 2
 }
 T.CFG = CFG
 
 local ctx: any = nil
 local towers: { any } = {}
+local guards: { any } = {} -- v245d: 2-3 per tower
 local targets: { [Player]: any } = {}
 local lastAlarm = -math.huge
 local folder: Folder? = nil
@@ -70,66 +72,81 @@ local function rayParams(ignore: { Instance }): RaycastParams
 	return p
 end
 
-local function makePost(i: number, pos: Vector3, outward: Vector3): any
-	local f = folder :: Folder
-	local look = ctx.Util.safeUnit(Vector3.new(outward.X, 0, outward.Z), Vector3.zAxis)
-	-- the sniper: a simple anchored marksman figure (no AI, it only aims and fires)
-	local m = Instance.new("Model")
-	m.Name = "TowerSniper_" .. i
-	local body = Instance.new("Part")
-	body.Name = "Body"
-	body.Size = Vector3.new(2, 2.4, 1)
-	body.Color = Color3.fromRGB(35, 45, 60)
-	body.Anchored = true
-	body.CanCollide = false
-	body.CFrame = CFrame.lookAt(pos + Vector3.new(0, 1.2, 0), pos + Vector3.new(0, 1.2, 0) + look)
-	body.Parent = m
-	local head = Instance.new("Part")
-	head.Name = "Head"
-	head.Shape = Enum.PartType.Ball
-	head.Size = Vector3.new(1.2, 1.2, 1.2)
-	head.Color = Color3.fromRGB(205, 165, 125)
-	head.Anchored = true
-	head.CanCollide = false
-	head.CFrame = body.CFrame * CFrame.new(0, 1.85, 0)
-	head.Parent = m
-	local rifle = Instance.new("Part")
-	rifle.Name = "Rifle"
-	rifle.Size = Vector3.new(0.25, 0.25, 3.2)
-	rifle.Color = Color3.fromRGB(20, 20, 20)
-	rifle.Anchored = true
-	rifle.CanCollide = false
-	rifle.CFrame = body.CFrame * CFrame.new(0.6, 0.8, -1.4)
-	rifle.Parent = m
-	m.PrimaryPart = body
-	m.Parent = f
-	-- the spotlight
-	local lamp = Instance.new("Part")
-	lamp.Name = "TowerSpotlight_" .. i
-	lamp.Size = Vector3.new(1.4, 1.4, 1.4)
-	lamp.Material = Enum.Material.Neon
-	lamp.Color = Color3.fromRGB(255, 245, 210)
-	lamp.Anchored = true
-	lamp.CanCollide = false
-	lamp.CanQuery = false
-	lamp.CFrame = CFrame.lookAt(pos + Vector3.new(0, 4.5, 0), pos + Vector3.new(0, 4.5, 0) + look - Vector3.new(0, 0.35, 0))
-	lamp.Parent = f
-	local light = Instance.new("SpotLight")
-	light.Range = 60
-	light.Angle = 28
-	light.Brightness = 6
-	light.Face = Enum.NormalId.Front
-	light.Enabled = false
-	light.Parent = lamp
-	return { i = i, pos = pos, eye = head.Position, look = look, model = m, body = body, head = head, rifle = rifle,
-		lamp = lamp, light = light, nextShot = 0 }
+local function part(parent: Instance, name: string, size: Vector3, color: Color3, material: Enum.Material?): Part
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Size = size
+	p.Color = color
+	p.Material = material or Enum.Material.SmoothPlastic
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.Parent = parent
+	return p
 end
 
-local function aimAt(t: any, at: Vector3)
-	local cf = CFrame.lookAt(t.body.Position, Vector3.new(at.X, t.body.Position.Y, at.Z))
-	t.body.CFrame = cf
-	t.head.CFrame = cf * CFrame.new(0, 1.85, 0)
-	t.rifle.CFrame = CFrame.lookAt((cf * CFrame.new(0.6, 0.8, -1.4)).Position, at)
+local UNIFORM = Color3.fromRGB(28, 38, 58)
+local PANTS = Color3.fromRGB(22, 24, 28)
+local SKIN = Color3.fromRGB(204, 160, 120)
+
+-- v245d: a tower guard - an R6-shaped anchored figure (torso, head, legs, both arms
+-- raised holding a scoped rifle). It never moves its feet; aimAt turns it and the rifle.
+local function makeGuard(i: number, floor: Vector3, look: Vector3): any
+	local m = Instance.new("Model")
+	m.Name = "TowerGuard_" .. i
+	local torso = part(m, "Torso", Vector3.new(2, 2, 1), UNIFORM)
+	local head = part(m, "Head", Vector3.new(1.2, 1.2, 1.2), SKIN)
+	local mesh = Instance.new("SpecialMesh")
+	mesh.MeshType = Enum.MeshType.Head
+	mesh.Scale = Vector3.new(1.25, 1.25, 1.25)
+	mesh.Parent = head
+	local cap = part(m, "Cap", Vector3.new(1.3, 0.35, 1.4), UNIFORM)
+	local lleg = part(m, "Left Leg", Vector3.new(1, 2, 1), PANTS)
+	local rleg = part(m, "Right Leg", Vector3.new(1, 2, 1), PANTS)
+	local larm = part(m, "Left Arm", Vector3.new(1, 2, 1), UNIFORM)
+	local rarm = part(m, "Right Arm", Vector3.new(1, 2, 1), UNIFORM)
+	local rifle = Instance.new("Model")
+	rifle.Name = "Rifle"
+	local stock = part(rifle, "Stock", Vector3.new(0.35, 0.6, 1.4), Color3.fromRGB(60, 45, 30), Enum.Material.Wood)
+	local body = part(rifle, "Receiver", Vector3.new(0.3, 0.45, 1.6), Color3.fromRGB(25, 25, 25), Enum.Material.Metal)
+	local barrel = part(rifle, "Barrel", Vector3.new(0.15, 0.15, 2.4), Color3.fromRGB(18, 18, 18), Enum.Material.Metal)
+	local scope = part(rifle, "Scope", Vector3.new(0.22, 0.22, 1.1), Color3.fromRGB(10, 10, 10), Enum.Material.Metal)
+	rifle.PrimaryPart = body
+	rifle.Parent = m
+	m.PrimaryPart = torso
+	m.Parent = folder
+	local g = {
+		i = i, floor = floor, look = look, model = m, torso = torso, head = head, cap = cap, lleg = lleg, rleg = rleg,
+		larm = larm, rarm = rarm, rifle = rifle, stock = stock, body = body, barrel = barrel, scope = scope,
+		nextShot = 0,
+	}
+	return g
+end
+
+-- pose the guard facing `at` (rifle pointed straight at it)
+local function aimAt(g: any, at: Vector3)
+	local base = g.floor + Vector3.new(0, 3, 0) -- torso centre (legs are 2 tall)
+	local flat = Vector3.new(at.X, base.Y, at.Z)
+	if (flat - base).Magnitude < 0.1 then flat = base + g.look end
+	local cf = CFrame.lookAt(base, flat)
+	g.torso.CFrame = cf
+	g.head.CFrame = cf * CFrame.new(0, 1.6, 0)
+	g.cap.CFrame = cf * CFrame.new(0, 2.25, -0.05)
+	g.lleg.CFrame = cf * CFrame.new(-0.5, -2, 0)
+	g.rleg.CFrame = cf * CFrame.new(0.5, -2, 0)
+	-- arms raised forward from the shoulders, holding the rifle at eye level
+	local raise = CFrame.Angles(math.rad(90), 0, 0)
+	g.rarm.CFrame = cf * CFrame.new(1.5, 0.5, 0) * raise * CFrame.Angles(0, 0, math.rad(-12)) * CFrame.new(0, -1, 0)
+	g.larm.CFrame = cf * CFrame.new(-1.5, 0.5, 0) * raise * CFrame.Angles(0, 0, math.rad(30)) * CFrame.new(0, -1, 0)
+	local grip = (cf * CFrame.new(0.55, 1.05, -1.6)).Position
+	local rcf = CFrame.lookAt(grip, at)
+	g.body.CFrame = rcf
+	g.stock.CFrame = rcf * CFrame.new(0, -0.08, 1.4)
+	g.barrel.CFrame = rcf * CFrame.new(0, 0.05, -2)
+	g.scope.CFrame = rcf * CFrame.new(0, 0.35, -0.1)
+	g.eye = g.head.Position
+	g.muzzle = (rcf * CFrame.new(0, 0.05, -3.2)).Position
 end
 
 local function tracer(from: Vector3, to: Vector3)
@@ -147,10 +164,11 @@ local function tracer(from: Vector3, to: Vector3)
 	Debris:AddItem(p, 0.08)
 end
 
-local function canSee(t: any, char: Model, part: BasePart): boolean
-	local dir = part.Position - t.eye
-	local hit = Workspace:Raycast(t.eye, dir, rayParams({ folder :: Instance }))
-	return hit == nil or hit.Instance:IsDescendantOf(char) or (hit.Position - t.eye).Magnitude >= dir.Magnitude - 2
+-- v245d: the guard's own tower cab (walls, railings, glass) never blocks its view
+local function canSee(g: any, char: Model, target: BasePart): boolean
+	local dir = target.Position - g.eye
+	local hit = Workspace:Raycast(g.eye, dir, g.params)
+	return hit == nil or hit.Instance:IsDescendantOf(char) or (hit.Position - g.eye).Magnitude >= dir.Magnitude - 2
 end
 
 -- v245b: a mapped kill zone marked non-lethal (description) or a StunZone
@@ -205,7 +223,7 @@ local function raiseAlarm(player: Player, pos: Vector3, rule: string)
 end
 
 local function shoot(t: any, player: Player, char: Model, hum: Humanoid, part: BasePart, warning: boolean)
-	local from = t.rifle.Position
+	local from = t.muzzle
 	local dist = (part.Position - from).Magnitude
 	if warning then
 		-- into the ground a few studs in front of them
@@ -235,7 +253,7 @@ end
 
 -- v245b: rubber bullet - hurts, never kills, knocks them down
 local function stunShot(t: any, player: Player, hum: Humanoid, part: BasePart)
-	local from = t.rifle.Position
+	local from = t.muzzle
 	if math.random() >= CFG.StunHitChance then
 		tracer(from, part.Position + Vector3.new(math.random(-5, 5), math.random(-2, 3), math.random(-5, 5)))
 		return
@@ -253,11 +271,17 @@ local function stunShot(t: any, player: Player, hum: Humanoid, part: BasePart)
 	end)
 end
 
+local function lampAt(tw: any, at: Vector3)
+	tw.lamp.CFrame = CFrame.lookAt(tw.lamp.Position, at)
+	tw.spot.Position = at
+end
+
 local function step(now: number)
 	local isNight = night()
 	local sweep = math.sin(now / CFG.SweepSeconds * math.pi * 2) * math.rad(CFG.SweepDegrees)
-	-- who is a target, and which tower is best placed for them
+	-- v245d: every guard who can see a target engages it (2-3 per tower)
 	local engaged: { [any]: { player: Player, char: Model, hum: Humanoid, part: BasePart, rule: string } } = {}
+	local towerTarget: { [any]: Vector3 } = {}
 	for _, player in Players:GetPlayers() do
 		local char = player.Character
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -266,12 +290,16 @@ local function step(now: number)
 		if hum and root and root:IsA("BasePart") and hum.Health > 0 then
 			local rule = ruleFor(player, root.Position)
 			if rule then
-				local best, bestD = nil, CFG.Range
-				for _, t in towers do
-					local d = (root.Position - t.eye).Magnitude
-					if d < bestD and canSee(t, char, root) then best, bestD = t, d end
+				local first, firstD = nil, math.huge
+				for _, g in guards do
+					local d = (root.Position - g.eye).Magnitude
+					if d < CFG.Range and not engaged[g] and canSee(g, char, root) then
+						engaged[g] = { player = player, char = char, hum = hum, part = root, rule = rule }
+						towerTarget[g.tower] = towerTarget[g.tower] or root.Position
+						if d < firstD then first, firstD = g, d end
+					end
 				end
-				if best then
+				if first then
 					if not st or st.rule ~= rule then
 						st = { rule = rule, stage = "seen", at = now }
 						targets[player] = st
@@ -283,9 +311,8 @@ local function step(now: number)
 						else
 							pcall(ctx.tell, player, "Custody", "TOWER: STOP! Get on the ground!")
 						end
-						print(("[GuardTowers] %s spotted by tower %d (%s, %.0f studs)"):format(player.Name, best.i, rule, bestD))
+						print(("[GuardTowers] %s spotted by tower %d guard %d (%s, %.0f studs)"):format(player.Name, first.tower.i, first.i, rule, firstD))
 					end
-					engaged[best] = { player = player, char = char, hum = hum, part = root, rule = rule }
 				end
 			else
 				targets[player] = nil
@@ -294,46 +321,159 @@ local function step(now: number)
 			targets[player] = nil
 		end
 	end
-	for _, t in towers do
-		local e = engaged[t]
-		t.light.Enabled = isNight or e ~= nil
+	for _, tw in towers do
+		local at = towerTarget[tw]
+		tw.light.Enabled = isNight or at ~= nil
+		tw.beam.Enabled = tw.light.Enabled
+		if at then
+			lampAt(tw, at)
+		else
+			-- idle: sweep the ground outward
+			local dir = CFrame.fromAxisAngle(Vector3.yAxis, sweep) * tw.look
+			lampAt(tw, tw.lamp.Position + dir * 45 - Vector3.new(0, tw.lamp.Position.Y - tw.groundY, 0))
+		end
+	end
+	for _, g in guards do
+		local e = engaged[g]
 		if e then
 			local st = targets[e.player]
-			aimAt(t, e.part.Position)
-			t.lamp.CFrame = CFrame.lookAt(t.lamp.Position, e.part.Position)
-			local surrendered = ctx.surrendered(e.player)
-			if surrendered then
+			aimAt(g, e.part.Position)
+			if ctx.surrendered(e.player) then
 				st.held = true
-			elseif now >= t.nextShot then
+			elseif now >= g.nextShot then
 				local since = now - st.at
 				if e.rule == "StunZone" then
 					if since >= CFG.StunDelay then
-						t.nextShot = now + CFG.StunInterval
-						stunShot(t, e.player, e.hum, e.part)
+						g.nextShot = now + CFG.StunInterval + math.random() -- guards don't fire in unison
+						stunShot(g, e.player, e.hum, e.part)
 					end
 				elseif e.rule == "KillZone" then
 					if since >= CFG.KillZoneDelay then
-						t.nextShot = now + CFG.FireInterval
-						shoot(t, e.player, e.char, e.hum, e.part, false)
+						g.nextShot = now + CFG.FireInterval + math.random()
+						shoot(g, e.player, e.char, e.hum, e.part, false)
 					end
 				elseif st.stage == "seen" and since >= CFG.ShoutDelay then
 					st.stage = "warned"
 					st.at = now
-					t.nextShot = now + CFG.WarnDelay
+					g.nextShot = now + CFG.WarnDelay
 					pcall(ctx.tell, e.player, "Custody", "TOWER: Warning shot! Next one won't miss.")
-					shoot(t, e.player, e.char, e.hum, e.part, true)
-				elseif st.stage == "warned" then
-					t.nextShot = now + CFG.FireInterval
-					shoot(t, e.player, e.char, e.hum, e.part, false)
+					shoot(g, e.player, e.char, e.hum, e.part, true)
+				elseif st.stage == "warned" and since >= CFG.WarnDelay then
+					g.nextShot = now + CFG.FireInterval + math.random()
+					shoot(g, e.player, e.char, e.hum, e.part, false)
 				end
 			end
-		else
-			-- idle: sweep outward (only visible at night)
-			local dir = CFrame.fromAxisAngle(Vector3.yAxis, sweep) * t.look
-			t.lamp.CFrame = CFrame.lookAt(t.lamp.Position, t.lamp.Position + dir * 30 - Vector3.new(0, 9, 0))
-			if t.body.CFrame.LookVector:Dot(t.look) < 0.98 then aimAt(t, t.eye + t.look * 50) end
+		elseif g.aimedIdle ~= true then
+			aimAt(g, g.eye + g.look * 50 - Vector3.new(0, 12, 0))
+			g.aimedIdle = true
+		end
+		if e then g.aimedIdle = false end
+	end
+end
+
+-- corners of a mapped zone
+local function corners(z: any): { Vector3 }
+	local out = {}
+	local cp = z.instance and z.instance:FindFirstChild("ControlPoints")
+	if cp then
+		for _, p in cp:GetChildren() do
+			if p:IsA("BasePart") then table.insert(out, p.Position) end
 		end
 	end
+	return out
+end
+
+-- one tower: 2-3 guards spread around the cab, one spotlight on top
+local function buildTower(i: number, z: any, prisonCenter: Vector3)
+	local pts = corners(z)
+	local c = z.center
+	local bottom = tonumber(z.bottom) or c.Y
+	local top = tonumber(z.top) or (bottom + 20)
+	-- the cab's own parts (walls, railings, roof posts) are ignored for line of sight
+	local minX, maxX, minZ, maxZ = c.X - 6, c.X + 6, c.Z - 6, c.Z + 6
+	for _, p in pts do
+		minX, maxX, minZ, maxZ = math.min(minX, p.X), math.max(maxX, p.X), math.min(minZ, p.Z), math.max(maxZ, p.Z)
+	end
+	local boxCF = CFrame.new((minX + maxX) / 2, (bottom + top) / 2, (minZ + maxZ) / 2)
+	local boxSize = Vector3.new(maxX - minX + 6, top - bottom + 6, maxZ - minZ + 6)
+	local overlap = OverlapParams.new()
+	overlap.FilterType = Enum.RaycastFilterType.Exclude
+	overlap.FilterDescendantsInstances = { folder :: Instance }
+	local ignore: { Instance } = { folder :: Instance }
+	for _, p in Workspace:GetPartBoundsInBox(boxCF, boxSize, overlap) do
+		if not p:IsA("Terrain") then table.insert(ignore, p) end
+	end
+	local params = rayParams(ignore)
+	local floorParams = rayParams({ folder :: Instance })
+	local outward = ctx.Util.safeUnit(Vector3.new(c.X - prisonCenter.X, 0, c.Z - prisonCenter.Z), Vector3.zAxis)
+	-- ground below the tower, for the spotlight sweep
+	local g0 = Workspace:Raycast(Vector3.new(c.X, bottom - 2, c.Z) + outward * 30, Vector3.new(0, -200, 0), floorParams)
+	local tw = { i = i, look = outward, groundY = if g0 then g0.Position.Y else bottom - 30 }
+	-- guards: 3 on a big cab, else 2, at opposite sides
+	local area = (maxX - minX) * (maxZ - minZ)
+	local n = math.clamp(CFG.GuardsPerTower or (if area > 150 then 3 else 2), 1, 4)
+	table.sort(pts, function(a, b)
+		return math.atan2(a.Z - c.Z, a.X - c.X) < math.atan2(b.Z - c.Z, b.X - c.X)
+	end)
+	for k = 1, n do
+		local spot: Vector3
+		if #pts >= 3 then
+			local corner = pts[math.floor((k - 1) * #pts / n) + 1]
+			spot = c + (Vector3.new(corner.X, c.Y, corner.Z) - c) * 0.55
+		else
+			local ang = (k - 1) / n * math.pi * 2
+			spot = c + Vector3.new(math.cos(ang), 0, math.sin(ang)) * 3
+		end
+		local hit = Workspace:Raycast(Vector3.new(spot.X, bottom + 2.5, spot.Z), Vector3.new(0, -8, 0), floorParams)
+		local floor = if hit then hit.Position else Vector3.new(spot.X, bottom, spot.Z)
+		local look = ctx.Util.safeUnit(Vector3.new(spot.X - c.X, 0, spot.Z - c.Z) + outward, outward)
+		local g = makeGuard(#guards + 1, floor, look)
+		g.tower = tw
+		g.params = params
+		aimAt(g, floor + Vector3.new(0, 4.6, 0) + look * 50 - Vector3.new(0, 12, 0))
+		g.aimedIdle = true
+		table.insert(guards, g)
+	end
+	-- spotlight on a post in the middle of the cab
+	local hit = Workspace:Raycast(Vector3.new(c.X, bottom + 2.5, c.Z), Vector3.new(0, -8, 0), floorParams)
+	local floor = if hit then hit.Position else Vector3.new(c.X, bottom, c.Z)
+	part(folder :: Instance, "SpotlightPost_" .. i, Vector3.new(0.4, 5.5, 0.4), Color3.fromRGB(40, 40, 40), Enum.Material.Metal).CFrame =
+		CFrame.new(floor + Vector3.new(0, 2.75, 0))
+	local lamp = part(folder :: Instance, "TowerSpotlight_" .. i, Vector3.new(1.6, 1.6, 2), Color3.fromRGB(30, 30, 30), Enum.Material.Metal)
+	lamp.CFrame = CFrame.lookAt(floor + Vector3.new(0, 6.3, 0), floor + Vector3.new(0, 6.3, 0) + outward)
+	local lens = part(lamp, "Lens", Vector3.new(1.4, 1.4, 0.1), Color3.fromRGB(255, 245, 215), Enum.Material.Neon)
+	local weld = Instance.new("WeldConstraint")
+	lens.Anchored = false
+	lens.CFrame = lamp.CFrame * CFrame.new(0, 0, -1.02)
+	weld.Part0, weld.Part1 = lamp, lens
+	weld.Parent = lens
+	local light = Instance.new("SpotLight")
+	light.Range = 90
+	light.Angle = 22
+	light.Brightness = 8
+	light.Face = Enum.NormalId.Front
+	light.Shadows = true
+	light.Enabled = false
+	light.Parent = lens
+	-- a visible beam down to where the light points
+	local spot = part(folder :: Instance, "SpotlightTarget_" .. i, Vector3.new(0.2, 0.2, 0.2), Color3.new(1, 1, 1))
+	spot.Transparency = 1
+	local a0 = Instance.new("Attachment")
+	a0.Parent = lens
+	local a1 = Instance.new("Attachment")
+	a1.Parent = spot
+	local beam = Instance.new("Beam")
+	beam.Attachment0, beam.Attachment1 = a0, a1
+	beam.Width0, beam.Width1 = 1.4, 9
+	beam.Color = ColorSequence.new(Color3.fromRGB(255, 245, 215))
+	beam.Transparency = NumberSequence.new(0.55, 0.92)
+	beam.LightEmission = 1
+	beam.FaceCamera = true
+	beam.Segments = 1
+	beam.Enabled = false
+	beam.Parent = lens
+	tw.lamp, tw.light, tw.beam, tw.spot = lamp, light, beam, spot
+	table.insert(towers, tw)
 end
 
 function T.init(c: any): number
@@ -346,6 +486,7 @@ function T.init(c: any): number
 	f.Parent = Workspace
 	folder = f
 	towers = {}
+	guards = {}
 	local prison = F.get("Prison")
 	if not prison then return 0 end
 	local center = Vector3.zero
@@ -353,14 +494,19 @@ function T.init(c: any): number
 	center /= math.max(1, #prison.zones)
 	local posts = F.points("Prison", "SniperPost")
 	if #posts > 0 then
+		-- mapped SniperPost points: one guard each, grouped as their own "towers"
 		for i, p in posts do
-			table.insert(towers, makePost(i, p.position, p.cframe.LookVector))
+			local look = ctx.Util.safeUnit(Vector3.new(p.cframe.LookVector.X, 0, p.cframe.LookVector.Z), Vector3.zAxis)
+			local fake = { center = p.position, bottom = p.position.Y - 1, top = p.position.Y + 12, instance = nil }
+			local saved = CFG.GuardsPerTower
+			CFG.GuardsPerTower = 1
+			buildTower(i, fake, p.position - look * 50)
+			CFG.GuardsPerTower = saved
 		end
 	else
 		for i, z in F.zones("Prison", "GuardTower") do
-			local hit = Workspace:Raycast(z.center + Vector3.new(0, 2, 0), Vector3.new(0, -12, 0))
-			local floor = if hit then hit.Position else z.center
-			table.insert(towers, makePost(i, floor, z.center - center))
+			local ok, err = pcall(buildTower, i, z, center)
+			if not ok then warn(("[GuardTowers] tower %d (%s) failed: %s"):format(i, tostring(z.name), tostring(err))) end
 		end
 	end
 	task.spawn(function()
@@ -374,9 +520,15 @@ function T.init(c: any): number
 	for _, z in F.zones("Prison", "KillZone") do
 		if isStunZone(z) then stun += 1 else lethal += 1 end
 	end
-	print(("[GuardTowers] v%d: %d tower(s) manned (%s), lethal zones=%d stun zones=%d perimeter zones=%d"):format(T.VERSION, #towers,
-		if #posts > 0 then "SniperPost points" else "GuardTower zones", lethal, stun, #F.zones("Prison", "Perimeter")))
-	return #towers
+	print(("[GuardTowers] v%s: %d tower(s), %d guard(s) (%s), lethal zones=%d stun zones=%d perimeter zones=%d"):format(
+		tostring(T.VERSION), #towers, #guards, if #posts > 0 then "SniperPost points" else "GuardTower zones",
+		lethal, stun, #F.zones("Prison", "Perimeter")))
+	return #guards
+end
+
+-- debugging: the live guard list
+function T.guards(): { any }
+	return guards
 end
 
 return T
