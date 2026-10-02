@@ -458,8 +458,13 @@ do
 	wallXAt("FrontWallHigh", F1, FRONT, -HZ, HZ, SH - 32, windowRow(-HZ, HZ, 20, 8, 34), C.marble, M.Marble, 3)
 	for _, d in DOORS do
 		local z, w, top = d[1], d[2], d[3]
-		for _, s in { -1, 1 } do
-			deco("BronzeDoor", Vector3.new(w / 2, top - 6, 0.5), Vector3.new(FRONT - w / 4 - 1.6, F0 + (top - 6) / 2, z + s * (w / 2 - 0.25)), C.bronze, M.Metal, math.rad(90))
+		-- the leaves stand open, folded flat against the inside of the front wall (the side doors'
+		-- leaves both fold toward the middle - the side walls are too close on the outside)
+		local spots = if z == 0 then { -(w * 0.75 + 0.1), w * 0.75 + 0.1 } else { -math.sign(z) * (w * 0.75 + 0.1), -math.sign(z) * (w * 1.25 + 0.2) }
+		for _, dz in spots do
+			deco("BronzeDoor", Vector3.new(0.5, top - 6, w / 2), Vector3.new(FRONT - 1.85, F0 + (top - 6) / 2, z + dz), C.bronze, M.Metal)
+			deco("DoorPanel", Vector3.new(0.2, (top - 6) * 0.4, w / 2 - 1.2), Vector3.new(FRONT - 2.2, F0 + (top - 6) * 0.7, z + dz), C.brass, M.Metal)
+			deco("DoorPanel", Vector3.new(0.2, (top - 6) * 0.4, w / 2 - 1.2), Vector3.new(FRONT - 2.2, F0 + (top - 6) * 0.27, z + dz), C.brass, M.Metal)
 		end
 		local tr = deco("Transom", Vector3.new(0.4, 5, w), Vector3.new(FRONT, F0 + top - 3, z), C.bronze, M.DiamondPlate)
 		tr.Transparency = 0.25
@@ -548,7 +553,7 @@ local function onCircle(theta: number, r: number, y: number): Vector3
 end
 -- openings in the drum: { centre angle, half-width (studs), y from, y to }
 local OPEN = {
-	{ 0, 8, F0, F0 + 22 }, { math.pi, 12, F0, F0 + 22 }, -- vestibule / stair hall (ground)
+	{ 0, 14, F0, F0 + 26 }, { math.pi, 12, F0, F0 + 22 }, -- vestibule (a grand 28 x 26 opening) / stair hall (ground)
 	{ math.pi / 2, 5, F0, F0 + 14 }, { -math.pi / 2, 5, F0, F0 + 14 }, -- the corridors (ground)
 	{ 0, 6, F1 - 1.2, F1 + 16 }, { math.pi, 8, F1 - 1.2, F1 + 16 }, -- upper hall / the bridge (upper)
 	{ math.pi / 2, 5, F1 - 1.2, F1 + 14 }, { -math.pi / 2, 5, F1 - 1.2, F1 + 14 }, -- the upper corridors
@@ -773,26 +778,43 @@ marker("RotundaSpot", Vector3.new(RCX + 10, F0 + 3, 0))
 ---------------------------------------------------------------------------
 group("Vestibule")
 local VX0 = RCX + RR + 1 -- 70
-wallXAt("VestibuleBack", F0, VX0, -BAND, BAND, GH, { { 0, 16, nil, 22 } }, C.marbleWarm, M.Marble, 2)
+-- THE FOYER: a transverse entrance hall (18 deep, 80 wide, 31 high). The main axis runs clear
+-- from the bronze doors through a 28 x 26 opening into the rotunda; security is at the side doors.
+wallXAt("VestibuleBack", F0, VX0, -BAND, BAND, GH, { { 0, 28, nil, 26 } }, C.marbleWarm, M.Marble, 2)
 wallZAt("VestibuleS", F0, -BAND, VX0, HX, GH, { { 79, 8, nil, 14 } }, C.marbleWarm, M.Marble)
 wallZAt("VestibuleN", F0, BAND, VX0, HX, GH, { { 79, 8, nil, 14 } }, C.marbleWarm, M.Marble)
+-- the opening's surround: green marble columns either side, a marble entablature over it
+for _, z in { -16.5, 16.5 } do
+	column(VX0 + 2.6, F0, z, 26, 2.8, C.marbleGreen)
+end
+block("OpeningLintel", Vector3.new(4, 3, 36), Vector3.new(VX0 + 2.6, F0 + 27.5, 0), C.marble)
+deco("OpeningLintelBand", Vector3.new(4.4, 0.8, 36.4), Vector3.new(VX0 + 2.6, F0 + 28.4, 0), C.marbleGrey)
+-- columns flanking the side bays
+for _, z in { -31, 31 } do
+	column(VX0 + 2.6, F0, z, GH, 2.8, C.marbleGreen)
+end
+-- coffered ceiling with rosettes
 for xi = 0, 3 do
 	for zi = 0, 15 do
-		deco("VestibuleCoffer", Vector3.new(3.4, 0.6, 3.6), Vector3.new(VX0 + 2.5 + xi * 4.4, F1 - 1.6, -38 + zi * 5), C.marbleGrey)
+		local cx, cz = VX0 + 2.5 + xi * 4.4, -38 + zi * 5
+		deco("VestibuleCoffer", Vector3.new(3.4, 0.6, 3.6), Vector3.new(cx, F1 - 1.6, cz), C.marbleGrey)
+		cylinder("VestibuleRosette", 0.3, 1.2, Vector3.new(cx, F1 - 2.05, cz), C.brass, M.Metal).CanCollide = false
 	end
 end
-for _, z in { -24, 24 } do
-	cylinder("VestibuleColumn", 30.6, 3, Vector3.new(VX0 + 9, F0 + 15.3, z), C.marbleGreen)
+-- the floor: a dark marble band with a lighter inlay running from the doors to the rotunda
+deco("FoyerBand", Vector3.new(HX - VX0 - 1, 0.1, 14), Vector3.new((VX0 + HX) / 2, F0 + 0.05, 0), C.marbleDark)
+deco("FoyerInlay", Vector3.new(HX - VX0 - 3, 0.16, 10), Vector3.new((VX0 + HX) / 2, F0 + 0.08, 0), C.marbleWarm)
+for _, z in { -32, 32 } do
+	-- security at each side door: a walk-through detector and a desk beside it
+	deco("DetectorL", Vector3.new(1, 8, 1), Vector3.new(FRONT - 9, F0 + 4, z - 3.6), C.black, M.Metal)
+	deco("DetectorR", Vector3.new(1, 8, 1), Vector3.new(FRONT - 9, F0 + 4, z + 3.6), C.black, M.Metal)
+	deco("DetectorTop", Vector3.new(1.2, 1, 8.2), Vector3.new(FRONT - 9, F0 + 8.5, z), C.black, M.Metal)
+	block("SecurityDesk", Vector3.new(8, 3.6, 3), Vector3.new(FRONT - 12, F0 + 1.8, z - math.sign(z) * 7), C.panel, M.Wood)
 end
-deco("DetectorL", Vector3.new(1, 8, 1), Vector3.new(VX0 + 6, F0 + 4, -3.6), C.black, M.Metal)
-deco("DetectorR", Vector3.new(1, 8, 1), Vector3.new(VX0 + 6, F0 + 4, 3.6), C.black, M.Metal)
-deco("DetectorTop", Vector3.new(1.2, 1, 8.2), Vector3.new(VX0 + 6, F0 + 8.5, 0), C.black, M.Metal)
-block("SecurityDesk", Vector3.new(4, 3.6, 10), Vector3.new(VX0 + 6, F0 + 1.8, -16), C.panel, M.Wood)
-marker("MetalDetector", Vector3.new(VX0 + 6, F0 + 3, 0))
-for _, z in { -30, 30 } do
+marker("MetalDetector", Vector3.new(FRONT - 9, F0 + 3, -32))
+for _, z in { -30, 0, 30 } do
 	lamp(Vector3.new(VX0 + 9, F1 - 3, z), 36)
 end
-lamp(Vector3.new(VX0 + 9, F1 - 3, 0), 36)
 -- upper hall (above the vestibule, looking out through the portico)
 wallXAt("UpperHallBack", F1, VX0, -BAND, BAND, SH - 32, { { 0, 12, nil, 18 } }, C.marbleWarm, M.Marble, 2)
 wallZAt("UpperHallS", F1, -BAND, VX0, HX, SH - 32, { { 79, 8, nil, 14 } }, C.marbleWarm, M.Marble)
@@ -1042,14 +1064,20 @@ wallXAt("NU_Div2", F1, -40, N0, N1, UH, { { 104, 6, nil, 14 } }) -- the jury's d
 local CX0, CX1, CZ0, CZ1 = -40, 60, N0, N1
 local CZC = (CZ0 + CZ1) / 2 -- 84
 roomAt("Courtroom", F1, UH, CX0, CX1, CZ0, CZ1, C.wood, nil, Vector3.new(56, F1 + 3, CZC))
-for k = 0, 5 do
-	local x = CX0 + 6 + k * 17.6
+-- pilasters: between the tall windows on the north wall, and clear of the doors on the south
+for _, x in { -27, -9, 9, 27, 45 } do
 	deco("Pilaster", Vector3.new(3, UH - 6, 0.9), Vector3.new(x, F1 + (UH - 6) / 2, CZ1 - 2.4), C.marble)
 	deco("PilasterCap", Vector3.new(4, 2, 1.4), Vector3.new(x, F1 + UH - 6, CZ1 - 2.4), C.marbleWarm)
-	deco("Pilaster", Vector3.new(3, UH - 6, 0.9), Vector3.new(x, F1 + (UH - 6) / 2, CZ0 + 1.4), C.marble)
 end
-deco("CourtWainscotN", Vector3.new(CX1 - CX0, 10, 0.4), Vector3.new((CX0 + CX1) / 2, F1 + 5, CZ1 - 2), C.panel, M.Wood)
-deco("CourtWainscotS", Vector3.new(CX1 - CX0, 10, 0.4), Vector3.new((CX0 + CX1) / 2, F1 + 5, CZ0 + 1), C.panel, M.Wood)
+for _, x in { -36, -12, 8, 28 } do
+	deco("Pilaster", Vector3.new(3, UH - 6, 0.9), Vector3.new(x, F1 + (UH - 6) / 2, CZ0 + 1.4), C.marble)
+	deco("PilasterCap", Vector3.new(4, 2, 1.4), Vector3.new(x, F1 + UH - 6, CZ0 + 1.4), C.marbleWarm)
+end
+-- wainscot: below the window sills on the north wall; on the south wall in runs between the doors
+deco("CourtWainscotN", Vector3.new(CX1 - CX0, 7, 0.4), Vector3.new((CX0 + CX1) / 2, F1 + 3.5, CZ1 - 2), C.panel, M.Wood)
+for _, run in { { CX0, -29.4 }, { -22.6, 43.6 }, { 56.4, CX1 } } do -- the doors are at x -29..-23 and 44..56
+	deco("CourtWainscotS", Vector3.new(run[2] - run[1], 10, 0.4), Vector3.new((run[1] + run[2]) / 2, F1 + 5, CZ0 + 1), C.panel, M.Wood)
+end
 for i = 0, 4 do
 	deco("CourtBeam", Vector3.new(2.4, 2.4, CZ1 - CZ0), Vector3.new(CX0 + 10 + i * 20, ROOF - 1.4, CZC), C.panelDark, M.Wood)
 end
