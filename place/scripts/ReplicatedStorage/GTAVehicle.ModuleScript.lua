@@ -28,6 +28,11 @@ M.AccelScale = 1.3
 M.AccelByLine = {} :: { [string]: number } -- per handling line, e.g. INFERNUS = 1.1
 M.RideHeight = 0.3 -- studs the body rides higher than the model was built
 M.BodyRoll = 1 -- 1 = GTA IV's lean / nose dive / squat from its suspension values, 0 = none
+-- a normal GTA IV car's proportions (metres): every frame leans and turns as if its wheels
+-- were this far apart, whatever the Roblox model's size (replace per car once the real
+-- IV model dimensions are in)
+M.RefTrack = 1.55
+M.RefWheelbase = 2.65
 
 function M.configure(data: any)
 	if type(data) == "table" then
@@ -139,10 +144,19 @@ function M.new(car: Model, seat: BasePart, h: any, metersToStuds: number): any
 	end
 	local midZ = sumZ / #wheels
 	local fronts, rears = 0, 0
+	local minX, maxX, frontZ, rearZ = math.huge, -math.huge, 0, 0
 	for _, w in wheels do
 		w.front = w.offset.Z < midZ -- the seat looks down -Z
 		if w.front then fronts += 1 else rears += 1 end
+		minX, maxX = math.min(minX, w.offset.X), math.max(maxX, w.offset.X)
+		if w.front then frontZ += w.offset.Z else rearZ += w.offset.Z end
 	end
+	-- the frame's proportions against a normal GTA IV car (M.RefTrack / M.RefWheelbase):
+	-- lean, dive and the turning circle are worked out as if the wheels were there
+	local track = math.max(maxX - minX, 0.5)
+	local wheelbase = math.max(math.abs(rearZ / math.max(1, rears) - frontZ / math.max(1, fronts)), 1)
+	local trackRatio = track / (M.RefTrack * metersToStuds)
+	local wbRatio = wheelbase / (M.RefWheelbase * metersToStuds)
 	local spins, steers = {}, {}
 	for _, obj in car:GetDescendants() do
 		if obj:IsA("HingeConstraint") then
@@ -198,6 +212,7 @@ function M.new(car: Model, seat: BasePart, h: any, metersToStuds: number): any
 
 	return {
 		car = car, seat = seat, h = h, S = metersToStuds, wheels = wheels, fronts = math.max(1, fronts), rears = math.max(1, rears),
+		trackRatio = trackRatio, wbRatio = wbRatio,
 		spins = spins, steers = steers, params = params, steer = 0, gear = 1, rpm = 0, yawScale = yawScale,
 		anti = seat:FindFirstChild("GTAAntiGravity"), steerDirection = seat:GetAttribute("SteerDirection") or 1,
 	}
@@ -231,9 +246,21 @@ end
 -- the tyres grip at real 1 g (G), so at the contact patch the lean / dive / squat would come
 -- out Gw/G (~7x) too small. Acting at hCOM * (Gw/G - 1) below the patch gives exactly the
 -- lean IV's springs produce at real gravity. BodyRoll 1 = exact, 0 = none.
-local function tyrePoint(st: any, contact: Vector3, up: Vector3, G: number, Gw: number): Vector3
+-- `ratio` makes the frame lean like an IV car of normal proportions whatever the Roblox
+-- model's size: lean goes with 1/track^2 (sideways forces) and dive / squat with
+-- 1/wheelbase^2 (forward forces), so the lever is scaled by (frame / reference)^2.
+local function tyrePoint(st: any, contact: Vector3, up: Vector3, G: number, Gw: number, ratio: number): Vector3
 	local hCOM = math.max(0, (st.seat.AssemblyCenterOfMass - contact):Dot(up))
-	return contact - up * (hCOM * (Gw / G - 1) * M.BodyRoll)
+	local lever = hCOM * (Gw / G) * ratio * ratio * M.BodyRoll -- below the centre of mass
+	return contact + up * (hCOM - lever)
+end
+
+-- one tyre: the spring straight up at the patch, sideways and forward grip at their levers
+local function tyreForces(st: any, contact: Vector3, up: Vector3, G: number, Gw: number, nSpring: number,
+	wf: Vector3, fLong: number, wr: Vector3, fLat: number, dt: number)
+	push(st, up * nSpring * dt, contact, up)
+	push(st, wr * fLat * dt, tyrePoint(st, contact, up, G, Gw, st.trackRatio), up)
+	push(st, wf * fLong * dt, tyrePoint(st, contact, up, G, Gw, st.wbRatio), up)
 end
 
 -- input = { throttle = -1..1 (S = brake / reverse), steer = -1..1, handbrake = bool }
@@ -354,7 +381,9 @@ function M.step(st: any, dt: number, input: any): any
 
 		-- tyre
 		local n = hit.Normal
-		local steerA = if w.front then st.steer else 0
+		-- steering geometry: a frame longer or shorter than an IV car would turn a wider or
+		-- tighter circle for the same lock; tan(angle) x (frame / IV wheelbase) gives IV's circle
+		local steerA = if w.front then math.atan(math.tan(st.steer) * st.wbRatio) else 0
 		local wf = CFrame.fromAxisAngle(up, -steerA) * fwd
 		wf = (wf - n * wf:Dot(n))
 		wf = if wf.Magnitude > 1e-3 then wf.Unit else fwd
@@ -391,9 +420,9 @@ function M.step(st: any, dt: number, input: any): any
 			w.skid = planarSpeed
 			w.contactPos = hit.Position
 			w.spin = 0
-			local at = tyrePoint(st, hit.Position, up, G, Gw)
+
 			dbgN += N; dbgLat += wf * fl + wr * fr; table.insert(dbgComp, math.floor(comp * 100) / 100)
-			push(st, (up * N + wf * fl + wr * fr) * dt, at, up)
+			tyreForces(st, hit.Position, up, G, Gw, Nspring, wf, fl, wr, fr, dt) -- (the spring used to push with the grip-scaled N here: the car sank on the handbrake)
 			continue
 		end
 		-- longitudinal: engine (by drive bias), brakes (by brake bias), rolling
@@ -428,9 +457,9 @@ function M.step(st: any, dt: number, input: any): any
 		w.skid = if slip > peak * 1.3 and math.abs(vr) > 6 then math.abs(vr)
 			elseif w.slipping then math.abs(vf) * 0.5 else 0
 		-- forces act a little above the contact patch (GTA IV's body roll, without tipping every corner)
-		local at = tyrePoint(st, hit.Position, up, G, Gw)
+
 		dbgN += N; dbgLat += wf * fLong + wr * fLat; table.insert(dbgComp, math.floor(comp * 100) / 100)
-		push(st, (up * Nspring + wf * fLong + wr * fLat) * dt, at, up)
+		tyreForces(st, hit.Position, up, G, Gw, Nspring, wf, fLong, wr, fLat, dt)
 	end
 
 	-- live numbers for tuning (read with require(GTAVehicle).debug on the driver's client)
