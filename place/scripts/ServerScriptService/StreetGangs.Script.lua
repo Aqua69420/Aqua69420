@@ -488,7 +488,7 @@ local function endJob(player: Player, ok: boolean)
 		j.drop:Destroy()
 	end
 	if ok then
-		economy("AddCash", player, j.pay)
+		economy("AddDirtyCash", player, j.pay) -- v255: dirty
 		addRep(player, j.gang, 6, "street job done")
 		notice(player, ("Drop made - $%d"):format(j.pay))
 	else

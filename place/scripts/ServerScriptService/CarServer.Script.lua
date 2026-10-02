@@ -1239,6 +1239,10 @@ end
 local lastSpawn = {}
 
 local function trySpawnOnPad(player, carName, pad)
+	if player:GetAttribute("VehiclesImpounded") then
+		notify(player, "Your vehicles are impounded - Clark County DA")
+		return false
+	end
 	local key = getStorage(player):FindFirstChild(carName)
 	if not key then
 		notify(player, "You don't have the keys to that car.")
@@ -1409,3 +1413,18 @@ Players.PlayerRemoving:Connect(function(player)
 	lastSpawn[player] = nil
 	padCooldown[player] = nil
 end)
+
+-- v255: an asset freeze impounds the player's car (AssetFreeze sets VehiclesImpounded)
+local function watchImpound(player)
+	player:GetAttributeChangedSignal("VehiclesImpounded"):Connect(function()
+		if player:GetAttribute("VehiclesImpounded") and activeCars[player] then
+			destroyCar(activeCars[player])
+			activeCars[player] = nil
+			print(("[CarServer] %s's car impounded"):format(player.Name))
+		end
+	end)
+end
+Players.PlayerAdded:Connect(watchImpound)
+for _, player in ipairs(Players:GetPlayers()) do
+	watchImpound(player)
+end

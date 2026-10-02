@@ -30,7 +30,10 @@ local PAINT = {
 
 local function economy(action, player, amount)
 	local fn = ServerStorage:WaitForChild("Economy", 10)
-	return fn and fn:Invoke(action, player, amount)
+	if not fn then
+		return nil
+	end
+	return fn:Invoke(action, player, amount)
 end
 
 local function reportCrime(player, crime, stars)
@@ -127,8 +130,17 @@ local function moveIn(player, property, free)
 	if property.owner then
 		return false, "Someone already lives here"
 	end
+	-- v255: a place paid for mostly with dirty money carries a lien (taken at an asset freeze)
+	local dirtyPaid = false
+	if not free then
+		local dc, db = economy("Dirty", player)
+		dirtyPaid = (tonumber(dc) or 0) + (tonumber(db) or 0) >= property.deposit * 0.5
+	end
 	if not free and not economy("Charge", player, property.deposit) then
 		return false, ("You need $%d to move in"):format(property.deposit)
+	end
+	if not free then
+		player:SetAttribute("HouseDirty", if dirtyPaid then true else nil)
 	end
 	property.owner = player
 	property.ownerValue.Value = player.Name
@@ -286,10 +298,29 @@ local function onPlayerAdded(player)
 	end
 	player:GetAttributeChangedSignal("SavedHouse"):Connect(claimSaved)
 	claimSaved()
+	-- v255: AssetFreeze sets HouseLien when a dirty-money home is seized
+	player:GetAttributeChangedSignal("HouseLien"):Connect(function()
+		if player:GetAttribute("HouseLien") and owned[player] then
+			moveOut(player)
+			player:SetAttribute("SavedHouse", nil)
+			player:SetAttribute("HouseDirty", nil)
+			notify(player, "Your home was seized - a DA lien on property bought with crime money")
+		end
+	end)
 end
 Players.PlayerAdded:Connect(onPlayerAdded)
 for _, player in ipairs(Players:GetPlayers()) do
 	onPlayerAdded(player)
+end
+-- v255: AssetFreeze puts the house safe inside the owner's home
+do
+	local fn = ServerStorage:FindFirstChild("HouseOf") or Instance.new("BindableFunction")
+	fn.Name = "HouseOf"
+	fn.OnInvoke = function(player)
+		local property = owned[player]
+		return property and property.model
+	end
+	fn.Parent = ServerStorage
 end
 Players.PlayerRemoving:Connect(function(player)
 	local property = owned[player]

@@ -807,7 +807,7 @@ heist.OnServerEvent:Connect(function(player, action, id, value)
 			end
 			bank.robbing[player] = nil
 			bank.robbedBy[player] = true
-			economy("AddCash", player, amount)
+			economy("AddDirtyCash", player, amount) -- v255: heist money is dirty
 			do
 				local report = ServerStorage:FindFirstChild("ReportCrime")
 				if report then

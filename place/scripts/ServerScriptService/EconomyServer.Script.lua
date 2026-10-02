@@ -180,6 +180,39 @@ local function total(player)
 	return player.Cash.Value + player.Money.Value
 end
 
+-- v255 dirty money: how much of Cash / Money (bank) is crime money, as the
+-- attributes DirtyCash / DirtyBank. Spending takes clean and dirty in proportion;
+-- moving money (deposit, withdraw, transfer) carries its dirty share along.
+local DIRTY_ATTR = { Cash = "DirtyCash", Money = "DirtyBank" }
+
+local function dirtyOf(player, pool)
+	return math.max(0, math.floor(tonumber(player:GetAttribute(DIRTY_ATTR[pool])) or 0))
+end
+
+local function setDirty(player, pool, amount)
+	local cap = player[pool].Value
+	amount = math.clamp(math.floor(amount), 0, math.max(cap, 0))
+	player:SetAttribute(DIRTY_ATTR[pool], if amount > 0 then amount else nil)
+end
+
+-- the dirty part of `amount` taken out of `pool` (removed from that pool's dirty total)
+local function takeDirty(player, pool, amount)
+	local have = player[pool].Value
+	if amount <= 0 or have <= 0 then
+		return 0
+	end
+	local d = dirtyOf(player, pool)
+	local share = math.floor(d * math.min(amount, have) / have + 0.5)
+	player:SetAttribute(DIRTY_ATTR[pool], if d - share > 0 then d - share else nil)
+	return share
+end
+
+local function addDirty(player, pool, amount)
+	if amount > 0 then
+		player:SetAttribute(DIRTY_ATTR[pool], dirtyOf(player, pool) + amount)
+	end
+end
+
 -- Takes money, cash first then bank. Returns true if paid.
 local function charge(player, amount)
 	amount = math.floor(amount)
@@ -187,6 +220,8 @@ local function charge(player, amount)
 		return false
 	end
 	local fromCash = math.min(player.Cash.Value, amount)
+	takeDirty(player, "Cash", fromCash)
+	takeDirty(player, "Money", amount - fromCash)
 	player.Cash.Value -= fromCash
 	player.Money.Value -= amount - fromCash
 	return true
@@ -262,6 +297,8 @@ local function snapshot(player)
 		cash = cash and cash.Value or 0,
 		bank = bank and bank.Value or 0,
 		cars = cars,
+		dirtyCash = dirtyOf(player, "Cash"),
+		dirtyBank = dirtyOf(player, "Money"),
 		house = player:GetAttribute("HouseId"),
 		savedAt = os.time(),
 	}
@@ -319,7 +356,10 @@ local function loadData(player)
 	local startCash, startBank = PlayerDefaults.start(player)
 	player.Cash.Value = tonumber(data.cash) or startCash
 	player.Money.Value = tonumber(data.bank) or startBank
+	setDirty(player, "Cash", tonumber(data.dirtyCash) or 0)
+	setDirty(player, "Money", tonumber(data.dirtyBank) or 0)
 	applyFloor(player)
+	player:SetAttribute("EconomyLoaded", true) -- v255: AssetFreeze waits for this
 	-- only a successful read (a returning player OR a genuinely new one) may be saved over
 	loaded[player] = store ~= nil and ok
 	print(("[EconomyServer] %s loaded: cash=%d bank=%d (%s)"):format(
@@ -483,6 +523,7 @@ local function onPlayerAdded(player)
 			humanoid.Died:Connect(function()
 				local dropped = player.Cash.Value
 				player.Cash.Value = 0
+				player:SetAttribute("DirtyCash", nil)
 				dropCash(character, dropped)
 			end)
 		end
@@ -521,6 +562,14 @@ task.spawn(function()
 		task.wait(1)
 		sinceSave += 1
 		for _, player in ipairs(Players:GetPlayers()) do
+			-- v255: scripts that change Cash / Money directly can't leave more dirty than there is
+			if loaded[player] then
+				for pool, attr in DIRTY_ATTR do
+					if player:GetAttribute(attr) and dirtyOf(player, pool) > player[pool].Value then
+						setDirty(player, pool, player[pool].Value)
+					end
+				end
+			end
 			local timer = player:FindFirstChild("PaydayTimer")
 			if timer and loaded[player] then
 				timer.Value -= 1
@@ -558,19 +607,28 @@ local function bank(player, action, amount, target)
 	if amount <= 0 or not loaded[player] then
 		return false
 	end
+	-- v255: a frozen account (felony money case) takes deposits but pays nothing out
+	if player:GetAttribute("AssetsFrozen") and action ~= "Deposit" then
+		notify(player, "ACCOUNT FROZEN - Clark County DA", 5)
+		return false
+	end
 	if action == "Deposit" then
 		if player.Cash.Value < amount then
 			return false
 		end
+		local d = takeDirty(player, "Cash", amount)
 		player.Cash.Value -= amount
 		player.Money.Value += amount
+		addDirty(player, "Money", d)
 		return true
 	elseif action == "Withdraw" then
 		if player.Money.Value < amount then
 			return false
 		end
+		local d = takeDirty(player, "Money", amount)
 		player.Money.Value -= amount
 		player.Cash.Value += amount
+		addDirty(player, "Cash", d)
 		return true
 	elseif action == "Transfer" then
 		if typeof(target) ~= "Instance" or not target:IsA("Player") or target == player or not loaded[target] then
@@ -579,8 +637,12 @@ local function bank(player, action, amount, target)
 		if player.Money.Value < amount then
 			return false
 		end
+		-- dirty money stays dirty in someone else's account; a frozen friend gets it as cash
+		local d = takeDirty(player, "Money", amount)
 		player.Money.Value -= amount
-		target.Money.Value += amount
+		local pool = if target:GetAttribute("AssetsFrozen") then "Cash" else "Money"
+		target[pool].Value += amount
+		addDirty(target, pool, d)
 		if moneyRequest then
 			moneyRequest:FireClient(target, player, amount)
 		end
@@ -593,7 +655,7 @@ remote(functions, "RemoteFunction", "BankDeposit").OnServerInvoke = bank
 -- Other server scripts (ATMs in NPCServer) use this.
 local economyFn = ServerStorage:FindFirstChild("Economy") or Instance.new("BindableFunction")
 economyFn.Name = "Economy"
-economyFn.OnInvoke = function(action, player, amount)
+economyFn.OnInvoke = function(action, player, amount, ...)
 	if action == "Charge" then
 		return charge(player, amount)
 	elseif action == "OwnsPass" then
@@ -609,6 +671,24 @@ economyFn.OnInvoke = function(action, player, amount)
 		if amount > 0 then
 			player.Cash.Value += amount
 		end
+		return true
+	elseif action == "AddDirtyCash" then
+		-- v255: crime money (heists, robbery, street jobs, looting)
+		amount = math.floor(tonumber(amount) or 0)
+		if amount > 0 then
+			player.Cash.Value += amount
+			addDirty(player, "Cash", amount)
+		end
+		return true
+	elseif action == "Dirty" then
+		return dirtyOf(player, "Cash"), dirtyOf(player, "Money")
+	elseif action == "TakeDirty" then
+		-- (pool, amount) -> the dirty part of that amount, removed from the pool's dirty total
+		local pool, n = amount, math.floor(tonumber(select(1, ...)) or 0)
+		return takeDirty(player, pool, n)
+	elseif action == "AddDirty" then
+		local pool, n = amount, math.floor(tonumber(select(1, ...)) or 0)
+		addDirty(player, pool, n)
 		return true
 	elseif action == "Balance" then
 		return player.Cash.Value, player.Money.Value

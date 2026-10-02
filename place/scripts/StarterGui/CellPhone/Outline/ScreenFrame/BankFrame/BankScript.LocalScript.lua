@@ -142,3 +142,26 @@ confirm.MouseButton1Click:Connect(function()
 end)
 
 layout()
+
+-- v255: a frozen account (felony money case) shows the DA's banner over the app
+local frozenBanner = Instance.new("TextLabel")
+frozenBanner.Name = "FrozenBanner"
+frozenBanner.Size = UDim2.new(1, 0, 0, 44)
+frozenBanner.BackgroundColor3 = Color3.fromRGB(150, 20, 20)
+frozenBanner.TextColor3 = Color3.new(1, 1, 1)
+frozenBanner.Font = Enum.Font.SourceSansBold
+frozenBanner.TextScaled = true
+frozenBanner.Text = "ACCOUNT FROZEN\nClark County DA"
+frozenBanner.ZIndex = 10
+frozenBanner.Parent = frame
+local function showFrozen()
+	local frozen = player:GetAttribute("AssetsFrozen") == true
+	frozenBanner.Visible = frozen
+	transferButton.Active = not frozen
+	if frozen and open then
+		open = false
+		layout()
+	end
+end
+player:GetAttributeChangedSignal("AssetsFrozen"):Connect(showFrozen)
+showFrozen()

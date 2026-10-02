@@ -10548,6 +10548,9 @@ function Justice.jail(player: Player, officer: Player?, preferredTransport: any?
 	scene.route = PrisonFlow.arrestRoute(player, stars, keys, scene.pos)
 	if scene.complied then secs = math.floor(secs * (JCFG.CompliedScale or 1)) end
 	if scene.turnedIn then secs = math.floor(secs * (JCFG.TurnInScale or 0.7)) end
+	-- v255: AssetFreeze reads the charges of every arrest (felony money cases freeze assets)
+	player:SetAttribute("LastArrestCharges", text)
+	player:SetAttribute("LastArrestAt", os.time())
 	-- v242: the permanent record; repeat offenders get longer
 	if Justice.Records then
 		local okR, idx = pcall(Justice.Records.addArrest, player, { charges = text, stars = stars, route = scene.route,

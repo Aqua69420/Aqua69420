@@ -426,7 +426,7 @@ local function dropCivilianLoot(position)
 		taken = true
 		local amount = drop:GetAttribute("CashAmount") or 0
 		if economy and amount > 0 then
-			economy:Invoke("AddCash", player, amount)
+			economy:Invoke("AddDirtyCash", player, amount) -- v255: looted = dirty
 		end
 		drop:Destroy()
 	end)

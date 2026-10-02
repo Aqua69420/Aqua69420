@@ -42,7 +42,8 @@ Read this first in a new Claude session. Working branch: `claude/roblox-cuffwalk
   (HTTP is ON in the place); export goes the other way with PostAsync.
 - v252/v253 drugs (Drugs.Script, DrugsClient), v254 bail (PoliceSystem.Bail + BailClient; court = HQ front desk until v263).
 - Side build: GTA IV handling (ReplicatedStorage.GTAVehicle / GTAHandlingData = the user's real handling.dat), F enter/exit, Space handbrake.
-- Next: v255 asset freeze & stashes. (old note: v240 multi-building (Police HQ etc. from the user's mapped place), v241 arrest scene. See ROADMAP.md.
+- v255 asset freeze & stashes: AssetFreeze.Script (DataStore LasVegas_Assets_v1) + StashClient. Dirty money = DirtyCash/DirtyBank attributes kept by EconomyServer (Economy AddDirtyCash/TakeDirty/AddDirty/Dirty). PoliceSystem stamps LastArrestCharges/LastArrestAt; a money-crime arrest with dirty money freezes (AssetsFrozen, VehiclesImpounded, HouseLien). House safe by the front door, safe deposit boxes in the bank vault, B buries a stash. Case closes 20 s after custody + court date clear.
+- Next: v256 phone calls. (old note: v240 multi-building (Police HQ etc. from the user's mapped place), v241 arrest scene. See ROADMAP.md.
 
 ## With the Studio MCP server connected
 **User rule: do NOT start play tests unless the user explicitly asks** (they burn usage). The user plays and reports.

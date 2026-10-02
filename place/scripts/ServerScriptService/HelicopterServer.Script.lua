@@ -389,6 +389,9 @@ local function spawnHeli(player: Player, name: string): (boolean, string)
 	if inCustody(player) then
 		return false, "Not while you're in custody"
 	end
+	if player:GetAttribute("VehiclesImpounded") then
+		return false, "Impounded - Clark County DA"
+	end
 	local char = player.Character
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	if not hum or hum.Health <= 0 then
@@ -599,5 +602,18 @@ game:BindToClose(function()
 		save(p)
 	end
 end)
+
+-- v255: an asset freeze impounds the player's helicopter
+local function watchImpound(player: Player)
+	player:GetAttributeChangedSignal("VehiclesImpounded"):Connect(function()
+		if player:GetAttribute("VehiclesImpounded") then
+			despawn(player)
+		end
+	end)
+end
+Players.PlayerAdded:Connect(watchImpound)
+for _, p in Players:GetPlayers() do
+	watchImpound(p)
+end
 
 print("[HelicopterServer] ready: " .. #CATALOG .. " helicopters for sale")
