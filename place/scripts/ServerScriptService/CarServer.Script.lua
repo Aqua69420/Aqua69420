@@ -578,6 +578,33 @@ function GTA.setup(car, seat)
 	vf.ApplyAtCenterOfMass = true
 	vf.Force = Vector3.zero
 	vf.Parent = seat
+	-- IV weight -> Roblox weight: AssemblyMass = handling.dat mass (kg) x MassScale, so every
+	-- car keeps IV's weight ratios (a 2,500 kg van shoves a 1,700 kg sedan like in IV). The
+	-- ballast is stretched along the wheelbase (weight spread front to back like a real
+	-- car) and its density makes up the difference to the target.
+	do
+		local massScale = tonumber(GTA.data.MassScale) or 0.15
+		local target = math.max(50, h.mass * massScale)
+		local ballast = car:FindFirstChild("Ballast")
+		local essentials = car:FindFirstChild("Essentials")
+		if ballast and ballast:IsA("BasePart") and essentials then
+			local minX, maxX, minZ, maxZ = math.huge, -math.huge, math.huge, -math.huge
+			for _, n in { "LF", "RF", "LB", "RB" } do
+				local w = essentials:FindFirstChild(n)
+				if w and w:IsA("BasePart") then
+					local lp = seat.CFrame:PointToObjectSpace(w.Position)
+					minX, maxX, minZ, maxZ = math.min(minX, lp.X), math.max(maxX, lp.X), math.min(minZ, lp.Z), math.max(maxZ, lp.Z)
+				end
+			end
+			if minX < math.huge then
+				ballast.Size = Vector3.new(math.max(maxX - minX, 1.5), 1, math.max(maxZ - minZ, 3))
+			end
+			local others = seat.AssemblyMass - ballast:GetMass()
+			local density = math.clamp((target - others) / (ballast.Size.X * ballast.Size.Y * ballast.Size.Z), 0.01, 100)
+			ballast.CustomPhysicalProperties = PhysicalProperties.new(density, 0.3, 0.5)
+			print(("[GTAHandling] %s weight: IV %d kg -> %.0f (target %.0f)"):format(car.Name, h.mass, seat.AssemblyMass, target))
+		end
+	end
 	local st = GTA.Vehicle.new(car, seat, h, GTA.data.MetersToStuds or 2.8)
 	if not st then
 		seat:SetAttribute("GTAHandling", nil)
