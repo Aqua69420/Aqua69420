@@ -592,25 +592,64 @@ do
 	remote.Name = "CarEnterExit"
 	remote.Parent = ReplicatedStorage
 	local busy = {}
-	remote.OnServerEvent:Connect(function(player, car)
+	-- the car a seat belongs to: the model directly under Workspace / SpawnedCars
+	local function carOf(seat)
+		local m = seat:FindFirstAncestorWhichIsA("Model")
+		while m and m.Parent and m.Parent:IsA("Model") do
+			m = m.Parent
+		end
+		return m
+	end
+	-- GTA: you only get in with F, never by walking into a seat
+	local function noTouchSeat(d)
+		if d:IsA("VehicleSeat") then
+			d.CanTouch = false
+		elseif d:IsA("Seat") then
+			local m = carOf(d)
+			if m and (m:IsDescendantOf(spawnedFolder) or m:GetAttribute("TrafficCarType") or m:FindFirstChildWhichIsA("VehicleSeat", true)) then
+				d.CanTouch = false
+			end
+		end
+	end
+	for _, d in workspace:GetDescendants() do
+		noTouchSeat(d)
+	end
+	workspace.DescendantAdded:Connect(function(d)
+		if d:IsA("Seat") or d:IsA("VehicleSeat") then
+			task.defer(noTouchSeat, d)
+		end
+	end)
+
+	remote.OnServerEvent:Connect(function(player, target)
 		local char = player.Character
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
 		local root = char and char:FindFirstChild("HumanoidRootPart")
 		if not hum or not root or hum.Health <= 0 or busy[player] then
 			return
 		end
-		if car == nil then
-			if hum.SeatPart then
-				hum.Sit = false -- the seat's own exit code puts them beside the door
+		if target == nil then
+			-- out: break the seat weld (Sit = false from the server doesn't always take);
+			-- the seat's own Occupant code then puts them beside the door
+			local seat = hum.SeatPart
+			if seat then
+				local weld = seat:FindFirstChild("SeatWeld")
+				if weld then
+					weld:Destroy()
+				end
+				hum.Sit = false
 			end
 			return
 		end
-		if typeof(car) ~= "Instance" or not car:IsA("Model") or not car:IsDescendantOf(workspace)
-			or hum:GetAttribute("PoliceCuffed") or player:GetAttribute("CustodyStage") ~= nil then
+		if typeof(target) ~= "Instance" or not (target:IsA("VehicleSeat") or target:IsA("Seat") or target:IsA("Model"))
+			or not target:IsDescendantOf(workspace) or hum:GetAttribute("PoliceCuffed") or player:GetAttribute("CustodyStage") ~= nil then
+			return
+		end
+		local car = if target:IsA("Model") then target else carOf(target)
+		if not car then
 			return
 		end
 		local seats = {}
-		local driver = car.PrimaryPart
+		local driver = if car.PrimaryPart and car.PrimaryPart:IsA("VehicleSeat") then car.PrimaryPart else car:FindFirstChildWhichIsA("VehicleSeat", true)
 		if driver and (driver:IsA("VehicleSeat") or driver:IsA("Seat")) then
 			table.insert(seats, driver)
 		end

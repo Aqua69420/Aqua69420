@@ -292,14 +292,16 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		remote:FireServer(nil) -- out
 		return
 	end
-	local folder = workspace:FindFirstChild("SpawnedCars")
-	local best, bestD = nil, 14
-	for _, car in (if folder then folder:GetChildren() else {}) do
-		local seat = car:FindFirstChildWhichIsA("VehicleSeat", true)
-		if seat then
-			local d = (seat.Position - root.Position).Magnitude
+	-- any car close by: your own, someone else's, or traffic (that's a carjacking)
+	local params = OverlapParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { char }
+	local best, bestD = nil, 16
+	for _, part in workspace:GetPartBoundsInRadius(root.Position, 16, params) do
+		if part:IsA("VehicleSeat") and not part.Occupant then
+			local d = (part.Position - root.Position).Magnitude
 			if d < bestD then
-				best, bestD = car, d
+				best, bestD = part, d
 			end
 		end
 	end
