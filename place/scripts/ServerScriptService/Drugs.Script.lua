@@ -19,7 +19,7 @@ local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
 
-local VERSION = 252
+local VERSION = 253 -- v253: tolerance, withdrawal, pharmacy meds
 
 -- dose = how much one use adds to its channel; decay = per second
 local SUBSTANCES = {
@@ -32,7 +32,12 @@ local SUBSTANCES = {
 	Opioids = { channel = "Heavy", dose = 0.18, label = "Painkillers", color = Color3.fromRGB(240, 240, 230) }, -- the dealer's pills heal on their own
 	Heroin = { channel = "Heavy", dose = 0.5, label = "Black Tar", color = Color3.fromRGB(60, 40, 30) },
 	Spice = { channel = "Spice", dose = 0.55, label = "Spice", color = Color3.fromRGB(120, 200, 90), contraband = true },
+	-- v253: legal pharmacy meds - ease withdrawal, bring tolerance down faster, no high
+	Meds = { channel = nil, dose = 0, label = "Pharmacy Meds", color = Color3.fromRGB(120, 180, 255), legal = true, meds = true },
 }
+-- v253 tolerance: each use builds Tolerance_<channel>; a tolerant user feels less from the
+-- same dose. Tolerance high + the drug gone = Withdrawal (shaky screen, irritable).
+local TOLERANCE = { gain = 0.35, decay = 0.0015, withdrawalAt = 0.6, clearAt = 0.35 }
 local CHANNELS = {
 	Alcohol = { decay = 0.0035, impair = 1.0, od = 1.6 },
 	Weed = { decay = 0.004, impair = 0.45, od = nil },
@@ -167,8 +172,25 @@ local function use(player: Player, substance: string, potency: number?): boolean
 	if not s or not hum or overdosing[player] then
 		return false
 	end
-	local amount = s.dose * math.clamp(potency or 1, 0.3, 2.5)
+	if s.meds then
+		-- v253: meds take the edge off withdrawal and speed up getting clean
+		player:SetAttribute("Withdrawal", nil)
+		player:SetAttribute("MedsUntil", os.time() + 300)
+		for _, c in CHANNEL_ORDER do
+			local t = tonumber(player:GetAttribute("Tolerance_" .. c)) or 0
+			if t > 0 then
+				player:SetAttribute("Tolerance_" .. c, math.floor(t * 0.6 * 100) / 100)
+			end
+		end
+		notice(player, "The meds take the edge off")
+		return true
+	end
 	local ch = s.channel
+	-- v253: tolerance blunts the dose (but not the overdose risk of a big one)
+	local tol = tonumber(player:GetAttribute("Tolerance_" .. ch)) or 0
+	local amount = s.dose * math.clamp(potency or 1, 0.3, 2.5) / (1 + tol)
+	player:SetAttribute("Tolerance_" .. ch, math.min(2, math.floor((tol + s.dose * TOLERANCE.gain) * 100) / 100))
+	player:SetAttribute("Withdrawal", nil)
 	setLevel(player, ch, level(player, ch) + amount)
 	player:SetAttribute("DrugUsedAt", os.time())
 	player:SetAttribute("LastSubstance", substance)
@@ -262,7 +284,7 @@ local function addShop(model: Instance, items: { { string } })
 		p.Name = "Buy" .. substance
 		p.ActionText = ("Buy %s ($%d)"):format(SUBSTANCES[substance].label, price)
 		p.ObjectText = "Liquor"
-		p.KeyboardKeyCode = if i == 1 then Enum.KeyCode.E else Enum.KeyCode.R
+		p.KeyboardKeyCode = ({ Enum.KeyCode.E, Enum.KeyCode.R, Enum.KeyCode.T })[i] or Enum.KeyCode.E
 		p.HoldDuration = 0.3
 		p.MaxActivationDistance = 14
 		p.RequiresLineOfSight = false
@@ -287,9 +309,15 @@ local function setupShops(): number
 	for _, c in Workspace:GetChildren() do
 		local name = string.lower(c.Name)
 		if name == "petrolshop" then
-			addShop(c, { { "Beer", "15" }, { "Whiskey", "45" } })
+			addShop(c, { { "Beer", "15" }, { "Whiskey", "45" }, { "Meds", "60" } })
 			n += 1
 		end
+	end
+	-- v253: the hospital's pharmacy sells meds too
+	local hospital = Workspace:FindFirstChild("Hospital")
+	if hospital then
+		addShop(hospital, { { "Meds", "40" } })
+		n += 1
 	end
 	-- the casino buildings serve drinks
 	for _, name in { "BellagioBuilding", "Caesars Palace", "MGMGrand", "Luxor" } do
@@ -354,6 +382,35 @@ local function step(player: Player, dt: number)
 				player:SetAttribute("Comedown", crash)
 				notice(player, "You're crashing hard...")
 			end
+		end
+	end
+	-- v253: tolerance fades slowly; a hooked user with nothing in them goes into withdrawal
+	local hooked = false
+	for _, ch in CHANNEL_ORDER do
+		local t = tonumber(player:GetAttribute("Tolerance_" .. ch)) or 0
+		if t > 0 then
+			local medsOn = (tonumber(player:GetAttribute("MedsUntil")) or 0) > os.time()
+			local nt = math.max(0, t - TOLERANCE.decay * dt * (if medsOn then 3 else 1))
+			player:SetAttribute("Tolerance_" .. ch, if nt > 0.01 then math.floor(nt * 1000) / 1000 else nil)
+			if nt >= TOLERANCE.withdrawalAt and level(player, ch) < 0.05 and not medsOn then
+				hooked = true
+			end
+		end
+	end
+	local inWithdrawal = player:GetAttribute("Withdrawal") == true
+	if hooked and not inWithdrawal then
+		player:SetAttribute("Withdrawal", true)
+		notice(player, "You're shaking... you need something")
+		print(("[Drugs] WITHDRAWAL %s"):format(player.Name))
+	elseif inWithdrawal and not hooked then
+		local still = false
+		for _, ch in CHANNEL_ORDER do
+			if (tonumber(player:GetAttribute("Tolerance_" .. ch)) or 0) >= TOLERANCE.clearAt and level(player, ch) < 0.05 then
+				still = true
+			end
+		end
+		if not still or (tonumber(player:GetAttribute("MedsUntil")) or 0) > os.time() then
+			player:SetAttribute("Withdrawal", nil)
 		end
 	end
 	local come = tonumber(player:GetAttribute("Comedown")) or 0

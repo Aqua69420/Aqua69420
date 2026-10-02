@@ -1721,6 +1721,10 @@ DialogueRE.OnServerEvent:Connect(function(player, token, choice)
 		-- v252: hooch and spice (ServerStorage.Drugs)
 		table.insert(wares, { id = "buy_hooch", text = ("Hooch - $%d"):format(math.floor(60 * discount)) })
 		table.insert(wares, { id = "buy_spice", text = ("Spice - $%d"):format(math.floor(200 * discount)) })
+		local owed = tonumber(player:GetAttribute("DrugDebt")) or 0
+		if owed > 0 then
+			table.insert(wares, 1, { id = "pay_debt", text = ("Pay my debt - $%d"):format(owed) })
+		end
 		table.insert(wares, { id = "back", text = "Nah, never mind" })
 		sendDialogue(player, s, if discount < 1 then "For you? Friends price." else "Cash only. No refunds.", wares)
 	elseif choice == "buy_lockpick" and n.model:GetAttribute("LockpickDealer") and s.stage == "shop" then
@@ -1764,8 +1768,22 @@ DialogueRE.OnServerEvent:Connect(function(player, token, choice)
 			pcall(drugs.Invoke, drugs, "Give", player, substance)
 			addRep(player, n.gang, 2)
 			reply(player, s, if substance == "Spice" then "Go easy. That stuff's no joke." else "Brewed it in a trash bag. Enjoy.", 0, nil, false)
+		elseif (tonumber(player:GetAttribute("DrugDebt")) or 0) == 0 then
+			-- v253: no cash? On credit - double back in ten minutes, or else
+			pcall(drugs.Invoke, drugs, "Give", player, substance)
+			Ranks.addDebt(player, n, price * 2)
+			reply(player, s, ("On credit. $%d back in ten minutes. Don't make me come find you."):format(price * 2), 0, nil, false)
 		else
-			reply(player, s, "Come back when you got the money.", 0, nil, false)
+			reply(player, s, "You already owe. Pay up first.", 0, nil, false)
+		end
+	elseif choice == "pay_debt" and n.dealer and s.stage == "shop" then
+		local owed = tonumber(player:GetAttribute("DrugDebt")) or 0
+		if owed > 0 and economy("Charge", player, owed) then
+			Ranks.clearDebt(player)
+			addRep(player, n.gang, 4, "paid your debt")
+			reply(player, s, "We're square. Pleasure.", 0, nil, false)
+		else
+			reply(player, s, ("You owe $%d. Come back with all of it."):format(owed), 0, nil, false)
 		end
 	elseif choice == "back" then
 		s.stage = "main"
@@ -2291,6 +2309,102 @@ end
 for _, n in npcs do
 	Ranks.assignNpc(n)
 end
+
+---------------------------------------------------------------------------
+-- v253 DRUG DEBTS: bought on credit from a dealer, double back in 10 minutes.
+-- Late: the dealer's crew gives you a beating and 5 more minutes. Late twice: a hit.
+---------------------------------------------------------------------------
+function Ranks.addDebt(player: Player, dealer: Npc, amount: number)
+	player:SetAttribute("DrugDebt", (tonumber(player:GetAttribute("DrugDebt")) or 0) + amount)
+	player:SetAttribute("DrugDebtDue", os.time() + 600)
+	player:SetAttribute("DrugDebtGang", dealer.gang or "")
+	player:SetAttribute("DrugDebtStrikes", 0)
+	print(("[PrisonSociety] DRUG DEBT %s owes $%d to %s"):format(player.Name, amount, dealer.name))
+end
+
+function Ranks.clearDebt(player: Player)
+	for _, a in { "DrugDebt", "DrugDebtDue", "DrugDebtGang", "DrugDebtStrikes" } do
+		player:SetAttribute(a, nil)
+	end
+end
+
+---------------------------------------------------------------------------
+-- v253 DRUG TESTS: COs test inmates at random (and after a search). Dirty = anything
+-- used in the last 15 minutes or still in your system: solitary, a minute added,
+-- CO respect down. Clean earns a little respect.
+---------------------------------------------------------------------------
+function Ranks.drugTest(player: Player, co: Npc?)
+	local used = tonumber(player:GetAttribute("DrugUsedAt")) or 0
+	local dirty = os.time() - used < 900 or (tonumber(player:GetAttribute("Impairment")) or 0) > 0.05
+	if co then
+		say(co.model, "Drug test. Cup. Now.", 3)
+	end
+	if dirty then
+		notice(player, "Drug test: DIRTY - you're going to solitary, and a minute's been added to your time")
+		addCORespect(player, -10, "failed a drug test")
+		local adjust = ServerStorage:FindFirstChild("PrisonSentenceAdjust")
+		if adjust then
+			pcall(adjust.Invoke, adjust, player, 60)
+		end
+		confiscate(player)
+		discipline(player, "failed a drug test")
+	else
+		notice(player, "Drug test: clean")
+		addCORespect(player, 2, "clean drug test")
+	end
+	print(("[PrisonSociety] DRUG TEST %s %s"):format(player.Name, if dirty then "DIRTY" else "clean"))
+end
+
+task.spawn(function()
+	while true do
+		task.wait(30)
+		local now = os.time()
+		for _, player in Players:GetPlayers() do
+			if not isInmate(player) then
+				continue
+			end
+			-- debts
+			local owed = tonumber(player:GetAttribute("DrugDebt")) or 0
+			local due = tonumber(player:GetAttribute("DrugDebtDue")) or 0
+			if owed > 0 and now > due then
+				local strikes = (tonumber(player:GetAttribute("DrugDebtStrikes")) or 0) + 1
+				player:SetAttribute("DrugDebtStrikes", strikes)
+				player:SetAttribute("DrugDebtDue", now + 300)
+				local gang = player:GetAttribute("DrugDebtGang")
+				local _, root = charInfo(player.Character)
+				if strikes >= 2 then
+					notice(player, ("You never paid the $%d. Word is they've put a hit on you."):format(owed))
+					if type(gang) == "string" and GANGS[gang] then
+						startFeud(player, gang, 600)
+					end
+				else
+					notice(player, ("You're late on the $%d. They're coming to collect."):format(owed))
+				end
+				if root then
+					local collectors = freeNpcsNear(root.Position, 90, function(o)
+						return type(gang) ~= "string" or gang == "" or o.gang == gang
+					end)
+					for i = 1, math.min(2, #collectors) do
+						task.spawn(attack, collectors[i], player, 30, strikes >= 2)
+					end
+				end
+				print(("[PrisonSociety] DRUG DEBT LATE %s strike %d ($%d)"):format(player.Name, strikes, owed))
+			end
+			-- random drug test when a CO is close
+			if math.random() < 0.06 then
+				local _, root = charInfo(player.Character)
+				if root then
+					for _, co in cos do
+						if co.model.Parent and co.hum.Health > 0 and (co.root.Position - root.Position).Magnitude < 30 then
+							Ranks.drugTest(player, co)
+							break
+						end
+					end
+				end
+			end
+		end
+	end
+end)
 
 ---------------------------------------------------------------------------
 -- chatter, approaches and hostility
@@ -3004,6 +3118,9 @@ task.spawn(function()
 				notice(player, "A CO searched you")
 				confiscate(player)
 				riotHeat(1, nil, nil, 2.5)
+				if math.random() < 0.5 then
+					task.delay(3, Ranks.drugTest, player, nearCO) -- v253: a search often comes with a cup
+				end
 			elseif r >= 60 and math.random() < 0.25 then
 				say(nearCO.model, pick({ "You're alright, inmate.", "Keep it up and I'll put in a word for you." }), 4)
 				local adjust = ServerStorage:FindFirstChild("PrisonSentenceAdjust")
