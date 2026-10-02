@@ -276,7 +276,8 @@ player.CharacterAdded:Connect(onCharacter)
 
 -- F: get in the nearest car (GTA style) / get out. The server walks you to the door.
 UserInputService.InputBegan:Connect(function(input, processed)
-	if processed or input.KeyCode ~= Enum.KeyCode.F then
+	-- "processed" is also set when a ProximityPrompt grabs F, so only a focused text box blocks it
+	if input.KeyCode ~= Enum.KeyCode.F or UserInputService:GetFocusedTextBox() then
 		return
 	end
 	local char = player.Character
@@ -294,11 +295,9 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		return
 	end
 	-- any car close by: your own, someone else's, or traffic (that's a carjacking)
-	local params = OverlapParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = { char }
+	-- (a plain distance scan: a spatial query skipped seats with CanQuery off - player cars)
 	local best, bestD = nil, 16
-	for _, part in workspace:GetPartBoundsInRadius(root.Position, 16, params) do
+	for _, part in workspace:GetDescendants() do
 		if part:IsA("VehicleSeat") and not part.Occupant then
 			local d = (part.Position - root.Position).Magnitude
 			if d < bestD then

@@ -276,7 +276,9 @@ function M.step(st: any, dt: number, input: any): any
 		local hit = workspace:Raycast(origin, -up * rayLen, st.params)
 		if not hit then
 			w.contact = false
-			w.lastComp = 0
+			-- forget the old compression: landing again from 0 read as a huge compression
+			-- speed, the damper fired a spike and the car hopped
+			w.lastComp = nil
 			w.spin = w.spin * 0.99
 			continue
 		end
@@ -293,10 +295,15 @@ function M.step(st: any, dt: number, input: any): any
 		local kPerStud = k / travel
 		local crit = 2 * math.sqrt(kPerStud * (mass / nW))
 		local dampValue = if compVel > 0 then h.suspCompDamp else h.suspReboundDamp
-		local N = math.max(0, comp * k + compVel * crit * math.clamp(dampValue * 0.3, 0.05, 2.5))
+		-- damper capped at about the wheel's own weight: a road seam / kerb edge reads as
+		-- a sudden compression and an uncapped damper kicked the car into the air
+		local damper = math.clamp(compVel * crit * math.clamp(dampValue * 0.3, 0.05, 2.5), -share * bias, share * bias)
+		local N = math.max(0, comp * k + damper)
 		if comp >= 1 then
-			N += (comp - 1) * k * 6 -- bump stop
+			N += (comp - 1) * k * 2 -- bump stop
 		end
+		-- never more than ~3 g through one wheel: enough to catch a landing, never a launch
+		N = math.min(N, share * bias * 3)
 		local Nspring = N -- holds the real weight
 		N = N * gripScale -- tyre load at real-gravity scale
 
