@@ -177,7 +177,10 @@ function M.step(st: any, dt: number, input: any): any
 	if st.anti then
 		st.anti.Force = Vector3.zero
 	end
-	seat:ApplyImpulse(Vector3.new(0, mass * (workspace.Gravity - G) * math.clamp(dt, 1 / 240, 1 / 20), 0))
+	-- WEIGHT: the car keeps full Roblox gravity (Gw) - planted, not paper. The springs hold
+	-- that weight; the tyres grip as if gravity were real 1 g, so IV's numbers still hold.
+	local Gw = workspace.Gravity
+	local gripScale = G / Gw
 	local vel = seat.AssemblyLinearVelocity
 	local fwdSpeed = vel:Dot(fwd)
 	local speed = vel.Magnitude
@@ -242,7 +245,7 @@ function M.step(st: any, dt: number, input: any): any
 		local dist = (hit.Position - origin).Magnitude
 		local comp = math.clamp((rayLen - dist) / travel, 0, 1.6)
 		-- spring: at rest a wheel sits about half way through its travel (suspForce 2)
-		local share = mass * G / nW
+		local share = mass * Gw / nW
 		local bias = (if w.front then h.suspBiasFront else 1 - h.suspBiasFront) * 2
 		local k = share / 0.5 * (h.suspForce / 2) * bias
 		local compVel = ((comp - (w.lastComp or comp)) * travel) / dt
@@ -254,6 +257,8 @@ function M.step(st: any, dt: number, input: any): any
 		if comp >= 1 then
 			N += (comp - 1) * k * 6 -- bump stop
 		end
+		local Nspring = N -- holds the real weight
+		N = N * gripScale -- tyre load at real-gravity scale
 
 		-- tyre
 		local n = hit.Normal
@@ -290,7 +295,7 @@ function M.step(st: any, dt: number, input: any): any
 			w.slipping = true
 			w.spin = 0
 			local at = hit.Position + up * (w.radius * 0.5)
-			seat:ApplyImpulseAtPosition((up * N + wf * fl + wr * fr) * dt, at)
+			seat:ApplyImpulseAtPosition((up * Nspring + wf * fl + wr * fr) * dt, at)
 			continue
 		end
 		-- longitudinal: engine (by drive bias), brakes (by brake bias), rolling
@@ -316,7 +321,7 @@ function M.step(st: any, dt: number, input: any): any
 		w.spin = vf / w.radius + (if w.slipping and drive ~= 0 and fLong * drive > 0 then drive * 25 else 0)
 		-- forces act a little above the contact patch (GTA IV's body roll, without tipping every corner)
 		local at = hit.Position + up * (w.radius * 0.5)
-		seat:ApplyImpulseAtPosition((up * N + wf * fLong + wr * fLat) * dt, at)
+		seat:ApplyImpulseAtPosition((up * Nspring + wf * fLong + wr * fLat) * dt, at)
 	end
 
 	-- aerodynamic drag: grows with speed squared
