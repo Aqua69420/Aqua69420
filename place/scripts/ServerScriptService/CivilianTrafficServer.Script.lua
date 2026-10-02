@@ -920,8 +920,11 @@ spawnCar=function()
 	jack.Name="Carjack"
 	jack.ActionText="Carjack"
 	jack.ObjectText="Car"
-	jack.KeyboardKeyCode=Enum.KeyCode.E
-	jack.HoldDuration=0.4
+	-- GTA: F at the driver's door, nothing on screen
+	jack.KeyboardKeyCode=Enum.KeyCode.F
+	jack.GamepadKeyCode=Enum.KeyCode.ButtonY
+	jack.Style=Enum.ProximityPromptStyle.Custom
+	jack.HoldDuration=0
 	jack.MaxActivationDistance=9
 	jack.RequiresLineOfSight=false
 	jack.Parent=seat
@@ -949,6 +952,7 @@ spawnCar=function()
 			end
 			game:GetService("Debris"):AddItem(runner,8)
 		end
+		player:SetAttribute("CarEnterAt",workspace:GetServerTimeNow()) -- CarServer: entered with F
 		seat:Sit(hum)
 		jack:Destroy()
 	end)
@@ -985,6 +989,11 @@ spawnCar=function()
 		local occ=seat.Occupant
 		local player=occ and Players:GetPlayerFromCharacter(occ.Parent)
 		if not player then return end
+		-- walked into it instead of pressing F: out you go, the car isn't stolen
+		if workspace:GetServerTimeNow()-(tonumber(player:GetAttribute("CarEnterAt")) or 0)>4 then
+			task.defer(function() local w=seat:FindFirstChild("SeatWeld");if w then w:Destroy() end end)
+			return
+		end
 		stolen=true;car:SetAttribute("TrafficStolen",true);car:SetAttribute("TrafficActive",false)
 		-- Remove this car from the resident simulation before handing physics ownership over.
 		local state=trafficRegistry[car]

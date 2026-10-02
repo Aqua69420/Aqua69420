@@ -600,25 +600,6 @@ do
 		end
 		return m
 	end
-	-- GTA: you only get in with F, never by walking into a seat
-	local function noTouchSeat(d)
-		if d:IsA("VehicleSeat") then
-			d.CanTouch = false
-		elseif d:IsA("Seat") then
-			local m = carOf(d)
-			if m and (m:IsDescendantOf(spawnedFolder) or m:GetAttribute("TrafficCarType") or m:FindFirstChildWhichIsA("VehicleSeat", true)) then
-				d.CanTouch = false
-			end
-		end
-	end
-	for _, d in workspace:GetDescendants() do
-		noTouchSeat(d)
-	end
-	workspace.DescendantAdded:Connect(function(d)
-		if d:IsA("Seat") or d:IsA("VehicleSeat") then
-			task.defer(noTouchSeat, d)
-		end
-	end)
 
 	remote.OnServerEvent:Connect(function(player, target)
 		local char = player.Character
@@ -677,7 +658,8 @@ do
 		while os.clock() - t0 < 1.2 and (root.Position - door).Magnitude > 3 and hum.Health > 0 do
 			task.wait(0.05)
 		end
-		if hum.Health > 0 and not target.Occupant and (target.Position - root.Position).Magnitude < 18 then
+		if hum.Health > 0 and not target.Occupant and (target.Position - root.Position).Magnitude < 30 then
+			allowCarEntry(player)
 			target:Sit(hum)
 		end
 		busy[player] = nil
@@ -947,8 +929,23 @@ local function setCarOwner(car, player)
 	end
 end
 
--- Walking into the seat sits you (Roblox's normal Seat/VehicleSeat
--- behaviour) - no prompt, no key to press.
+-- GTA: you only get into a car with F (CarEnterExit / the traffic carjack). Whatever
+-- seats a player on purpose stamps CarEnterAt first; a seat taken without a fresh
+-- stamp (walking into it) throws them straight back out.
+function allowCarEntry(player)
+	player:SetAttribute("CarEnterAt", workspace:GetServerTimeNow())
+end
+local function carEntryAllowed(player)
+	local at = tonumber(player:GetAttribute("CarEnterAt")) or 0
+	return workspace:GetServerTimeNow() - at < 4
+end
+local function ejectWalkIn(seat)
+	local weld = seat:FindFirstChild("SeatWeld")
+	if weld then
+		weld:Destroy()
+	end
+end
+
 local function setupSeat(car, rootSeat, seat, isDriver)
 	-- v41: leave seats enabled so touching the actual seat automatically sits
 	-- the character. No E/F proximity prompt is required.
@@ -960,6 +957,10 @@ local function setupSeat(car, rootSeat, seat, isDriver)
 		if occupant then
 			local character = occupant.Parent
 			local player = Players:GetPlayerFromCharacter(character)
+			if player and not carEntryAllowed(player) then
+				task.defer(ejectWalkIn, seat) -- walked into it: GTA cars are entered with F
+				return
+			end
 			lastPlayer, lastRoot, lastCharacter = player, character:FindFirstChild("HumanoidRootPart"), character
 			setPassenger(character, true)
 			-- no tripping / ragdolling while buckled in
@@ -974,6 +975,9 @@ local function setupSeat(car, rootSeat, seat, isDriver)
 				if isDriver then setCarOwner(car, player) end
 			end
 		else
+			if not lastCharacter then
+				return -- a walk-in that was thrown out never really got in
+			end
 			if isDriver then
 				setCarOwner(car, nil)
 			end
@@ -1122,6 +1126,7 @@ adoptStolen.OnInvoke=function(player,car)
 				task.defer(function()
 					if hum.Parent and newSeat.Parent then
 						pcall(function() hum.Parent:PivotTo(newSeat.CFrame+Vector3.new(0,2,0)) end)
+						allowCarEntry(player)
 						newSeat:Sit(hum)
 					end
 				end)

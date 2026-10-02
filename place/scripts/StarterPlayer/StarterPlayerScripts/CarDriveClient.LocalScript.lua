@@ -305,7 +305,8 @@ UserInputService.InputBegan:Connect(function(input, processed)
 			end
 		end
 	end
-	if best then
+	-- a traffic car's own (invisible) F carjack prompt handles those
+	if best and not best:FindFirstChild("Carjack") then
 		remote:FireServer(best)
 	end
 end)
