@@ -24,12 +24,19 @@ local M = {}
 
 -- tuning knobs (GTAHandlingData.TopSpeedScale / AccelScale override these)
 M.TopSpeedScale = 1.2 -- real top speed vs handling.dat Tv (IV runs ~20% past it)
-M.AccelScale = 1.0 -- 1.0 = GTA IV 0-100 times
+M.AccelScale = 1.3
+M.AccelByLine = {} :: { [string]: number } -- per handling line, e.g. INFERNUS = 1.1
 
 function M.configure(data: any)
 	if type(data) == "table" then
 		M.TopSpeedScale = tonumber(data.TopSpeedScale) or M.TopSpeedScale
 		M.AccelScale = tonumber(data.AccelScale) or M.AccelScale
+		if type(data.AccelByLine) == "table" then
+			M.AccelByLine = {}
+			for k, v in data.AccelByLine do
+				M.AccelByLine[string.upper(tostring(k))] = tonumber(v)
+			end
+		end
 	end
 end
 
@@ -176,15 +183,19 @@ function M.step(st: any, dt: number, input: any): any
 	local maxV = math.max(h.maxVel, 10) * M.TopSpeedScale / 3.6 * S
 
 	-- steering: GTA IV turns in slowly, centres quicker, and locks less at speed
-	local speedFrac = math.clamp(math.abs(fwdSpeed) / maxV, 0, 1)
-	local lockRad = math.rad(h.steeringLock) * (1 - 0.6 * speedFrac)
+	-- the faster you go, the less the wheels turn (IV is heavy at speed):
+	-- 50 km/h ~60% of full lock, 100 km/h ~37%, 160 km/h ~22%
+	local kmhNow = math.abs(fwdSpeed) / S * 3.6
+	local lockRad = math.rad(h.steeringLock) / (1 + (kmhNow / 70) ^ 1.5)
 	-- GTA IV on PC keyboard: A/D are on/off, so the wheel is ramped - about 0.5 s from
 	-- straight to full lock, about 0.3 s back to centre when you let go, and flicking
 	-- A -> D swings through centre at the faster return rate before winding up again
 	local target = math.clamp(input.steer or 0, -1, 1) * lockRad
-	local fullLock = math.max(math.rad(h.steeringLock), 0.1)
+	-- the ramp is relative to the lock you have NOW: at speed a tap winds on just as
+	-- gradually (0.5 s to the reduced lock) instead of snapping to it
+	local liveLock = math.max(lockRad, math.rad(2))
 	local returning = math.abs(target) < math.abs(st.steer) or (target * st.steer < 0)
-	local rate = fullLock / (if returning then 0.3 else 0.5) * dt
+	local rate = liveLock / (if returning then 0.3 else 0.5) * dt
 	st.steer += math.clamp(target - st.steer, -rate, rate)
 
 	-- throttle / brake / reverse (S brakes while rolling forward, then reverses)
@@ -207,7 +218,7 @@ function M.step(st: any, dt: number, input: any): any
 	--   Infernus 0.25 -> 0-100 km/h ~4.7 s, top ~187 km/h;  Sabre GT -> ~6.3 s, ~168;
 	--   Admiral 0.17 -> ~9 s, ~161;  Bus 0.12 -> ~15 s, ~157;  Mule -> ~23 s, ~111.
 	-- Power holds until near top speed, then runs out (no hard wall)
-	local launch = 4.25 * math.max(h.driveForce, 0) ^ 1.5 * M.AccelScale
+	local launch = 4.25 * math.max(h.driveForce, 0) ^ 1.5 * M.AccelScale * (M.AccelByLine[h.name] or 1)
 	if drive >= 0 then
 		local taper = math.clamp(1 - frac ^ 4, 0, 1)
 		accel = launch * G * gearMult * taper
