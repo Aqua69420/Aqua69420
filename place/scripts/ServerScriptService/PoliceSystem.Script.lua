@@ -11034,9 +11034,15 @@ function PrisonFlow.courtDay(player: Player, secs: number, text: string, opts: a
 			if node then road = RoadGraph.nodePos(node) or dest end
 			return PrisonFlow.hqRide(player, road, alive)
 		end,
+		-- every walk inside the courthouse has a court officer at your side
 		walk = function(goal: Vector3, t: number?): string
 			cuff(player)
-			return PrisonFlow.hqWalk(player, goal, nil, t or 45, alive)
+			local _, _, rw = Util.charInfo(player)
+			local cop = rw and nameEscort(escortCop(rw.Position + Vector3.new(3, 0, 3), goal - rw.Position), "COURT OFFICER")
+			-- court spots stand 3 studs above the floor; hqWalk wants the floor (it adds the 3 itself)
+			local how = PrisonFlow.hqWalk(player, goal - Vector3.new(0, 3, 0), cop, t or 45, alive)
+			if cop then cop:despawn("done") end
+			return how
 		end,
 		tell = function(m: string) tell(player, "Custody", m) end,
 		cuff = function() cuff(player) end,

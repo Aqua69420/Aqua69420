@@ -308,7 +308,7 @@ function Court.run(player: Player, ctx: any): any
 		local hold = spot("HoldingSpot")
 		if hold and not ctx.free then
 			ctx.tell("Through the sally port - up the secure stair to court holding")
-			local how = if ctx.walk then ctx.walk(hold.Position, 60) else "placed"
+			local how = if ctx.walk then ctx.walk(hold.Position, 120) else "placed" -- the sally port, up the secure stair
 			local _, _, r = charOf()
 			if r and (r.Position - hold.Position).Magnitude > 12 then place(hold.Position) end
 			if ctx.setHold then ctx.setHold(hold.Position + Vector3.new(0, 3, 0)) end
@@ -337,7 +337,7 @@ function Court.run(player: Player, ctx: any): any
 		ctx.tell("The bailiff calls your case")
 		if defSeat then
 			if bailiff then task.spawn(Court.walk, bailiff, defSeat.Position + Vector3.new(0, 0, 4), 40) end
-			local how = if ctx.walk then ctx.walk(defSeat.Position, 45) else "placed"
+			local how = if ctx.walk then ctx.walk(defSeat.Position + Vector3.new(0, 2.4, 3), 90) else "placed" -- beside the chair
 			print(("[Court] TO THE CHAIR %s (%s)"):format(player.Name, tostring(how)))
 			ctx.uncuff()
 			sitIn("DefendantSeat")
