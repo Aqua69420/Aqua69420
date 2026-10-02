@@ -22,18 +22,21 @@
 
 local M = {}
 
+-- GTA IV handling.dat (the real file): A B C D E F G | Tt Tg Tf Ti Tv | Tb Tbb Thb | Ts |
+-- Wc+ Wc- Wc-(lat) Ws+ Wbias | Sf Scd Srd Su Sl Sr Sb | Dc Dw Dd De | Ms Mv Mmf Mhf Ma
 M.COLUMNS_IV = {
-	"name", "mass", "dragMult", "percentSubmerged", "comX", "comY", "comZ", "driveBiasFront", "gears", "driveForce",
-	"driveInertia", "maxVel", "brakeForce", "brakeBiasFront", "steeringLock", "tractionMax", "tractionMin",
-	"tractionLateral", "tractionLongitudinal", "tractionSpringDeltaMax", "tractionBiasFront",
+	"name", "mass", "dragMult", "percentSubmerged", "comX", "comY", "comZ",
+	"driveBiasFront", "gears", "driveForce", "driveInertia", "maxVel",
+	"brakeForce", "brakeBiasFront", "handbrakeForce", "steeringLock",
+	"tractionMax", "tractionMin", "tractionLateral", "tractionSpringDeltaMax", "tractionBiasFront",
 	"suspForce", "suspCompDamp", "suspReboundDamp", "suspUpper", "suspLower", "suspRaise", "suspBiasFront",
-	"collisionDamage", "weaponDamage", "deformationDamage", "engineDamage", "seatOffset", "value",
-	"modelFlags", "handlingFlags",
+	"collisionDamage", "weaponDamage", "deformationDamage", "engineDamage",
+	"seatOffset", "value", "modelFlags", "handlingFlags", "animGroup",
 }
 
 local DEFAULTS = {
-	mass = 1500, dragMult = 1.0, comX = 0, comY = 0, comZ = 0, driveBiasFront = 0, gears = 5, driveForce = 0.25,
-	driveInertia = 1, maxVel = 160, brakeForce = 0.8, brakeBiasFront = 0.6, steeringLock = 35, tractionMax = 2.0,
+	mass = 1500, dragMult = 6.0, comX = 0, comY = 0, comZ = 0, driveBiasFront = 0, gears = 5, driveForce = 0.18,
+	driveInertia = 1, maxVel = 140, brakeForce = 0.22, brakeBiasFront = 0.65, handbrakeForce = 0.7, steeringLock = 35, tractionMax = 2.0,
 	tractionMin = 1.8, tractionLateral = 20, tractionLongitudinal = 1, tractionSpringDeltaMax = 0.15,
 	tractionBiasFront = 0.5, suspForce = 2.0, suspCompDamp = 1.0, suspReboundDamp = 1.4, suspUpper = 0.1,
 	suspLower = -0.15, suspRaise = 0, suspBiasFront = 0.5,
@@ -46,8 +49,9 @@ function M.parse(text: string, columns: { string }?): { [string]: any }
 	local out = {}
 	for line in string.gmatch(text .. "\n", "([^\r\n]*)\r?\n") do
 		local clean = string.gsub(line, "^%s+", "")
-		local first = string.sub(clean, 1, 1)
-		if clean ~= "" and first ~= ";" and first ~= "#" and string.sub(clean, 1, 2) ~= "//" then
+		-- vehicle lines start with a letter; ; # comments and the % boat / ! bike /
+		-- $ flying / ^ anim-group tables are skipped
+		if string.match(clean, "^%a") then
 			local tokens = {}
 			for tok in string.gmatch(clean, "%S+") do
 				table.insert(tokens, tok)
@@ -73,10 +77,10 @@ end
 
 -- one-line summary for the Output
 function M.describe(h: any): string
-	return ("%s: %.0fkg, drive %.2fg x%d gears %s, top %.0fkm/h, brake %.2f, lock %.0f, grip %.2f/%.2f @%.0f deg, susp %.2f"):format(
-		h.name, h.mass, h.driveForce, h.gears,
+	return ("%s: %.0fkg drag %.1f, drive %.2f x%d gears %s, top %.0fkm/h, brake %.2f hb %.2f, lock %.0f, grip %.2f/%.2f @%.1f deg, susp %.2f"):format(
+		h.name, h.mass, h.dragMult, h.driveForce, h.gears,
 		if h.driveBiasFront >= 0.99 then "FWD" elseif h.driveBiasFront <= 0.01 then "RWD" else "AWD",
-		h.maxVel, h.brakeForce, h.steeringLock, h.tractionMax, h.tractionMin, h.tractionLateral, h.suspForce)
+		h.maxVel, h.brakeForce, h.handbrakeForce, h.steeringLock, h.tractionMax, h.tractionMin, h.tractionLateral, h.suspForce)
 end
 
 local WHEEL_NAMES = { "LF", "RF", "LB", "RB" }
@@ -182,15 +186,17 @@ function M.step(st: any, dt: number, input: any): any
 	local gearMult = 1.4 - 0.65 * (gear - 1) / math.max(1, gears - 1)
 	st.rpm = math.clamp((frac * gears) % 1 * 0.8 + 0.2, 0, 1)
 	local accel
+	-- IV's drive force (0.10 trucks .. 0.26 supercars) and brake force (0.1 .. 0.45) are
+	-- scaled so an Admiral does 0-100 km/h in ~8 s and stops in about a car's length per 10 km/h
 	if drive >= 0 then
 		local limiter = math.clamp((1 - frac) / 0.06, 0, 1)
-		accel = h.driveForce * G * gearMult * limiter
+		accel = h.driveForce * 1.6 * G * gearMult * limiter
 	else
 		local revMax = maxV * 0.28
-		accel = h.driveForce * G * 1.1 * math.clamp((revMax + fwdSpeed) / (revMax * 0.15), 0, 1)
+		accel = h.driveForce * 1.6 * G * 1.1 * math.clamp((revMax + fwdSpeed) / (revMax * 0.15), 0, 1)
 	end
 	local driveTotal = mass * accel * drive
-	local brakeTotal = mass * h.brakeForce * G * 1.2 * brake
+	local brakeTotal = mass * h.brakeForce * 3.6 * G * brake
 
 	local nW = #st.wheels
 	local upper, lower = h.suspUpper * S, h.suspLower * S
@@ -243,7 +249,7 @@ function M.step(st: any, dt: number, input: any): any
 		local mu = if slip <= peak then muMax * (slip / peak)
 			else muMax + (muMin - muMax) * math.clamp((slip - peak) / (peak * 1.5), 0, 1)
 		if handbrake then
-			mu *= 0.4
+			mu *= 1 - 0.85 * math.clamp(h.handbrakeForce, 0, 1) -- Thb: how hard the handbrake breaks the rear loose
 		end
 		local wheelMass = mass / nW
 		local fLat = -sign(vr) * math.min(mu * N, math.abs(vr) * wheelMass / dt)
@@ -251,7 +257,7 @@ function M.step(st: any, dt: number, input: any): any
 		local driveShare = if w.front then h.driveBiasFront / st.fronts else (1 - h.driveBiasFront) / st.rears
 		local fLong = driveTotal * driveShare
 		local brakeShare = if w.front then h.brakeBiasFront / st.fronts else (1 - h.brakeBiasFront) / st.rears
-		local fBrake = brakeTotal * brakeShare + (if handbrake then mass * G * 1.0 / st.rears else 0)
+		local fBrake = brakeTotal * brakeShare + (if handbrake then mass * G * 1.4 * h.handbrakeForce / st.rears else 0)
 		if drive == 0 and brake == 0 then
 			fBrake += mass * G * 0.02 / nW -- rolling resistance / engine braking
 		end
@@ -275,7 +281,7 @@ function M.step(st: any, dt: number, input: any): any
 
 	-- aerodynamic drag: grows with speed squared
 	if speed > 1 then
-		local k = 0.1 * G / (maxV * maxV) * h.dragMult
+		local k = 0.1 * G / (maxV * maxV) * (h.dragMult / 6) -- IV drag runs ~3 (slippery) .. 9 (bricks), 6 typical
 		seat:ApplyImpulse(-vel.Unit * k * speed * speed * mass * dt)
 	end
 	-- a touch of air control and self-righting when all wheels are off the ground (IV lets you rock the car)
