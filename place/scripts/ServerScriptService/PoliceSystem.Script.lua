@@ -10943,6 +10943,11 @@ function PrisonFlow.setupTurnIn()
 	prompt.Parent = part
 	prompt.Triggered:Connect(function(player: Player)
 		if custody[player] or inPrison(player) or PrisonFlow.hq[player] then return end
+		-- v254: court appearances and posting someone's bail happen at this desk too
+		if Justice.Bail then
+			local okB, handled = pcall(Justice.Bail.desk, player)
+			if okB and handled then return end
+		end
 		local stars = tonumber(player:GetAttribute("WantedStars")) or 0
 		if stars <= 0 then
 			tell(player, "Notice", "You're not wanted - nothing to turn yourself in for")
@@ -11129,6 +11134,8 @@ function PrisonFlow.hqCustody(player: Player, secs: number, text: string, opts: 
 
 	-- 3. decision
 	if opts.mode == "transfer" then
+		-- v254: serious charges are held without bail until trial
+		tell(player, "Custody", "Serious charges - held without bail until trial")
 		tell(player, "Custody", "Booked - being transferred to the State Prison")
 		return "transfer"
 	end
@@ -11145,6 +11152,19 @@ function PrisonFlow.hqCustody(player: Player, secs: number, text: string, opts: 
 			return true
 		end
 		tell(player, "Custody", ("You can't pay the $%d fine - held instead"):format(fine))
+	end
+	-- v254: bail hearing - pay it, a bondsman, someone at the front desk, or stay
+	if Justice.Bail then
+		local okB, res = pcall(Justice.Bail.offer, player, { stars = stars, priors = priors, text = text,
+			recIndex = opts.recIndex, turnedIn = opts.turnedIn })
+		if not alive() then return true end
+		if okB and res == "posted" then
+			print(("[Custody] HQ DECISION %s released on bail"):format(player.Name))
+			walkOut("Bail posted - being walked out to the lobby")
+			return true
+		elseif not okB then
+			warn("[Bail] " .. tostring(res))
+		end
 	end
 	local rest = math.max(15, secs - preHold)
 	-- v243: held sentences are served at the City Jail when it's mapped (under 30 real minutes)
@@ -13634,6 +13654,15 @@ function Justice.init()
 		if rm then
 			local ok,R=pcall(require,rm)
 			if ok then Justice.Records=R else warn("[Records] failed to load: "..tostring(R)) end
+		end
+		-- v254: bail at HQ booking, court dates, failures to appear
+		local bm=script:FindFirstChild("Bail")
+		if bm then
+			local ok,BL=pcall(require,bm)
+			if ok then
+				Justice.Bail=BL
+				pcall(BL.init,{tell=tell,charge=charge,payBank=payBank,Records=Justice.Records})
+			else warn("[Bail] failed to load: "..tostring(BL)) end
 		end
 		task.delay(5,function() pcall(PrisonFlow.setupTurnIn) end)
 		-- v246-v249: crime log, interrogation, QTEs, snitching

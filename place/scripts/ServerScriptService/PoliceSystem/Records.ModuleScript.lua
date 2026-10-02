@@ -139,6 +139,12 @@ function R.note(player: Player, field: string)
 	task.spawn(save, player)
 end
 
+-- v254: something else changed the record table (Bail's court date): save it
+function R.touch(player: Player)
+	dirty[player] = true
+	task.spawn(save, player)
+end
+
 -- arrests before the one being processed now
 function R.priorArrests(player: Player): number
 	return math.max(0, R.get(player).totalArrests - 1)

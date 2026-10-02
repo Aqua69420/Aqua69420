@@ -40,7 +40,9 @@ Read this first in a new Claude session. Working branch: `claude/roblox-cuffwalk
   StreetGangs.Script (DataStore LasVegas_Gangs_v1). City territories need TerritoryEK/IS/DS/TL zones mapped.
 - Studio sync trick: run a localhost file server and `HttpService:GetAsync` the repo file in Studio
   (HTTP is ON in the place); export goes the other way with PostAsync.
-- Next: v252 drugs. (old note: v240 multi-building (Police HQ etc. from the user's mapped place), v241 arrest scene. See ROADMAP.md.
+- v252/v253 drugs (Drugs.Script, DrugsClient), v254 bail (PoliceSystem.Bail + BailClient; court = HQ front desk until v263).
+- Side build: GTA IV handling (ReplicatedStorage.GTAVehicle / GTAHandlingData = the user's real handling.dat), F enter/exit, Space handbrake.
+- Next: v255 asset freeze & stashes. (old note: v240 multi-building (Police HQ etc. from the user's mapped place), v241 arrest scene. See ROADMAP.md.
 
 ## With the Studio MCP server connected
 **User rule: do NOT start play tests unless the user explicitly asks** (they burn usage). The user plays and reports.
