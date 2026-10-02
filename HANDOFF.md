@@ -52,3 +52,5 @@ Use the connection for everything else:
   seats with `SeatRole`, models, attributes
 - run small edit-mode Luau checks (counts, validation) and apply script changes straight into Studio
 - keep the repo in sync: every script change still goes into `place/scripts/`, is compile-checked, committed and pushed
+
+- GTA handling WIP (2026-10-01): after the last test drive the car HOVERS ~2-3 studs (no ray contacts) once wheels were made featherweight. Suspect the client impulse anti-gravity overshoots now that the wheels no longer pull down, or a double drive loop. Next: check GTADebug on the seat, compare seat.AssemblyMass vs actual, retest turn/handbrake with the server logger (_G.drivelog).

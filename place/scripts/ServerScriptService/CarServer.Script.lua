@@ -563,6 +563,15 @@ function GTA.setup(car, seat)
 		if d:IsA("BasePart") and (d.Name == "LF" or d.Name == "RF" or d.Name == "LB" or d.Name == "RB" or string.sub(d.Name, 1, 8) == "Knuckle_") then
 			d.CanCollide = false
 			d.Massless = true
+			-- wheels / knuckles hang on hinges = their own assemblies, where Massless is
+			-- ignored: at full Roblox gravity the four wheels weighed ~1.4x the car's whole
+			-- (real-gravity) weight, loading the springs to ~2.5x. Make them featherweight.
+			d.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0.3, 0, 1, 1)
+		elseif d:IsA("BasePart") and d.CanCollide then
+			-- the body still hits walls and cars, but a scraping sill / bumper must never
+			-- grip the road (measured: body friction gave 2-3 g corners and handbrake pivots)
+			local cp = d.CurrentPhysicalProperties
+			d.CustomPhysicalProperties = PhysicalProperties.new(cp.Density, 0, cp.Elasticity, 100, cp.ElasticityWeight)
 		end
 	end
 	local att = seat:FindFirstChild("GTAAntiGravityAttachment") or Instance.new("Attachment")
