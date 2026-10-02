@@ -2486,6 +2486,130 @@ VisitRE.OnServerEvent:Connect(function(player: Player, kind: any, a: any, b: any
 	end
 end)
 
+-- v257b LEGAL VISIT: the inmate's lawyer (an NPC) in a visiting room - glass for routine
+-- talks, contact when there's a lot to go over. Any hour (legal visits aren't social
+-- visits). LawFirms runs the conversation: talk(inmate, info) -> { caught = bool }?
+local function lawyerNpc(at: Vector3, face: Vector3, firm: string): Model?
+	local ok, model = pcall(function()
+		local desc = Instance.new("HumanoidDescription")
+		desc.TorsoColor = Color3.fromRGB(35, 38, 48) -- dark suit
+		desc.LeftArmColor, desc.RightArmColor = desc.TorsoColor, desc.TorsoColor
+		desc.LeftLegColor, desc.RightLegColor = Color3.fromRGB(30, 30, 36), Color3.fromRGB(30, 30, 36)
+		return Players:CreateHumanoidModelFromDescription(desc, Enum.HumanoidRigType.R15)
+	end)
+	if not ok or not model then
+		return nil
+	end
+	model.Name = firm
+	local root = model:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.DisplayName = firm
+		hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
+	end
+	model.Parent = workspace
+	if root then
+		root.Anchored = true
+		local flat = Vector3.new(face.X, at.Y, face.Z)
+		model:PivotTo(CFrame.lookAt(at + Vector3.new(0, 3, 0), flat + Vector3.new(0, 3, 0)))
+	end
+	return model
+end
+
+function X.legalVisit(inmate: Player, firm: string, contact: boolean, talk: any): (boolean, string?)
+	if X.visits[inmate] or inmate:GetAttribute("Visiting") then
+		return false, "already in a visit"
+	end
+	if not C.sentenceEnd[inmate] or C.releaseBusy[inmate] or inmate:GetAttribute("Solitary") then
+		return false, "not available for visits right now"
+	end
+	local class = tostring(inmate:GetAttribute("SecurityClass") or "")
+	if contact and (class == "Supermax" or class == "Death Row") then
+		contact = false -- glass only at that level
+	end
+	local prisonerRoom, visitorRoom, visitorDoor
+	if contact then
+		prisonerRoom = pickByNumber("ContactVisit", nil)
+		local doors = C.PrisonNav.mapRoot and C.PrisonNav.mapRoot:FindFirstChild("DoorMarkers")
+		visitorDoor = doors and (doors:FindFirstChild("Vistiro Contact Visit") or doors:FindFirstChild("Visitor Contact Visit"))
+	else
+		prisonerRoom = pickByNumber("VisitPrisoner", nil)
+		local n = prisonerRoom and tonumber(prisonerRoom.name:match("_(%d+)$")) or 1
+		visitorRoom = pickByNumber("VisitVisitor", n) or pickByNumber("VisitVisitor", nil)
+	end
+	if not prisonerRoom then
+		return false, "every visiting room is in use"
+	end
+	visitSeq += 1
+	local visit = { id = visitSeq, visitor = inmate, inmate = inmate, contact = contact, legal = true }
+	X.visits[inmate] = visit
+	inmate:SetAttribute("Visiting", firm)
+	prisonerRoom.cell:SetAttribute("RoomBusy", true)
+	if visitorRoom then
+		visitorRoom.cell:SetAttribute("RoomBusy", true)
+	end
+	print(("[PrisonExtras] LEGAL VISIT %s with %s (%s) in %s"):format(inmate.Name, firm, if contact then "contact" else "glass", prisonerRoom.name))
+	local npc: Model? = nil
+	local result: any = nil
+	local ok, err = pcall(function()
+		C.custody[inmate] = true
+		notice(inmate, "Legal visit - " .. firm .. " is here. A CO is taking you down.")
+		local room = { cell = prisonerRoom.cell, door = prisonerRoom.door, pos = prisonerRoom.pos, name = prisonerRoom.name, category = prisonerRoom.category, open = false, capacity = 1 }
+		C.PrisonFlow.reserved[inmate] = room
+		if not C.PrisonFlow.deliver(inmate, "VISITATION OFFICER", room, "HOUSING_ESCORT") and inmate.Parent then
+			pcall(C.PrisonFlow.fallbackDeliver, inmate, "VISITATION OFFICER", room, "HOUSING_ESCORT")
+		end
+		C.custody[inmate] = nil
+		if not inmate.Parent then
+			return
+		end
+		local spot = if contact then visitorSpot(prisonerRoom, visitorDoor) else (visitorRoom and visitorRoom.pos or prisonerRoom.pos)
+		npc = lawyerNpc(spot, prisonerRoom.pos, firm)
+		local r = talk(inmate, { contact = contact, firm = firm })
+		result = if type(r) == "table" then r else nil
+	end)
+	if not ok then
+		warn("[PrisonExtras] legal visit error: " .. tostring(err))
+	end
+	if npc then
+		npc:Destroy()
+	end
+	if inmate.Parent then
+		inmate:SetAttribute("Visiting", nil)
+		if result and result.caught then
+			X.discipline(inmate, "contraband passed in a legal visit")
+		elseif C.sentenceEnd[inmate] and not C.releaseBusy[inmate] then
+			C.custody[inmate] = true
+			local cls = tostring(inmate:GetAttribute("SecurityClass") or "Medium")
+			local back = C.PrisonFlow.pick(inmate, C.PrisonFlow.categoryFor(cls))
+			if back and C.PrisonFlow.deliver(inmate, "CORRECTIONAL OFFICER", back, "HOUSING_ESCORT") then
+				C.housingAssignment[inmate] = back.cell
+				inmate:SetAttribute("AssignedCell", back.name)
+			end
+			C.custody[inmate] = nil
+		end
+	end
+	prisonerRoom.cell:SetAttribute("RoomBusy", nil)
+	if visitorRoom then
+		visitorRoom.cell:SetAttribute("RoomBusy", nil)
+	end
+	X.visits[inmate] = nil
+	print(("[PrisonExtras] LEGAL VISIT %s done%s"):format(inmate.Name, if result and result.caught then " - CAUGHT" else ""))
+	return true, nil
+end
+
+do
+	local fn = ServerStorage:FindFirstChild("LegalVisit") or Instance.new("BindableFunction")
+	fn.Name = "LegalVisit"
+	fn.OnInvoke = function(inmate, firm, contact, talk)
+		if not C or typeof(inmate) ~= "Instance" or not inmate:IsA("Player") or type(talk) ~= "function" then
+			return false, "unavailable"
+		end
+		return X.legalVisit(inmate, tostring(firm), contact == true, talk)
+	end
+	fn.Parent = ServerStorage
+end
+
 function X.caught(visit: any, why: string)
 	visit.caught = true
 	notice(visit.visitor, "CAUGHT SMUGGLING - " .. why)

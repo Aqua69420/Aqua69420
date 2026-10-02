@@ -147,8 +147,14 @@ end
 
 local function charge(p: Player, amount: number): boolean
 	amount = math.floor(amount)
-	local c, b = p:FindFirstChild("Cash") :: IntValue?, p:FindFirstChild("Money") :: IntValue?
 	if available(p) < amount then return false end
+	-- v257b: through the Economy, so the dirty-money share (v255) stays right
+	local eco = ServerStorage:FindFirstChild("Economy")
+	if eco and eco:IsA("BindableFunction") then
+		local ok, paid = pcall(eco.Invoke, eco, "Charge", p, amount)
+		return ok and paid == true
+	end
+	local c, b = p:FindFirstChild("Cash") :: IntValue?, p:FindFirstChild("Money") :: IntValue?
 	local fromCash = if c then math.min(c.Value, amount) else 0
 	if c then c.Value -= fromCash end
 	if b and amount - fromCash > 0 then b.Value -= amount - fromCash end
@@ -287,6 +293,218 @@ local function signOn(p: Player, f: any, retainerOnly: boolean): boolean
 end
 
 ---------------------------------------------------------------------------
+-- v257b LEGAL VISITS (spec 9.6): an inmate's lawyer in the prison visiting rooms.
+-- Glass for routine talks, contact when there's a lot to go over. Pay the lawyer a lot
+-- extra on a contact visit and they slip you something; elite lawyers are searched
+-- less, cheap ones are riskier and may give you up to save themselves.
+---------------------------------------------------------------------------
+local COURIER = {
+	{ name = "Cash ($1,000)", item = "Cash", minTier = 2, rateHours = 2, extra = 1000 },
+	{ name = "Pills", item = "Pills", minTier = 2, rateHours = 3, extra = 0 },
+	{ name = "Spice", item = "Spice", minTier = 3, rateHours = 4, extra = 0 },
+	{ name = "Lockpick", item = "Lockpick", minTier = 4, rateHours = 8, extra = 0 },
+	{ name = "Shiv", item = "Shiv", minTier = 6, rateHours = 10, extra = 0 },
+}
+-- chance a CO search finds it, by firm tier (1 = PD ... 7 = Premier)
+local SEARCH = { 0.5, 0.35, 0.25, 0.18, 0.1, 0.08, 0.05 }
+local visiting: { [Player]: boolean } = {}
+
+local function serving(p: Player): boolean
+	return p:GetAttribute("SentenceEnd") ~= nil and p:GetAttribute("Visiting") == nil
+end
+
+local function giveContraband(p: Player, item: string)
+	if item == "Cash" then
+		local eco = ServerStorage:FindFirstChild("Economy")
+		if eco then pcall(eco.Invoke, eco, "AddCash", p, 1000) end
+	elseif item == "Lockpick" then
+		local lp = ServerStorage:FindFirstChild("Lockpicks")
+		if lp then
+			pcall(lp.Invoke, lp, "Give", p)
+			local bp = p:FindFirstChildOfClass("Backpack")
+			local tool = bp and bp:FindFirstChild("Lockpick")
+			if tool then tool:SetAttribute("Contraband", true) end
+		end
+	else
+		local fn = ServerStorage:FindFirstChild("PrisonContraband")
+		if fn then pcall(fn.Invoke, fn, p, item) end
+	end
+end
+
+-- the conversation in the visiting room (runs inside PrisonExtras' legal visit)
+local function visitTalk(p: Player, info: any): any
+	local a = acct(p)
+	local f = BY_NAME[a.firm or ""] or FIRMS[1]
+	local result = { caught = false }
+	local secs = math.max(0, (tonumber(p:GetAttribute("SentenceEnd")) or os.time()) - os.time())
+	local kind = caseKind(p)
+	local intro = {
+		if f.tier <= 1 then "Public Defender's office. I've got ten minutes." else "Good to see you. This room is privileged - nobody's listening.",
+		("Time left: %d:%02d. Charges: %s."):format(secs // 60, secs % 60, kind),
+	}
+	for _ = 1, 6 do
+		local opts, acts = {}, {}
+		local function add(t: string, fn: () -> boolean?) table.insert(opts, t); table.insert(acts, fn) end
+		add("Go over my case", function()
+			dialog(p, f.name, {
+				if f.tier >= 5 then "We're reviewing every step of your arrest. If they cut corners, we'll find it." else "Keep your head down, no write-ups. Good behaviour is your best argument right now.",
+				"An appeal goes through the prison court once you have a trial conviction.",
+			}, { "OK" })
+			bill(p, "meeting")
+			return false
+		end)
+		add("Send a message to my crew", function()
+			dialog(p, f.name, { "I'll pass it on. Attorney-client - it never happened." }, { "OK" })
+			bill(p, "call")
+			print(("[Law] MESSAGE OUT %s via %s"):format(p.Name, f.name))
+			return false
+		end)
+		if info.contact and f.rate > 0 then
+			add("Slip me something...", function()
+				local items, list = {}, {}
+				for _, c in COURIER do
+					if f.tier >= c.minTier then
+						local price = math.floor(rateFor(a) * c.rateHours + c.extra)
+						table.insert(items, { c = c, price = price })
+						table.insert(list, ("%s - %s"):format(c.name, money(price)))
+					end
+				end
+				if #items == 0 then
+					dialog(p, f.name, { "I'm going to pretend you didn't ask that." }, { "OK" })
+					return false
+				end
+				table.insert(list, "Never mind")
+				local idx = dialog(p, f.name, { "(quietly) That's... not something I do. For the right fee." }, list)
+				local pick = idx and items[idx]
+				if not pick then return false end
+				if not charge(p, pick.price) then
+					dialog(p, f.name, { "Not with what you've got. Frozen money doesn't count." }, { "OK" })
+					return false
+				end
+				print(("[Law] COURIER %s: %s brings %s for %s"):format(p.Name, f.name, pick.c.item, money(pick.price)))
+				if math.random() < (SEARCH[f.tier] or 0.3) then
+					result.caught = true
+					notice(p, ("CAUGHT - the COs searched %s and found the %s"):format(f.name, pick.c.name))
+					local report = ServerStorage:FindFirstChild("ReportCrime")
+					if report then pcall(report.Invoke, report, p, "Smuggling contraband into a prison", 2) end
+					-- cheap lawyers save themselves
+					if f.tier <= 2 and math.random() < 0.5 then
+						notice(p, f.name .. " told the COs it was all your idea.")
+					end
+					print(("[Law] COURIER CAUGHT %s / %s - lawyer drops the case"):format(p.Name, f.name))
+					withdraw(p, "caught smuggling contraband for you")
+					return true
+				end
+				giveContraband(p, pick.c.item)
+				notice(p, ("%s slid it over under the table: %s"):format(f.name, pick.c.name))
+				return false
+			end)
+		end
+		add("That's all", function() return true end)
+		local idx = dialog(p, f.name .. " - legal visit", intro, opts)
+		intro = { "Anything else?" }
+		if not idx or not acts[idx] or acts[idx]() then break end
+	end
+	return result
+end
+
+local function requestVisit(p: Player, contact: boolean)
+	if visiting[p] then return end
+	local fn = ServerStorage:FindFirstChild("LegalVisit")
+	if not (fn and fn:IsA("BindableFunction")) then
+		notice(p, "Legal visits aren't available right now.")
+		return
+	end
+	local a = acct(p)
+	local firm = a.firm or "Public Defender"
+	visiting[p] = true
+	notice(p, ("%s is coming for a %s visit."):format(firm, if contact then "contact" else "glass"))
+	task.wait(if (BY_NAME[firm] or FIRMS[1]).tier >= 5 then 10 else 30) -- the better the firm, the sooner
+	if p.Parent and serving(p) then
+		local ok, res, why = pcall(fn.Invoke, fn, p, firm, contact, visitTalk)
+		if not ok or res ~= true then
+			notice(p, "The visit couldn't happen: " .. tostring(if ok then why else res))
+		end
+	end
+	visiting[p] = nil
+end
+
+---------------------------------------------------------------------------
+-- v257b IN-PERSON MEETINGS (spec 9.5): the lawyer books a time at the office.
+-- On time = a prepared case (CasePrepared - plea and court read it); late = billed
+-- waiting; no-show = billed anyway and the lawyer gets annoyed (twice = they drop you).
+-- MeetingAt / MeetingPlace / MeetingWith attributes drive the client's marker.
+---------------------------------------------------------------------------
+local offices: { [string]: Vector3 } = {}
+local MEETING = { Lead = 150, Window = 150, Reach = 14 }
+
+local function scheduleMeeting(p: Player, reason: string)
+	local a = acct(p)
+	local f = BY_NAME[a.firm or ""]
+	if not f or f.rate <= 0 or p:GetAttribute("MeetingAt") then return end
+	local place = offices[f.name]
+	if not place then
+		-- no office mapped for this firm: they do it over the phone
+		local how = call(p, { from = f.name, kind = "lawyer", legal = true, expires = 300,
+			lines = { ("We need to go over your case (%s). Let's do it now, on the phone."):format(reason) }, options = { "OK" } })
+		if how == "answered" then
+			bill(p, "meeting")
+			p:SetAttribute("CasePrepared", true)
+		end
+		return
+	end
+	local due = os.time() + MEETING.Lead
+	p:SetAttribute("MeetingAt", due)
+	p:SetAttribute("MeetingPlace", place)
+	p:SetAttribute("MeetingWith", f.name)
+	print(("[Law] MEETING booked %s with %s (%s) in %d s"):format(p.Name, f.name, reason, MEETING.Lead))
+	call(p, { from = f.name, kind = "lawyer", legal = true, expires = 120,
+		lines = { ("Come to the office in %d minutes - %s. It has to be in person."):format(math.ceil(MEETING.Lead / 60), reason),
+			"Watch for patrols on the way." }, options = { "I'll be there" } })
+	-- wait for them at the office
+	task.spawn(function()
+		local arrived = nil
+		while p.Parent and os.time() < due + MEETING.Window do
+			local char = p.Character
+			local root = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+			if root and (root.Position - place).Magnitude <= MEETING.Reach and p:GetAttribute("CustodyStage") == nil then
+				arrived = os.time()
+				break
+			end
+			task.wait(1)
+		end
+		p:SetAttribute("MeetingAt", nil)
+		p:SetAttribute("MeetingPlace", nil)
+		p:SetAttribute("MeetingWith", nil)
+		if not p.Parent then return end
+		if arrived then
+			local late = arrived > due
+			if late then bill(p, "call") end -- the waiting time
+			dialog(p, f.name, {
+				if late then "You're late. We bill for waiting, you know." else "Right on time. Sit down.",
+				("We went through everything for your case (%s). You're as ready as we can make you."):format(reason),
+			}, { "OK" })
+			bill(p, "meeting")
+			p:SetAttribute("CasePrepared", true)
+			a.annoyed = 0
+			save(p)
+			print(("[Law] MEETING %s attended%s"):format(p.Name, if late then " (late)" else ""))
+		else
+			bill(p, "meeting")
+			a.annoyed = (a.annoyed or 0) + 1
+			save(p)
+			print(("[Law] MEETING %s no-show (%d)"):format(p.Name, a.annoyed))
+			if a.annoyed >= 2 then
+				withdraw(p, "missed meetings")
+			else
+				call(p, { from = f.name, kind = "lawyer", legal = true, expires = 300,
+					lines = { "You didn't show. We billed you for the hour anyway. Do it again and find another lawyer." }, options = { "Sorry" } })
+			end
+		end
+	end)
+end
+
+---------------------------------------------------------------------------
 -- the menu (office reception, or the phone's Lawyer button)
 ---------------------------------------------------------------------------
 local busy: { [Player]: boolean } = {}
@@ -344,6 +562,13 @@ local function menu(p: Player, office: any?)
 				bill(p, "call")
 			end
 		end)
+	end
+	-- v257b: serving time - your lawyer comes to the prison
+	if serving(p) and a.firm == firm.name and not visiting[p] then
+		add("Request a legal visit (glass)", function() task.spawn(requestVisit, p, false) end)
+		if firm.rate > 0 then
+			add("Request a legal visit (contact)", function() task.spawn(requestVisit, p, true) end)
+		end
 	end
 	if a.firm == firm.name and firm.rate > 0 then
 		add("See my legal bill", function() dialog(p, firm.name .. " - Legal bill", billLines(p), { "OK" }) end)
@@ -416,6 +641,7 @@ local function setupOffices()
 				prompt.RequiresLineOfSight = false
 				prompt.Parent = part
 				local office = { firm = firm, pos = pos }
+				offices[firm] = pos
 				prompt.Triggered:Connect(function(p) task.spawn(menu, p, office) end)
 				print(("[Law] office: %s in %s (%s, %s)"):format(firm, tostring(model and model.Name), how, where))
 			end
@@ -462,7 +688,17 @@ local function watch(p: Player)
 		elseif s == nil then
 			p:SetAttribute("LawyerCalledThisCase", nil)
 			p:SetAttribute("LawyerPresent", nil)
+			-- v257b: out on bond with a court date - paid counsel books a case review
+			task.delay(20, function()
+				if p.Parent and p:GetAttribute("CourtDateAt") and p:GetAttribute("CustodyStage") == nil then
+					scheduleMeeting(p, "case review before your court date")
+				end
+			end)
 		end
+	end)
+	-- a new case starts unprepared
+	p:GetAttributeChangedSignal("LastArrestAt"):Connect(function()
+		p:SetAttribute("CasePrepared", nil)
 	end)
 	p:GetAttributeChangedSignal("BookingState"):Connect(function()
 		if p:GetAttribute("BookingState") == "Interrogation" and p:GetAttribute("LawyerPresent") then
@@ -545,6 +781,13 @@ do
 		elseif action == "retained" then
 			local a = acct(p)
 			return if a.retained then a.firm else nil
+		elseif action == "meeting" then
+			-- v257b: other scripts (plea offers, trial prep) book an in-person meeting
+			task.spawn(scheduleMeeting, p, tostring(x or "your case"))
+			return true
+		elseif action == "legalVisit" then
+			task.spawn(requestVisit, p, x == true)
+			return true
 		end
 		return nil
 	end

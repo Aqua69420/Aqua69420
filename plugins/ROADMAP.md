@@ -32,8 +32,8 @@
 ## E. Bail, money & lawyers
 - **v254 Bail** – bond at HQ, bail bondsmen, others can pay, tier table (released / bail / held without bail), pretrial detention
 - ✅ **v255 Asset freeze & stashes** – dirty vs clean money, frozen accounts, seized cash/cars/helis/house lien, house safes, safe deposit boxes, hidden stashes, raids with warrants
-- **v256 Phone calls** – cell phone ringing/answer/decline, prison phones (monitored), court date reminders
-- **v257 Counsel billing** – retainer + hourly by activity, running out of money (lawyer quits / public defender), wrong-tier choices, pre-arrest retainer benefits, 3 AM response by tier (cheap ones sleep through it), law offices + in-person meetings, legal visits (glass or contact)
+- ✅ **v256 Phone calls** – cell phone ringing/answer/decline, prison phones (monitored), court date reminders
+- ✅ **v257 Counsel billing** – retainer + hourly by activity, running out of money (lawyer quits / public defender), wrong-tier choices, pre-arrest retainer benefits, 3 AM response by tier (cheap ones sleep through it), law offices + in-person meetings, legal visits (glass or contact)
 - **v258 Plea deals** – offers, negotiate, forfeiture splits, cooperation deals, expiring offers
 - **v259 Firm asset management** – mid/high firms open deposit boxes, buy and hold metals, pay your bills while frozen
 
