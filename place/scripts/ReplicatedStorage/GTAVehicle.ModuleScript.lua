@@ -270,8 +270,8 @@ function M.step(st: any, dt: number, input: any): any
 
 	-- the springs push at most one normal frame's worth at once; a hitch's extra is paid over
 	-- the next frames (one big up-front kick for a 100 ms frame launched the car)
-	local springDt = math.min(dt + (st.springDebt or 0), 1 / 60)
-	st.springDebt = math.min(dt + (st.springDebt or 0) - springDt, 0.2)
+	local springDt = math.min(dt + (st.springDebt or 0), 1 / 25) -- normal frames (to 40 ms) in full
+	st.springDebt = math.min(dt + (st.springDebt or 0) - springDt, 0.1)
 	local nW = #st.wheels
 	local upper, lower = h.suspUpper * S, h.suspLower * S
 	local travel = math.max(upper - lower, 0.1)
