@@ -515,6 +515,152 @@ local function prepareCar(car, seat)
 end
 
 ---------------------------------------------------------------------------
+-- GTA IV handling (side build, 2026-10-01) (ReplicatedStorage.GTAHandlingData + GTAVehicle).
+-- A car with a handling line gets raycast suspension and GTA tyre physics: the
+-- driver's machine simulates it while driving (CarDriveClient), the server holds
+-- it on its suspension while parked. Cars without a line keep the old hinges.
+---------------------------------------------------------------------------
+local GTA = { cars = {}, data = nil, lines = nil }
+
+function GTA.load()
+	if GTA.lines then
+		return
+	end
+	GTA.lines = {}
+	local okM, Vehicle = pcall(require, ReplicatedStorage:WaitForChild("GTAVehicle", 10))
+	local okD, data = pcall(require, ReplicatedStorage:WaitForChild("GTAHandlingData", 10))
+	if not okM or not okD or type(data) ~= "table" then
+		warn("[GTAHandling] couldn't load GTAVehicle / GTAHandlingData - cars keep the old driving")
+		return
+	end
+	GTA.Vehicle, GTA.data = Vehicle, data
+	GTA.lines = Vehicle.parse(tostring(data.Text or ""), data.Columns)
+	local n = 0
+	for _, h in GTA.lines do
+		n += 1
+		print("[GTAHandling] " .. Vehicle.describe(h))
+	end
+	print(("[GTAHandling] %d handling line(s) read, %.2f studs per metre"):format(n, data.MetersToStuds or 2.8))
+end
+
+function GTA.lineFor(carName)
+	GTA.load()
+	local data = GTA.data
+	local key = data and data.Cars and data.Cars[carName]
+	return key and GTA.lines[string.upper(key)]
+end
+
+function GTA.setup(car, seat)
+	local carName = car:GetAttribute("CarName")
+	local h = carName and GTA.lineFor(carName)
+	if not h then
+		return
+	end
+	seat:SetAttribute("GTAHandling", h.name)
+	-- wheels become visual only: the suspension rays carry the car
+	for _, d in car:GetDescendants() do
+		if d:IsA("BasePart") and (d.Name == "LF" or d.Name == "RF" or d.Name == "LB" or d.Name == "RB" or string.sub(d.Name, 1, 8) == "Knuckle_") then
+			d.CanCollide = false
+			d.Massless = true
+		end
+	end
+	local att = seat:FindFirstChild("GTAAntiGravityAttachment") or Instance.new("Attachment")
+	att.Name = "GTAAntiGravityAttachment"
+	att.Parent = seat
+	local vf = seat:FindFirstChild("GTAAntiGravity") or Instance.new("VectorForce")
+	vf.Name = "GTAAntiGravity"
+	vf.Attachment0 = att
+	vf.RelativeTo = Enum.ActuatorRelativeTo.World
+	vf.ApplyAtCenterOfMass = true
+	vf.Force = Vector3.zero
+	vf.Parent = seat
+	local st = GTA.Vehicle.new(car, seat, h, GTA.data.MetersToStuds or 2.8)
+	if not st then
+		seat:SetAttribute("GTAHandling", nil)
+		return
+	end
+	GTA.cars[car] = st
+	car.Destroying:Connect(function()
+		GTA.cars[car] = nil
+	end)
+	print(("[GTAHandling] %s uses %s"):format(car.Name, h.name))
+end
+
+-- F to get in / out (CarDriveClient). Driver's seat first, else the nearest free seat.
+do
+	local remote = ReplicatedStorage:FindFirstChild("CarEnterExit") or Instance.new("RemoteEvent")
+	remote.Name = "CarEnterExit"
+	remote.Parent = ReplicatedStorage
+	local busy = {}
+	remote.OnServerEvent:Connect(function(player, car)
+		local char = player.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local root = char and char:FindFirstChild("HumanoidRootPart")
+		if not hum or not root or hum.Health <= 0 or busy[player] then
+			return
+		end
+		if car == nil then
+			if hum.SeatPart then
+				hum.Sit = false -- the seat's own exit code puts them beside the door
+			end
+			return
+		end
+		if typeof(car) ~= "Instance" or not car:IsA("Model") or not car:IsDescendantOf(workspace)
+			or hum:GetAttribute("PoliceCuffed") or player:GetAttribute("CustodyStage") ~= nil then
+			return
+		end
+		local seats = {}
+		local driver = car.PrimaryPart
+		if driver and (driver:IsA("VehicleSeat") or driver:IsA("Seat")) then
+			table.insert(seats, driver)
+		end
+		for _, s in car:GetDescendants() do
+			if (s:IsA("VehicleSeat") or s:IsA("Seat")) and s ~= driver then
+				table.insert(seats, s)
+			end
+		end
+		local target = nil
+		for _, s in seats do
+			if not s.Occupant and not s.Disabled then
+				target = s
+				break
+			end
+		end
+		if not target or (target.Position - root.Position).Magnitude > 16 then
+			return
+		end
+		busy[player] = true
+		-- walk to the door, then in
+		local side = target.CFrame.RightVector * (if target.CFrame:PointToObjectSpace(root.Position).X < 0 then -1 else 1)
+		local door = target.Position + side * 3.5
+		hum:MoveTo(Vector3.new(door.X, root.Position.Y, door.Z))
+		local t0 = os.clock()
+		while os.clock() - t0 < 1.2 and (root.Position - door).Magnitude > 3 and hum.Health > 0 do
+			task.wait(0.05)
+		end
+		if hum.Health > 0 and not target.Occupant and (target.Position - root.Position).Magnitude < 18 then
+			target:Sit(hum)
+		end
+		busy[player] = nil
+	end)
+end
+
+-- parked GTA cars: the server keeps them standing on their suspension, handbrake on
+RunService.Heartbeat:Connect(function(dt)
+	for car, st in GTA.cars do
+		if not car.Parent or not st.seat.Parent then
+			GTA.cars[car] = nil
+			continue
+		end
+		local occ = st.seat.Occupant
+		local driver = occ and Players:GetPlayerFromCharacter(occ.Parent)
+		if not driver then
+			GTA.Vehicle.step(st, dt, { throttle = 0, steer = 0, handbrake = true })
+		end
+	end
+end)
+
+---------------------------------------------------------------------------
 -- Driving
 ---------------------------------------------------------------------------
 local function hookDrive(car, seat, wheels, topSpeed)
@@ -561,6 +707,7 @@ local function hookDrive(car, seat, wheels, topSpeed)
 			park()
 		end
 	end)
+	GTA.setup(car, seat)
 end
 
 ---------------------------------------------------------------------------

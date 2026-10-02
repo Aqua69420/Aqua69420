@@ -72,7 +72,7 @@
 - **v281** news helicopter, vans, reporters, perp walks, courthouse steps
 - **v282** live broadcasts with cinematic camera cuts, courtroom broadcasts
 
-**Not planned:** GTA 4 handling.
+**Side build (2026-10-01):** GTA IV handling for player cars - paste handling.dat lines into ReplicatedStorage.GTAHandlingData; F enters/exits cars, Space = handbrake. Police/traffic move over in v273+.
 
 ---
 ## Your to-do (Facility Mapper – see MAPPING_GUIDE.md)

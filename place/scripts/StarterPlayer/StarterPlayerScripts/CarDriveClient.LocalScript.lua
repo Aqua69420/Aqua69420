@@ -83,6 +83,71 @@ local function collect(car)
 	return spins, steers
 end
 
+---------------------------------------------------------------------------
+-- GTA IV handling: cars with a GTAHandling line run ReplicatedStorage.GTAVehicle on
+-- this machine. W/S throttle, brake and reverse, A/D steer, SPACE = handbrake (it
+-- doesn't jump you out of the car - F gets you out).
+---------------------------------------------------------------------------
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ContextActionService = game:GetService("ContextActionService")
+local handbrakeDown = false
+
+local function driveGTA(humanoid, seat, car)
+	local okM, Vehicle = pcall(require, ReplicatedStorage:WaitForChild("GTAVehicle", 10))
+	local okD, data = pcall(require, ReplicatedStorage:WaitForChild("GTAHandlingData", 10))
+	if not okM or not okD then
+		warn("[GTAHandling] client couldn't load the handling modules")
+		return
+	end
+	local lines = Vehicle.parse(tostring(data.Text or ""), data.Columns)
+	local h = lines[seat:GetAttribute("GTAHandling")]
+	local st = h and Vehicle.new(car, seat, h, data.MetersToStuds or 2.8)
+	if not st then
+		return
+	end
+	Vehicle.ignore(st, { player.Character })
+	ContextActionService:BindActionAtPriority("GTAHandbrake", function(_, state)
+		handbrakeDown = state == Enum.UserInputState.Begin or state == Enum.UserInputState.Change
+		return Enum.ContextActionResult.Sink -- Space never jumps you out
+	end, true, 3000, Enum.KeyCode.Space, Enum.KeyCode.ButtonX)
+	pcall(function()
+		ContextActionService:SetTitle("GTAHandbrake", "Handbrake")
+	end)
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
+	local drunkSteer = 0
+	local connection
+	connection = RunService.Heartbeat:Connect(function(dt)
+		if humanoid.SeatPart ~= seat or not car.Parent then
+			connection:Disconnect()
+			ContextActionService:UnbindAction("GTAHandbrake")
+			handbrakeDown = false
+			humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
+			return
+		end
+		local throttle, steer = seat.ThrottleFloat, seat.SteerFloat
+		if math.abs(throttle) < 0.05 then
+			if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then throttle = 1
+			elseif UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.Down) then throttle = -1 end
+		end
+		if math.abs(steer) < 0.05 then
+			if UserInputService:IsKeyDown(Enum.KeyCode.A) or UserInputService:IsKeyDown(Enum.KeyCode.Left) then steer = -1
+			elseif UserInputService:IsKeyDown(Enum.KeyCode.D) or UserInputService:IsKeyDown(Enum.KeyCode.Right) then steer = 1 end
+		end
+		-- v252 impairment: lagging hands and drift
+		local impaired = tonumber(player:GetAttribute("Impairment")) or 0
+		if impaired > 0.1 then
+			drunkSteer += (steer - drunkSteer) * (1 - math.clamp(impaired * 0.9, 0, 0.85))
+			steer = math.clamp(drunkSteer + (math.sin(os.clock() * 0.7) * 0.6 + math.sin(os.clock() * 1.9) * 0.4) * impaired * 0.45, -1, 1)
+		else
+			drunkSteer = steer
+		end
+		if seat:GetAttribute("VehicleDestroyed") then
+			throttle = 0
+		end
+		Vehicle.step(st, dt, { throttle = throttle, steer = steer, handbrake = handbrakeDown })
+	end)
+end
+
 local function drive(humanoid, seat)
 	local car = seat.Parent
 	while car and car ~= workspace and not car:GetAttribute("CarName") do
@@ -93,6 +158,10 @@ local function drive(humanoid, seat)
 	end
 	if not car or not seat:GetAttribute("TopSpeed") then
 		return -- not one of the rebuilt cars
+	end
+	if seat:GetAttribute("GTAHandling") then
+		driveGTA(humanoid, seat, car)
+		return
 	end
 
 	local spins, steers = collect(car)
@@ -203,3 +272,38 @@ if player.Character then
 	task.spawn(onCharacter, player.Character)
 end
 player.CharacterAdded:Connect(onCharacter)
+
+-- F: get in the nearest car (GTA style) / get out. The server walks you to the door.
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed or input.KeyCode ~= Enum.KeyCode.F then
+		return
+	end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not hum or not root then
+		return
+	end
+	local remote = ReplicatedStorage:FindFirstChild("CarEnterExit")
+	if not remote then
+		return
+	end
+	if hum.SeatPart then
+		remote:FireServer(nil) -- out
+		return
+	end
+	local folder = workspace:FindFirstChild("SpawnedCars")
+	local best, bestD = nil, 14
+	for _, car in (if folder then folder:GetChildren() else {}) do
+		local seat = car:FindFirstChildWhichIsA("VehicleSeat", true)
+		if seat then
+			local d = (seat.Position - root.Position).Magnitude
+			if d < bestD then
+				best, bestD = car, d
+			end
+		end
+	end
+	if best then
+		remote:FireServer(best)
+	end
+end)
