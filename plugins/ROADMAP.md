@@ -43,10 +43,10 @@
 - **v262 Plates & registration** – cars bought/registered at the dealership, plate readers, plate swapping, colour + type must match, respray, stolen plates, BOLOs with car description, civilian tips
 
 ## G. Courts
-- **v263 Courtroom engine** – city courthouse + prison court, transport van, security checkpoint, bail + disciplinary hearings
-- **v264 Bench trials** – charges, evidence from your real crimes, your choices, verdict, sentence → city jail / prison
-- **v265 Jury trials** – 12 jurors, testifying QTE, hung juries, co-defendant testimony, player jurors/judge
-- **v266 Judges with memory** – named judges & prosecutors who remember you, history-based sentencing, habitual offender, remove-judge motion, expungement
+- ✅ **v263 Courtroom engine** – city courthouse + prison court, transport van, security checkpoint, bail + disciplinary hearings
+- ✅ **v264 Bench trials** – charges, evidence from your real crimes, your choices, verdict, sentence → city jail / prison
+- ✅ **v265 Jury trials** – 12 jurors, testifying QTE, hung juries, co-defendant testimony, player jurors/judge
+- 🟡 **v266 Judges with memory** (named judges who remember your last case done; habitual offender / remove-judge / expungement not yet) – named judges & prosecutors who remember you, history-based sentencing, habitual offender, remove-judge motion, expungement
 - **v267 Appeals & prison court** – appeals, trials for crimes inside prison
 
 ## H. Money rules

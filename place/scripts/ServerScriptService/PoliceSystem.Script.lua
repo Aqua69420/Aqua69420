@@ -10932,30 +10932,71 @@ function PrisonFlow.lawyerVisit(player: Player, res: any, text: string, alive: (
 	firm = firm or tostring(player:GetAttribute("LawyerFirm") or "Public Defender")
 	player:SetAttribute("BookingState", "LawyerVisit")
 	player:SetAttribute("LawyerPresent", true)
-	tell(player, "Custody", "Your lawyer is here - " .. firm)
 	print(("[Custody] LAWYER VISIT %s with %s"):format(player.Name, firm))
-	task.wait(2)
+	-- v263: counsel really comes to the station - walks in from the front and sits down with you
+	local CM = Justice.Court
+	local npc: Model? = nil
+	local _, _, root = Util.charInfo(player)
+	local F = Justice.Facilities
+	if CM and root then
+		local from = (F and (F.point("PoliceHQ", "VehicleDropoff", true) or F.point("PoliceHQ", "TurnInPoint", true))) or (root.Position + Vector3.new(30, 0, 0))
+		npc = CM.npc(firm, "lawyer", from)
+		if npc then
+			tell(player, "Custody", firm .. " is on the way in")
+			local station = Workspace:FindFirstChild("PoliceStation")
+			if station and openFor then
+				for _, c in station:GetChildren() do
+					if c:IsA("Model") and (c.Name == "RestrictedDoor" or c.Name == "CellDoor") then pcall(openFor, c, 40) end
+				end
+			end
+			local beside = root.Position + Util.safeUnit(Util.flat(from - root.Position), Vector3.xAxis) * 4
+			CM.walk(npc, beside, 40)
+			local nr = npc:FindFirstChild("HumanoidRootPart") :: BasePart?
+			if nr then nr.CFrame = CFrame.lookAt(nr.Position, Vector3.new(root.Position.X, nr.Position.Y, root.Position.Z)) end
+		end
+	end
+	tell(player, "Custody", "Your lawyer is here - " .. firm)
+	task.wait(1.5)
 	local function card(lines: { string }, options: { string }): number?
 		if not alive() then return nil end
 		local ok, how, idx = pcall(phone.Invoke, phone, "dialog", player, { from = firm, lines = lines, options = options })
 		return if ok and how == "answered" then idx else nil
 	end
+	local tier = if CM then select(2, CM.counselOf(player)) else 1
 	local cheap = firm == "Public Defender"
-	local pick = card({
+	-- how strong their case looks from what happened in this room
+	local strength = 0.5 + (if res.confessed then 0.25 else 0) - (if res.violation then 0.2 else 0) + (if res.named and #res.named > 0 then 0.03 else 0)
+	local opener = {
 		if cheap then "Public Defender's office. I've got your file - I have twelve more today, so let's be quick." else "I came as fast as I could. Don't say another word to them without me.",
 		"Charges: " .. (if text ~= "" then text else "pending"),
 		if res.confessed then "You talked before asking for me. That hurts us, but we'll work with it." else "Good - you asked for me before you said anything. That matters.",
-	}, { "What happens now?", "Can you get me out?", "I want a better lawyer", "That's all" })
-	for _ = 1, 4 do
-		if pick == 1 then
-			pick = card({ "They're transferring you to the State Prison to wait for trial.", "Serious charges mean no bail at this stage. Keep your head down, say nothing about the case on the phones - they're recorded." },
-				{ "Can you get me out?", "I want a better lawyer", "That's all" })
-			pick = if pick then pick + 1 else nil
-		elseif pick == 2 then
-			pick = card({ if cheap then "Honestly? Not today. I'll file for a bail hearing, but on these charges don't count on it." else "I'll push for a bail hearing and go after their evidence. No promises, but this isn't over." },
-				{ "What happens now?", "I want a better lawyer", "That's all" })
-			pick = if pick == 1 then 1 elseif pick == 2 then 3 elseif pick == 3 then 4 else nil
-		elseif pick == 3 then
+	}
+	local menu = { "What happens now?", "How strong is their case?", "How do we play it in court?", "Can you get me out?", "I want a better lawyer", "That's all" }
+	local pick = card(opener, menu)
+	for _ = 1, 8 do
+		local what = menu[pick or #menu]
+		if what == "What happens now?" then
+			pick = card({
+				"You'll be booked, then taken to the Clark County Courthouse for arraignment.",
+				"The judge reads the charges and the maximum. The DA will put an offer on the table - a plea for less time.",
+				"Take it, push for better, or go to trial in front of a judge or a jury. Say nothing about the case on the phones - they're recorded.",
+			}, menu)
+		elseif what == "How strong is their case?" then
+			pick = card({
+				if strength > 0.7 then "Honestly? Strong. Your statement is on tape and it's going to be played." elseif strength < 0.45 then "Weak. The way they questioned you - I can get that thrown out." else "It can go either way. It depends on the witnesses.",
+				if res.violation then "That detective crossed the line in there. I'll use it." else "They did it by the book, as far as I can see.",
+				if res.named and #res.named > 0 then ("You named %s. That helps them, not you."):format(tostring(res.named[1])) else "You didn't give them anyone. Good.",
+			}, menu)
+		elseif what == "How do we play it in court?" then
+			pick = card({
+				if strength > 0.7 then "If the offer is decent, we take it. A trial on this is a gamble with your time." else "We don't take the first offer. Push - they'll come down.",
+				"If you testify, stay calm. Don't argue with the prosecutor - juries hate that.",
+				if tier >= 3 then "We've been over it. You're prepared." else "Listen to me in there and keep your answers short.",
+			}, menu)
+			if tier >= 3 and not cheap then player:SetAttribute("CasePrepared", true) end
+		elseif what == "Can you get me out?" then
+			pick = card({ if cheap then "Honestly? Not today. I'll ask about bail, but don't count on it." else "I'll push for bail and go after their evidence. No promises, but this isn't over." }, menu)
+		elseif what == "I want a better lawyer" then
 			if law then pcall(law.Invoke, law, "menu", player) end
 			task.wait(8)
 			break
@@ -10964,7 +11005,78 @@ function PrisonFlow.lawyerVisit(player: Player, res: any, text: string, alive: (
 		end
 	end
 	if law and not cheap then pcall(law.Invoke, law, "bill", player, "meeting") end
+	-- and out again
+	if npc then
+		local from = F and (F.point("PoliceHQ", "VehicleDropoff", true) or F.point("PoliceHQ", "TurnInPoint", true))
+		local m = npc
+		task.spawn(function()
+			if from and CM then CM.walk(m, from, 30) end
+			if m.Parent then m:Destroy() end
+		end)
+	end
 	print(("[Custody] LAWYER VISIT %s done"):format(player.Name))
+end
+
+-- v263: the day in court (Court module) for an HQ custody. -> the court's result, or nil when
+-- there's no courthouse (the old sentence stands). rec = PrisonFlow.hq[player] (resets go to
+-- court holding while the case is heard).
+function PrisonFlow.courtDay(player: Player, secs: number, text: string, opts: any, alive: () -> boolean): any
+	local CM = Justice.Court
+	if not (CM and CM.available()) then return nil end
+	local rec = PrisonFlow.hq[player]
+	local oldHold = rec and rec.hold
+	local okC, res = pcall(CM.run, player, {
+		secs = secs, text = text, stars = opts.stars, priors = opts.priors, minor = opts.mode == "minor",
+		interview = PrisonFlow.interviews and PrisonFlow.interviews[player], alive = alive,
+		ride = function(dest: Vector3): string
+			local road = dest
+			local node = RoadGraph.ready and RoadGraph.nearest(dest, 300)
+			if node then road = RoadGraph.nodePos(node) or dest end
+			return PrisonFlow.hqRide(player, road, alive)
+		end,
+		walk = function(goal: Vector3, t: number?): string
+			cuff(player)
+			return PrisonFlow.hqWalk(player, goal, nil, t or 45, alive)
+		end,
+		tell = function(m: string) tell(player, "Custody", m) end,
+		cuff = function() cuff(player) end,
+		uncuff = function() uncuff(player) end,
+		setHold = function(pos: Vector3) if rec then rec.hold = pos end end,
+	})
+	if rec then rec.hold = oldHold end
+	if not okC or type(res) ~= "table" then
+		warn("[Court] " .. player.Name .. "'s court day failed: " .. tostring(res))
+		return nil
+	end
+	player:SetAttribute("CaseVerdict", res.verdict)
+	if Justice.Records and opts.recIndex then
+		pcall(Justice.Records.setOutcome, player, opts.recIndex, if res.secs > 0 then "Pending" else "Acquitted",
+			{ verdict = res.verdict, judge = res.judge, sentence = res.secs })
+	end
+	print(("[Custody] COURT %s: %s, %ds (was %ds)"):format(player.Name, res.verdict, res.secs, secs))
+	return res
+end
+
+-- v263: remanded at the courthouse (out on bail, found guilty at their court date): back into
+-- custody to serve the sentence - the City Jail's custody leg, starting from the courthouse
+function PrisonFlow.remand(player: Player, secs: number, text: string, recIndex: number?): boolean
+	if PrisonFlow.hq[player] or custody[player] then return false end
+	takeGuns(player)
+	PrisonFlow.team(player, "Intake Prisoners")
+	player:SetAttribute("CaseCharges", text)
+	cuff(player)
+	local _, _, r = Util.charInfo(player)
+	local rec = { secs = secs, text = text, hold = r and r.Position or Vector3.zero }
+	PrisonFlow.hq[player] = rec
+	print(("[Custody] REMANDED %s at the courthouse: %ds (%s)"):format(player.Name, secs, text))
+	task.spawn(function()
+		local ok, res = pcall(PrisonFlow.jailCustody, player, secs, text, { recIndex = recIndex })
+		if (not ok or res == false) and PrisonFlow.hq[player] == rec then
+			warn("[Custody] remand to the City Jail failed for " .. player.Name .. ": " .. tostring(res) .. " - released")
+			PrisonFlow.hqEnd(player, "released")
+		end
+	end)
+	return true
 end
 
 function PrisonFlow.hqRide(player: Player, dest: Vector3, alive: () -> boolean): string
@@ -11327,6 +11439,30 @@ function PrisonFlow.hqCustody(player: Player, secs: number, text: string, opts: 
 				player:SetAttribute("BookingState", "HQBooking")
 			end
 		end
+		-- v263: arraignment and trial at the courthouse; the verdict sets the sentence
+		do
+			local court = PrisonFlow.courtDay(player, secs, text, { stars = opts.stars, priors = priors, recIndex = opts.recIndex, mode = "transfer" }, alive)
+			if not alive() then return true end
+			if court then
+				if court.secs <= 0 then
+					local steps = Justice.Court.spot("CourthouseSteps")
+					local _, _, rr = Util.charInfo(player)
+					if steps and rr then rr.CFrame = CFrame.new(steps.Position + Vector3.new(0, 3, 0)) end
+					PrisonFlow.hqEnd(player, "released")
+					tell(player, "Custody", if court.verdict == "dismissed" then "Charges dropped - you walk out of the courthouse a free man" else "NOT GUILTY - you walk out of the courthouse free")
+					return true
+				end
+				-- the transfer applies the interview's scale to secs: the court's sentence replaces it
+				PrisonFlow.interviews = PrisonFlow.interviews or {}
+				local ir = PrisonFlow.interviews[player] or {}
+				ir.secsScale = court.secs / math.max(1, secs)
+				ir.extraCharges = nil
+				PrisonFlow.interviews[player] = ir
+				player:SetAttribute("InterviewDone", true) -- the court decided it: no fallback interview at the City Jail
+				tell(player, "Custody", ("Sentenced: %d:%02d - being transferred to the State Prison"):format(court.secs // 60, court.secs % 60))
+				return "transfer"
+			end
+		end
 		-- v254: serious charges are held without bail until trial
 		tell(player, "Custody", "Serious charges - held without bail until trial")
 		tell(player, "Custody", "Booked - being transferred to the State Prison")
@@ -11348,7 +11484,7 @@ function PrisonFlow.hqCustody(player: Player, secs: number, text: string, opts: 
 	end
 	-- v254: bail hearing - pay it, a bondsman, someone at the front desk, or stay
 	if Justice.Bail then
-		local okB, res = pcall(Justice.Bail.offer, player, { stars = stars, priors = priors, text = text,
+		local okB, res = pcall(Justice.Bail.offer, player, { stars = stars, priors = priors, text = text, secs = secs,
 			recIndex = opts.recIndex, turnedIn = opts.turnedIn })
 		if not alive() then return true end
 		if okB and res == "posted" then
@@ -11360,6 +11496,24 @@ function PrisonFlow.hqCustody(player: Player, secs: number, text: string, opts: 
 		end
 	end
 	local rest = math.max(15, secs - preHold)
+	-- v263: no bail posted - the judge hears it (a quick plea or a bench trial)
+	local wentToCourt = false
+	do
+		local court = PrisonFlow.courtDay(player, rest, text, { stars = stars, priors = priors, recIndex = opts.recIndex, mode = "minor" }, alive)
+		if not alive() then return true end
+		if court then
+			wentToCourt = true
+			if court.secs <= 0 then
+				local steps = Justice.Court.spot("CourthouseSteps")
+				local _, _, rr = Util.charInfo(player)
+				if steps and rr then rr.CFrame = CFrame.new(steps.Position + Vector3.new(0, 3, 0)) end
+				PrisonFlow.hqEnd(player, "released")
+				tell(player, "Custody", "NOT GUILTY - you walk out of the courthouse free")
+				return true
+			end
+			rest = math.max(15, court.secs)
+		end
+	end
 	-- v243: held sentences are served at the City Jail when it's mapped (under 30 real minutes)
 	if F.isMapped("CityJail") and F.zone("CityJail", "JailCell", true) and rest <= (JCFG.CityJailMaxSeconds or 1800) then
 		if Rec then Rec.setOutcome(player, opts.recIndex, "CityJail", { seconds = rest }) end
@@ -11369,6 +11523,16 @@ function PrisonFlow.hqCustody(player: Player, secs: number, text: string, opts: 
 	end
 	if Rec then Rec.setOutcome(player, opts.recIndex, "HeldHQ", { seconds = secs }) end
 	print(("[Custody] HQ DECISION %s held %ds (priors=%d stars=%d)"):format(player.Name, rest, priors, stars))
+	if wentToCourt then
+		-- back from the courthouse to the station's holding cell
+		local okR, how = pcall(PrisonFlow.hqRide, player, road, alive)
+		if not alive() then return true end
+		if not okR or (how ~= "drove" and how ~= "cancelled") then
+			local _, _, rb = Util.charInfo(player)
+			if rb then rb.CFrame = CFrame.new(road + Vector3.new(0, 3, 0)) end
+		end
+		openHQDoors(40)
+	end
 	escortTo(holdFloor, "BOOKING OFFICER", "Back to the holding cell")
 	do
 		local _, _, rIn = Util.charInfo(player)
@@ -13866,6 +14030,19 @@ function Justice.init()
 				pcall(BL.init,{tell=tell,charge=charge,payBank=payBank,Records=Justice.Records})
 			else warn("[Bail] failed to load: "..tostring(BL)) end
 		end
+		-- v263: the day in court at the Clark County Courthouse (arraignment, plea, bench / jury trial)
+		local cm=script:FindFirstChild("Court")
+		if cm then
+			local ok,CM=pcall(require,cm)
+			if ok then
+				Justice.Court=CM
+				pcall(CM.init,{Records=Justice.Records})
+				-- court dates for defendants out on bail are heard at the courthouse now
+				if Justice.Bail and Justice.Bail.setCourt then
+					pcall(Justice.Bail.setCourt, CM, function(p: Player, sec: number, txt: string, idx: number?) return PrisonFlow.remand(p, sec, txt, idx) end)
+				end
+			else warn("[Court] failed to load: "..tostring(CM)) end
+		end
 		task.delay(5,function() pcall(PrisonFlow.setupTurnIn) end)
 		-- v246-v249: crime log, interrogation, QTEs, snitching
 		local im=script:FindFirstChild("Interrogation")
@@ -14142,6 +14319,7 @@ function Justice.init()
 		JailTransport="Transport",JailCell="Detention",JailDayRoom="Detention",JailRelease="Release", -- v243 City Jail
 		TransferHolding="Detention",TransferDeparture="Transport", -- v244 prison transfer
 		Interrogation="Station", -- v246
+		Court="Court",LawyerVisit="Station", -- v263 the day in court / counsel at the station
 	}
 	-- where the NEW character appears for each stage
 	PrisonFlow.RESPAWN_AT={

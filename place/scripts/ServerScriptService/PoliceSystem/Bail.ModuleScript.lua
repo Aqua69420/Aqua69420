@@ -88,6 +88,12 @@ function B.amountFor(player: Player, info: any): (number?, string?)
 	return math.floor(amount / 50 + 0.5) * 50, nil
 end
 
+-- where a court date is answered: the courthouse once it's there (v263), else the HQ front desk
+local function courtPlace(): string
+	if ctx.court and ctx.court.available() then return "the Clark County Courthouse (clerk's window)" end
+	return "the Police HQ front desk"
+end
+
 -- posted: release paperwork + court date
 local function post(player: Player, o: any, how: string, payer: Player?)
 	o.result = "posted"
@@ -99,13 +105,16 @@ local function post(player: Player, o: any, how: string, payer: Player?)
 		how = how,
 		recIndex = o.info.recIndex,
 		charges = o.info.text,
+		secs = o.info.secs, -- the sentence at stake (v263: the courthouse hears it)
+		stars = o.info.stars,
+		priors = o.info.priors,
 	})
 	if ctx.Records then
 		ctx.Records.setOutcome(player, o.info.recIndex, "Bail", { bail = o.amount, bailHow = how })
 	end
-	ctx.tell(player, "Custody", ("Bail posted ($%d%s). Court date in %d minutes - be at the Police HQ front desk."):format(
+	ctx.tell(player, "Custody", ("Bail posted ($%d%s). Court date in %d minutes - be at %s."):format(
 		o.amount, if how == "bondsman" then ", by a bondsman" elseif how == "other" and payer then ", by " .. payer.Name else "",
-		CFG.CourtIn // 60))
+		CFG.CourtIn // 60, courtPlace()))
 	print(("[Bail] POSTED %s $%d via %s%s"):format(player.Name, o.amount, how, if payer then " (" .. payer.Name .. ")" else ""))
 end
 
@@ -145,6 +154,10 @@ end
 -- HQ front desk. Returns true if it handled the visit.
 function B.desk(player: Player): boolean
 	local p = B.pending(player)
+	if p and ctx.court and ctx.court.available() then
+		ctx.tell(player, "Notice", "Your case is heard at the Clark County Courthouse - go to the clerk's window there")
+		return true
+	end
 	if p then
 		local now = os.time()
 		if now < p.due - CFG.CourtEarly then
@@ -210,6 +223,87 @@ local function failToAppear(player: Player, p: any)
 	print(("[Bail] FAILURE TO APPEAR %s - warrant issued"):format(player.Name))
 end
 
+-- v263: answering a court date at the courthouse clerk's window -> a real hearing (Court.run).
+-- Showing up gets the bail back to whoever paid it, whatever the verdict; guilty = remanded.
+local appearing: { [Player]: boolean } = {}
+function B.appear(player: Player)
+	local p = B.pending(player)
+	if not p then
+		ctx.tell(player, "Notice", "Clerk: there's nothing on the docket for you today.")
+		return
+	end
+	local now = os.time()
+	if now < p.due - CFG.CourtEarly then
+		ctx.tell(player, "Notice", ("Clerk: your case is in %d minute(s). Come back then."):format(math.ceil((p.due - now) / 60)))
+		return
+	end
+	if appearing[player] then return end
+	appearing[player] = true
+	savePending(player, nil) -- they're here: no failure to appear while the case is heard
+	player:SetAttribute("CourtDateAt", nil)
+	local refundTo = p.refundTo and Players:GetPlayerByUserId(p.refundTo)
+	if refundTo and p.amount then
+		ctx.payBank(refundTo, p.amount)
+		ctx.tell(refundTo, "Notice", ("$%d bail refunded - %s showed up for court"):format(p.amount, player.Name))
+	end
+	print(("[Bail] COURT %s appeared at the courthouse"):format(player.Name))
+	local text = tostring(p.charges or player:GetAttribute("CaseCharges") or "the charges")
+	local ok, res = pcall(ctx.court.run, player, {
+		secs = tonumber(p.secs) or 120, text = text, stars = p.stars, priors = p.priors, free = true,
+		alive = function() return player.Parent ~= nil end,
+		tell = function(m: string) ctx.tell(player, "Notice", m) end,
+		cuff = function() end, uncuff = function() end,
+	})
+	appearing[player] = nil
+	if not ok or type(res) ~= "table" then
+		warn("[Bail] court hearing failed for " .. player.Name .. ": " .. tostring(res))
+		ctx.tell(player, "Notice", "Court: case closed - time served")
+		return
+	end
+	if res.secs > 0 then
+		if ctx.Records then ctx.Records.setOutcome(player, p.recIndex, "Pending", { verdict = res.verdict, judge = res.judge, sentence = res.secs }) end
+		ctx.tell(player, "Notice", ("The bailiff takes you into custody - %d:%02d to serve"):format(res.secs // 60, res.secs % 60))
+		if ctx.remand then ctx.remand(player, res.secs, text, p.recIndex) end
+	else
+		if ctx.Records then ctx.Records.setOutcome(player, p.recIndex, "Acquitted", { verdict = res.verdict, judge = res.judge }) end
+		local steps = ctx.court.spot("CourthouseSteps")
+		local c = player.Character
+		local r = c and c:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if steps and r then r.CFrame = CFrame.new(steps.Position + Vector3.new(0, 3, 0)) end
+		ctx.tell(player, "Notice", "Case closed - you're free to go")
+	end
+end
+
+-- v263: the courthouse is up - court dates are answered at its clerk's window
+function B.setCourt(court: any, remand: any)
+	ctx.court = court
+	ctx.remand = remand
+	task.spawn(function()
+		local window = nil
+		for _ = 1, 30 do
+			window = court.spot("ClerkWindow")
+			if window then break end
+			task.wait(1)
+		end
+		if not window then
+			warn("[Bail] no ClerkWindow in the courthouse - court dates stay at the HQ front desk")
+			return
+		end
+		local pp = window:FindFirstChild("CourtDatePrompt") or Instance.new("ProximityPrompt")
+		pp.Name = "CourtDatePrompt"
+		pp.ActionText = "Answer your court date"
+		pp.ObjectText = "Clerk of the Court"
+		pp.HoldDuration = 0.5
+		pp.MaxActivationDistance = 10
+		pp.RequiresLineOfSight = false
+		pp.Parent = window
+		pp.Triggered:Connect(function(player)
+			task.spawn(B.appear, player)
+		end)
+		print("[Bail] court dates are answered at the courthouse clerk's window")
+	end)
+end
+
 function B.init(c: any)
 	ctx = c
 	local folder = ReplicatedStorage:FindFirstChild("BailRemotes") or Instance.new("Folder")
@@ -251,16 +345,16 @@ function B.init(c: any)
 					if not p.warnedPost and now > (tonumber(p.due) or now) - CFG.CourtIn + 30 then
 						-- v256: the court calls once after release to confirm the date
 						p.warnedPost = true
-						courtCall(player, ("This is the Clark County Court. You are scheduled to appear in %d minute(s) at the Police HQ front desk."):format(math.max(1, math.ceil((p.due - now) / 60))))
+						courtCall(player, ("This is the Clark County Court. You are scheduled to appear in %d minute(s) at %s."):format(math.max(1, math.ceil((p.due - now) / 60)), courtPlace()))
 					end
 					if now > p.due + CFG.CourtWindow then
 						failToAppear(player, p)
 					elseif not p.warned5 and now > p.due - 5 * 60 then
 						p.warned5 = true
-						courtCall(player, "Reminder: your court date is in 5 minutes - Police HQ front desk.")
+						courtCall(player, "Reminder: your court date is in 5 minutes - " .. courtPlace() .. ".")
 					elseif not p.warned0 and now >= p.due then
 						p.warned0 = true
-						courtCall(player, ("Your case is being called NOW. You have %d minutes to get to the Police HQ front desk."):format(CFG.CourtWindow // 60))
+						courtCall(player, ("Your case is being called NOW. You have %d minutes to get to %s."):format(CFG.CourtWindow // 60, courtPlace()))
 					end
 				end
 			end
