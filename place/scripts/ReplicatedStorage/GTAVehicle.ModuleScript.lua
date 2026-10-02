@@ -121,8 +121,14 @@ function M.new(car: Model, seat: BasePart, h: any, metersToStuds: number): any
 			if typeof(stamped) ~= "Vector3" and game:GetService("RunService"):IsServer() then
 				w:SetAttribute("GTAOffset", lp)
 			end
-			table.insert(wheels, { part = w, offset = lp, radius = math.max(math.min(w.Size.X, w.Size.Y, w.Size.Z) / 2, 0.5),
-				lastComp = nil, contact = false, spin = 0 })
+			-- ghost chassis (CarServer): the wheel is a visual on a Motor6D, posed every step
+			local motor = w:FindFirstChild("GTAWheelMotor")
+			local baseC0 = w:GetAttribute("GTABaseC0")
+			table.insert(wheels, { part = w, offset = lp, radius = math.max(math.max(w.Size.X, w.Size.Y, w.Size.Z) / 2, 0.5),
+				lastComp = nil, contact = false, spin = 0, angle = 0, drop = 0,
+				motor = if motor and motor:IsA("Motor6D") then motor else nil,
+				baseC0 = if typeof(baseC0) == "CFrame" then baseC0 else nil,
+				axleSign = tonumber(w:GetAttribute("GTAAxleSign")) or 1 })
 			sumZ += lp.Z
 		end
 	end
@@ -227,13 +233,11 @@ function M.step(st: any, dt: number, input: any): any
 	local mass = seat.AssemblyMass
 	local cf = seat.CFrame
 	local up, fwd = cf.UpVector, cf.LookVector
-	-- real gravity for the car: cancel the rest of Roblox's gravity with an impulse every
-	-- step. (A VectorForce whose Force the driver's client changes is NOT honoured in the
-	-- client's simulation - measured: the car weighed ~7x too much on the driver's side.)
-	if st.anti then
-		st.anti.Force = Vector3.zero
-	end
-	seat:ApplyImpulse(Vector3.new(0, mass * (workspace.Gravity - G) * dt, 0))
+	-- WEIGHT: the car falls with full Roblox gravity (Gw) - heavy, planted, no moon jumps.
+	-- The springs hold that real weight; the tyres grip as if gravity were real 1 g (G),
+	-- so cornering / braking / acceleration stay GTA IV's (gripScale = G / Gw).
+	local Gw = workspace.Gravity
+	local gripScale = G / Gw
 	local vel = seat.AssemblyLinearVelocity
 	local fwdSpeed = vel:Dot(fwd)
 	local speed = vel.Magnitude
@@ -242,9 +246,11 @@ function M.step(st: any, dt: number, input: any): any
 
 	-- steering: GTA IV turns in slowly, centres quicker, and locks less at speed
 	-- the faster you go, the less the wheels turn (IV is heavy at speed):
-	-- 50 km/h ~78% of full lock, 100 km/h ~54%, 160 km/h ~36%
+	-- 20 km/h ~84% of full lock, 50 km/h 50%, 100 km/h ~28%, 130 km/h ~21% (~7 deg).
+	-- (Measured on a test drive: 15 deg at 131 km/h sat right on the tyres' grip peak,
+	-- the front bit instantly and swung the back out.)
 	local kmhNow = math.abs(fwdSpeed) / S * 3.6
-	local lockRad = math.rad(h.steeringLock) / (1 + (kmhNow / 110) ^ 1.6)
+	local lockRad = math.rad(h.steeringLock) / (1 + (kmhNow / 50) ^ 1.4)
 	-- GTA IV on PC keyboard: A/D are on/off, so the wheel is ramped - about 0.5 s from
 	-- straight to full lock, about 0.3 s back to centre when you let go, and flicking
 	-- A -> D swings through centre at the faster return rate before winding up again
@@ -310,8 +316,10 @@ function M.step(st: any, dt: number, input: any): any
 		w.contact = true
 		local dist = (hit.Position - origin).Magnitude
 		local comp = math.clamp((rayLen - dist) / travel, 0, 1.6)
+		-- where the wheel centre sits now, relative to where it was built (for the visual)
+		w.drop = upper - (dist - w.radius) + h.suspRaise * S - M.RideHeight
 		-- spring: at rest a wheel sits about half way through its travel (suspForce 2)
-		local share = mass * G / nW
+		local share = mass * Gw / nW
 		local bias = (if w.front then h.suspBiasFront else 1 - h.suspBiasFront) * 2
 		local k = share / 0.5 * (h.suspForce / 2) * bias
 		local compVel = ((comp - (w.lastComp or comp)) * travel) / dt
@@ -323,6 +331,8 @@ function M.step(st: any, dt: number, input: any): any
 		if comp >= 1 then
 			N += (comp - 1) * k * 6 -- bump stop
 		end
+		local Nspring = N
+		N = N * gripScale -- tyre load at real-gravity scale (see WEIGHT above)
 
 		-- tyre
 		local n = hit.Normal
@@ -335,7 +345,8 @@ function M.step(st: any, dt: number, input: any): any
 		local vf, vr = pv:Dot(wf), pv:Dot(wr)
 		local tBias = (if w.front then h.tractionBiasFront else 1 - h.tractionBiasFront) * 2
 		local muMax, muMin = h.tractionMax * tBias, h.tractionMin * tBias
-		local handbrake = input.handbrake == true and not w.front
+		-- parked (no driver): all four wheels locked so the car doesn't roll away
+		local handbrake = (input.handbrake == true and not w.front) or input.parked == true
 		-- lateral: grip builds with slip angle to the peak, then falls to the sliding grip
 		local slip = math.atan2(math.abs(vr), math.max(math.abs(vf), 3))
 		local peak = math.rad(math.max(h.tractionLateral, 2))
@@ -351,7 +362,7 @@ function M.step(st: any, dt: number, input: any): any
 			-- spinning. Thb (handbrakeForce) = how much grip the locked tyre loses.
 			-- (0.35 was too grippy: the tyres killed the sideways slide in a fraction of a
 			-- second, so the car just turned. IV's handbrake breaks the rear properly loose.)
-			local muLock = muMin * (1 - 0.75 * math.clamp(h.handbrakeForce, 0, 1))
+			local muLock = if input.parked then muMin else muMin * (1 - 0.75 * math.clamp(h.handbrakeForce, 0, 1))
 			local f = muLock * N
 			local fl = -vf / planarSpeed * f
 			local fr = -vr / planarSpeed * f
@@ -373,18 +384,23 @@ function M.step(st: any, dt: number, input: any): any
 		local brakeShare = if w.front then h.brakeBiasFront / st.fronts else (1 - h.brakeBiasFront) / st.rears
 		local fBrake = brakeTotal * brakeShare
 		if drive == 0 and brake == 0 then
-			fBrake += mass * G * 0.02 / nW -- rolling resistance / engine braking
+			fBrake += mass * G * 0.07 / nW -- engine braking + rolling: off the gas an IV car slows, it doesn't coast forever
 		end
 		local cancel = math.abs(vf) * wheelMass / dt
 		fLong += -sign(vf) * math.min(fBrake, cancel)
 		-- friction circle: more than the tyre can give = wheelspin / lockup / slide
+		-- cornering grip comes first, the engine / brakes get what's left: too much throttle
+		-- spins the wheels up instead of letting the back end go. (Scaling both equally,
+		-- measured: 6 deg of steering at 140 km/h on full throttle slid the car to 44 deg.)
 		local gripLimit = math.max(muMax, 0.1) * N
-		local total = math.sqrt(fLong * fLong + fLat * fLat)
 		w.slipping = false
-		if total > gripLimit and total > 0 then
-			local s = gripLimit / total
-			fLong *= s
-			fLat *= s * 0.85
+		if math.abs(fLat) > gripLimit then
+			fLat = sign(fLat) * gripLimit
+			w.slipping = true
+		end
+		local longRoom = math.sqrt(math.max(0, gripLimit * gripLimit - fLat * fLat))
+		if math.abs(fLong) > longRoom then
+			fLong = sign(fLong) * longRoom
 			w.slipping = true
 		end
 		w.spin = vf / w.radius + (if w.slipping and drive ~= 0 and fLong * drive > 0 then drive * 25 else 0)
@@ -396,7 +412,7 @@ function M.step(st: any, dt: number, input: any): any
 		-- forces act a little above the contact patch (GTA IV's body roll, without tipping every corner)
 		local at = hit.Position + up * (w.radius * 0.5)
 		dbgN += N; dbgLat += wf * fLong + wr * fLat; table.insert(dbgComp, math.floor(comp * 100) / 100)
-		push(st, (up * N + wf * fLong + wr * fLat) * dt, at, up)
+		push(st, (up * Nspring + wf * fLong + wr * fLat) * dt, at, up)
 	end
 
 	-- live numbers for tuning (read with require(GTAVehicle).debug on the driver's client)
@@ -421,11 +437,20 @@ function M.step(st: any, dt: number, input: any): any
 	end
 
 	-- wheels on screen
+	-- ghost chassis: pose each visual wheel - suspension travel, steering, rolling
 	for _, w in st.wheels do
-		local hinge = w.hinge
-		if hinge then
-			hinge.MotorMaxTorque = 200
-			hinge.AngularVelocity = w.spin * (hinge:GetAttribute("Sign") or 1)
+		if w.motor and w.baseC0 then
+			if not w.contact then
+				w.drop = math.max(w.drop - 8 * dt, lower + h.suspRaise * S - M.RideHeight) -- droops when airborne
+			end
+			w.angle = (w.angle + w.spin * dt) % (math.pi * 2)
+			local base = w.baseC0
+			local steerRot = if w.front then CFrame.fromAxisAngle(Vector3.yAxis, -st.steer * st.steerDirection) else CFrame.identity
+			w.motor.C0 = CFrame.new(base.Position + Vector3.new(0, w.drop, 0)) * steerRot * base.Rotation
+				* CFrame.Angles(0, w.angle * w.axleSign, 0)
+		elseif w.hinge then
+			w.hinge.MotorMaxTorque = 200
+			w.hinge.AngularVelocity = w.spin * (w.hinge:GetAttribute("Sign") or 1)
 		end
 	end
 	for _, hinge in st.steers do
