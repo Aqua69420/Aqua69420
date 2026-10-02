@@ -108,67 +108,9 @@ local function driveGTA(humanoid, seat, car)
 	end
 	Vehicle.ignore(st, { player.Character })
 	ContextActionService:BindActionAtPriority("GTAHandbrake", function(_, state)
-		local down = state == Enum.UserInputState.Begin or state == Enum.UserInputState.Change
-		if down ~= handbrakeDown then
-			print(("[GTAHandling] handbrake %s"):format(if down then "ON" else "off"))
-		end
-		handbrakeDown = down
+		handbrakeDown = state == Enum.UserInputState.Begin or state == Enum.UserInputState.Change
 		return Enum.ContextActionResult.Sink -- Space never jumps you out
 	end, true, 3000, Enum.KeyCode.Space, Enum.KeyCode.ButtonX)
-
-	-- skid marks (dark streaks on the road) and tyre smoke while a tyre slides
-	local skidFolder = Instance.new("Folder")
-	skidFolder.Name = "SkidMarks"
-	skidFolder.Parent = workspace.CurrentCamera
-	local smoke = {}
-	for i, w in st.wheels do
-		local p = Instance.new("Part")
-		p.Name = "TyreSmoke" .. i
-		p.Size = Vector3.new(0.2, 0.2, 0.2)
-		p.Transparency = 1
-		p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch = true, false, false, false
-		p.Parent = skidFolder
-		local e = Instance.new("ParticleEmitter")
-		e.Texture = "rbxasset://textures/particles/smoke_main.dds"
-		e.Color = ColorSequence.new(Color3.fromRGB(225, 225, 225))
-		e.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1.2), NumberSequenceKeypoint.new(1, 5) })
-		e.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.55), NumberSequenceKeypoint.new(1, 1) })
-		e.Lifetime = NumberRange.new(1, 1.8)
-		e.Speed = NumberRange.new(1, 3)
-		e.SpreadAngle = Vector2.new(40, 40)
-		e.Rate = 0
-		e.Parent = p
-		smoke[w] = { part = p, emitter = e, last = nil }
-	end
-	local function drawSkids()
-		for _, w in st.wheels do
-			local s = smoke[w]
-			local amount = w.skid or 0
-			if amount > 6 and w.contact and w.contactPos then
-				local at = w.contactPos + Vector3.new(0, 0.06, 0)
-				s.part.Position = at
-				s.emitter.Rate = math.clamp(amount * 1.5, 10, 60)
-				if s.last and (at - s.last).Magnitude > 0.4 and (at - s.last).Magnitude < 12 then
-					local len = (at - s.last).Magnitude
-					local mark = Instance.new("Part")
-					mark.Anchored, mark.CanCollide, mark.CanQuery, mark.CanTouch = true, false, false, false
-					mark.Material = Enum.Material.SmoothPlastic
-					mark.Color = Color3.fromRGB(18, 18, 18)
-					mark.Transparency = 0.25
-					mark.Size = Vector3.new(0.9, 0.05, len)
-					mark.CFrame = CFrame.lookAt((at + s.last) / 2, at)
-					mark.Parent = skidFolder
-					game:GetService("Debris"):AddItem(mark, 12)
-					s.last = at
-				elseif not s.last or (at - s.last).Magnitude >= 12 then
-					s.last = at
-				end
-			else
-				s.emitter.Rate = 0
-				s.last = nil
-			end
-		end
-	end
 	pcall(function()
 		ContextActionService:SetTitle("GTAHandbrake", "Handbrake")
 	end)
@@ -178,8 +120,6 @@ local function driveGTA(humanoid, seat, car)
 	connection = RunService.Heartbeat:Connect(function(dt)
 		if humanoid.SeatPart ~= seat or not car.Parent then
 			connection:Disconnect()
-			task.delay(12, function() skidFolder:Destroy() end)
-			for _, s in smoke do s.emitter.Rate = 0 end
 			ContextActionService:UnbindAction("GTAHandbrake")
 			handbrakeDown = false
 			humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
@@ -206,7 +146,6 @@ local function driveGTA(humanoid, seat, car)
 			throttle = 0
 		end
 		Vehicle.step(st, dt, { throttle = throttle, steer = steer, handbrake = handbrakeDown })
-		drawSkids()
 	end)
 end
 

@@ -12,18 +12,10 @@ return {
 	-- one metre in studs. 2.8 = Roblox character scale (a 5-stud avatar is ~1.8 m).
 	MetersToStuds = 2.8,
 
-	-- performance. AccelScale 1.3: 0-100 km/h Infernus ~3.7 s, Sabre GT ~4.9 s,
-	-- Admiral ~6.9 s, Burrito ~7.9 s, Bus ~12 s. TopSpeedScale = real top speed vs Tv.
-	AccelScale = 1.3,
+	-- performance: 1.0 / 1.2 = GTA IV (0-100 km/h: Infernus ~4.7 s, Admiral ~9 s; real top
+	-- speed ~1.2x the handling line's Tv). Raise AccelScale for quicker cars everywhere.
+	AccelScale = 1.0,
 	TopSpeedScale = 1.2,
-	-- per handling line, on top of AccelScale: time a car in your copy of GTA IV and
-	-- nudge it here (1.1 = 10% quicker), e.g. INFERNUS = 1.1, ADMIRAL = 0.95
-	AccelByLine = {},
-	-- body lean is VISUAL (the car body sways on the chassis): degrees per g of cornering,
-	-- and of braking / acceleration (nose dive / squat). BodyRoll (physical) stays 0.
-	SwayDegPerG = 4,
-	DiveDegPerG = 2.5,
-	BodyRoll = 0,
 
 	-- which handling line each car uses
 	Cars = {

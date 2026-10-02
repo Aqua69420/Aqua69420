@@ -551,150 +551,6 @@ function GTA.lineFor(carName)
 	return key and GTA.lines[string.upper(key)]
 end
 
--- THE GHOST CHASSIS. The car model you see is a facade: weightless, welded on, never
--- touching the world. Underneath is an invisible car built to GTA IV spec from the
--- model's own wheel positions and the handling line:
---   GTAHull  - the collision shell (walls, other cars, players bump into it), riding at
---              a real ground clearance so it never scrapes the road
---   GTAMass  - a low, full-length slab holding ~85% of handling.dat's mass at a real
---              car's centre-of-gravity height (+ the line's centre-of-mass offset), so
---              the car is heavy, hard to roll and turns with a real car's inertia
---   wheels   - visual only, on Motor6Ds: GTAVehicle poses them each step (suspension
---              travel, steering, rolling); the suspension rays do the real work
-function GTA.buildGhost(car, seat, h)
-	local S = GTA.data.MetersToStuds or 2.8
-	local scf = seat.CFrame
-	local essentials = car:FindFirstChild("Essentials")
-	-- 1. wheels: measure, then turn them into posed visuals
-	local wheels = {}
-	for _, n in { "LF", "RF", "LB", "RB" } do
-		local w = essentials and essentials:FindFirstChild(n)
-		if w and w:IsA("BasePart") then
-			table.insert(wheels, w)
-		end
-	end
-	local minX, maxX, minZ, maxZ, wheelY, radius = math.huge, -math.huge, math.huge, -math.huge, 0, 1.5
-	for _, w in wheels do
-		local lp = scf:PointToObjectSpace(w.Position)
-		w:SetAttribute("GTAOffset", lp)
-		minX, maxX, minZ, maxZ = math.min(minX, lp.X), math.max(maxX, lp.X), math.min(minZ, lp.Z), math.max(maxZ, lp.Z)
-		wheelY += lp.Y / #wheels
-		radius = math.max(w.Size.X, w.Size.Y, w.Size.Z) / 2
-		-- the axle (the wheel's Y axis) points left or right: decides which way it rolls
-		w:SetAttribute("GTAAxleSign", if w.CFrame.UpVector:Dot(scf.RightVector) >= 0 then -1 else 1)
-	end
-	-- hinges, knuckles, axle attachments and the old ballast are replaced
-	for _, d in car:GetDescendants() do
-		if d:IsA("HingeConstraint") and (d.Name == "Spin" or d.Name == "SteerHinge") then
-			d:Destroy()
-		end
-	end
-	for _, d in car:GetDescendants() do
-		if d:IsA("BasePart") and (string.sub(d.Name, 1, 8) == "Knuckle_" or d.Name == "Ballast") then
-			d:Destroy()
-		elseif d:IsA("Attachment") and (string.sub(d.Name, 1, 5) == "Axle_" or d.Name == "Axle" or string.sub(d.Name, 1, 6) == "Steer_" or d.Name == "Steer") then
-			d:Destroy()
-		end
-	end
-	for _, w in wheels do
-		w.Anchored = false
-		local m = Instance.new("Motor6D")
-		m.Name = "GTAWheelMotor"
-		m.Part0 = seat
-		m.Part1 = w
-		m.C0 = scf:ToObjectSpace(w.CFrame)
-		m.C1 = CFrame.identity
-		m.Parent = w
-		w:SetAttribute("GTABaseC0", m.C0)
-	end
-	-- 2. the facade: everything you see is weightless and never touches the world
-	for _, d in car:GetDescendants() do
-		if d:IsA("BasePart") then
-			d.CanCollide = false
-			d.Massless = true
-			d.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0, 0, 100, 1)
-		end
-	end
-	-- 2b. the facade hangs on its own pivot (GTAFacadeRoot, a Motor6D on the seat) so the
-	-- body can sway visually in corners / under braking while the chassis stays flat
-	do
-		local root = Instance.new("Part")
-		root.Name = "GTAFacadeRoot"
-		root.Size = Vector3.new(0.2, 0.2, 0.2)
-		root.Transparency = 1
-		root.CanCollide, root.CanQuery, root.CanTouch, root.Massless = false, false, false, true
-		root.CFrame = scf
-		root.Parent = car
-		local motor = Instance.new("Motor6D")
-		motor.Name = "GTAFacadeMotor"
-		motor.Part0 = seat
-		motor.Part1 = root
-		motor.C0 = CFrame.identity
-		motor.C1 = CFrame.identity
-		motor.Parent = root
-		local isWheel = {}
-		for _, w in wheels do
-			isWheel[w] = true
-		end
-		local moved = 0
-		for _, wc in car:GetDescendants() do
-			if wc:IsA("WeldConstraint") then
-				if wc.Part0 == seat and wc.Part1 and not isWheel[wc.Part1] then
-					wc.Part0 = root
-					moved += 1
-				elseif wc.Part1 == seat and wc.Part0 and not isWheel[wc.Part0] then
-					wc.Part1 = root
-					moved += 1
-				end
-			end
-		end
-		print(("[GTAHandling] facade on its sway pivot (%d part welds)"):format(moved))
-	end
-	-- 3. the ghost chassis
-	if #wheels >= 3 then
-		local clearance = 0.55 -- studs between the road and the hull at rest
-		local bottom = wheelY - radius + clearance
-		local _, size = car:GetBoundingBox()
-		local length = (maxZ - minZ) + radius * 2 + 1.6
-		local width = math.max((maxX - minX) + 0.8, 3)
-		local height = math.clamp(size.Y * 0.55, 1.6, 6)
-		local midX, midZ = (minX + maxX) / 2, (minZ + maxZ) / 2
-		local massTarget = math.max(200, h.mass) * 0.25 -- Roblox mass units (Infernus 1700 kg -> 425)
-		local hull = Instance.new("Part")
-		hull.Name = "GTAHull"
-		hull.Size = Vector3.new(width, height, length)
-		hull.Transparency = 1
-		hull.CanCollide = true
-		hull.CanQuery = false
-		hull.CanTouch = false
-		hull.CFrame = scf * CFrame.new(midX, bottom + height / 2, midZ)
-		local hullDensity = math.clamp(massTarget * 0.15 / (width * height * length), 0.01, 100)
-		hull.CustomPhysicalProperties = PhysicalProperties.new(hullDensity, 0.25, 0, 1, 1)
-		hull.Parent = car
-		local slab = Instance.new("Part")
-		slab.Name = "GTAMass"
-		slab.Size = Vector3.new(width - 0.4, 0.4, length - 0.6)
-		slab.Transparency = 1
-		slab.CanCollide = false
-		slab.CanQuery = false
-		slab.CanTouch = false
-		-- centre of gravity ~0.45 m above the hull floor, moved by the line's COM offset
-		-- (handling.dat: x = right, y = forward, z = up, metres)
-		slab.CFrame = scf * CFrame.new(midX + h.comX * S, bottom + 0.45 * S + h.comZ * S, midZ - h.comY * S)
-		local slabDensity = math.clamp(massTarget * 0.85 / (slab.Size.X * slab.Size.Y * slab.Size.Z), 0.01, 100)
-		slab.CustomPhysicalProperties = PhysicalProperties.new(slabDensity, 0.3, 0, 1, 1)
-		slab.Parent = car
-		for _, p in { hull, slab } do
-			local weld = Instance.new("WeldConstraint")
-			weld.Part0 = seat
-			weld.Part1 = p
-			weld.Parent = p
-		end
-		seat:SetAttribute("GTAYawScale", 1) -- the slab gives a real car's inertia
-		print(("[GTAHandling] ghost chassis %s: %.1f x %.1f x %.1f studs, mass %.0f (hull %.0f + slab %.0f)"):format(
-			car.Name, width, height, length, seat.AssemblyMass, hull:GetMass(), slab:GetMass()))
-	end
-end
 function GTA.setup(car, seat)
 	local carName = car:GetAttribute("CarName")
 	local h = carName and GTA.lineFor(carName)
@@ -702,7 +558,24 @@ function GTA.setup(car, seat)
 		return
 	end
 	seat:SetAttribute("GTAHandling", h.name)
-	GTA.buildGhost(car, seat, h)	local st = GTA.Vehicle.new(car, seat, h, GTA.data.MetersToStuds or 2.8)
+	-- wheels become visual only: the suspension rays carry the car
+	for _, d in car:GetDescendants() do
+		if d:IsA("BasePart") and (d.Name == "LF" or d.Name == "RF" or d.Name == "LB" or d.Name == "RB" or string.sub(d.Name, 1, 8) == "Knuckle_") then
+			d.CanCollide = false
+			d.Massless = true
+		end
+	end
+	local att = seat:FindFirstChild("GTAAntiGravityAttachment") or Instance.new("Attachment")
+	att.Name = "GTAAntiGravityAttachment"
+	att.Parent = seat
+	local vf = seat:FindFirstChild("GTAAntiGravity") or Instance.new("VectorForce")
+	vf.Name = "GTAAntiGravity"
+	vf.Attachment0 = att
+	vf.RelativeTo = Enum.ActuatorRelativeTo.World
+	vf.ApplyAtCenterOfMass = true
+	vf.Force = Vector3.zero
+	vf.Parent = seat
+	local st = GTA.Vehicle.new(car, seat, h, GTA.data.MetersToStuds or 2.8)
 	if not st then
 		seat:SetAttribute("GTAHandling", nil)
 		return
@@ -804,7 +677,7 @@ RunService.Heartbeat:Connect(function(dt)
 		local occ = st.seat.Occupant
 		local driver = occ and Players:GetPlayerFromCharacter(occ.Parent)
 		if not driver then
-			GTA.Vehicle.step(st, dt, { throttle = 0, steer = 0, handbrake = true, parked = true })
+			GTA.Vehicle.step(st, dt, { throttle = 0, steer = 0, handbrake = true })
 		end
 	end
 end)
