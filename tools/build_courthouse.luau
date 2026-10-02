@@ -152,7 +152,7 @@ local function chair(name: string, pos: Vector3, face: Vector3, color: Color3?, 
 	if not noBack then
 		local back = Instance.new("Part")
 		back.Name = name .. "Back"
-		back.Size = Vector3.new(2.2, 2.6, 0.35)
+		back.Size = Vector3.new(2.08, 2.6, 0.35) -- narrower than the seat: no shared side planes
 		back.CanCollide = false
 		put(back, CFrame.lookAt(pos, pos + face) * CFrame.new(0, 1.5, 1.05), color or C.panelDark, M.Wood)
 	end
@@ -263,7 +263,7 @@ local function lampStandard(x: number, y0: number, z: number)
 	cylinder("LampRing", 0.6, 2, Vector3.new(x, y0 + 7, z), C.bronze, M.Metal)
 	for i = 0, 3 do
 		local a = i * math.pi / 2
-		deco("LampArm", Vector3.new(3, 0.4, 0.4), Vector3.new(x + math.cos(a) * 1.5, y0 + 17.5, z + math.sin(a) * 1.5), C.bronze, M.Metal, -a)
+		deco("LampArm", Vector3.new(3, 0.4, 0.4), Vector3.new(x + math.cos(a) * 1.5, y0 + 17.5 + i * 0.06, z + math.sin(a) * 1.5), C.bronze, M.Metal, -a)
 		ball("LampGlobe", 1.8, Vector3.new(x + math.cos(a) * 3, y0 + 18.4, z + math.sin(a) * 3), C.light, M.Neon).CanCollide = false
 	end
 	light(ball("LampGlobe", 2.4, Vector3.new(x, y0 + 20, z), C.light, M.Neon), 34, 1.4)
@@ -305,7 +305,7 @@ for i = 1, STEPS do
 	h = (FY + 0.6) * (STEPS - i + 1) / (STEPS + 1)
 	local x = STAIR_X0 + (i - 0.5) * RUN
 	block("Step", Vector3.new(RUN, h, STAIR_W), Vector3.new(x, h / 2, 0), C.marble)
-	deco("StepNose", Vector3.new(0.3, 0.2, STAIR_W), Vector3.new(x - RUN / 2 + 0.15, h - 0.1, 0), C.marbleGrey)
+	deco("StepNose", Vector3.new(0.34, 0.24, STAIR_W + 0.1), Vector3.new(x + RUN / 2 - 0.13, h - 0.08, 0), C.marbleGrey) -- proud of tread and riser
 end
 local STAIR_END = STAIR_X0 + STEPS * RUN
 -- granite cheek walls either side, with the bronze lamp standards
@@ -399,6 +399,7 @@ end
 local F1 = F0 + 32 -- the upper floor
 local ROOF = F0 + 80 -- underside of the roof
 local SH = ROOF - F0
+local GH = 32 - 1.2 -- ground-floor walls stop at the underside of the upper floor slab (no shared top plane)
 local BAND, CORR = 40, 12
 local WING = BAND + CORR -- 52: where the rooms start
 local RCX, RR = 35, 34 -- rotunda centre (x) and inner radius
@@ -453,7 +454,7 @@ do
 	local o = {}
 	for _, d in DOORS do table.insert(o, { d[1], d[2], nil, d[3] }) end
 	for _, z in { -96, -76, -60, 60, 76, 96 } do table.insert(o, { z, 7, 8, 24 }) end -- ground windows of the wings
-	wallXAt("FrontWallLow", F0, FRONT, -HZ, HZ, 32, o, C.marble, M.Marble, 3)
+	wallXAt("FrontWallLow", F0, FRONT, -HZ, HZ, GH, o, C.marble, M.Marble, 3)
 	wallXAt("FrontWallHigh", F1, FRONT, -HZ, HZ, SH - 32, windowRow(-HZ, HZ, 20, 8, 34), C.marble, M.Marble, 3)
 	for _, d in DOORS do
 		local z, w, top = d[1], d[2], d[3]
@@ -471,7 +472,7 @@ do
 	local low = windowRow(-HZ, HZ, 20, 8, 24, { { -20, 12 }, { 86, 10 } })
 	table.insert(low, { -20, 14, nil, 16 }) -- sally port
 	table.insert(low, { 86, 8, nil, 14 }) -- staff door into the north corridor
-	wallXAt("BackWallLow", F0, -HX, -HZ, HZ, 32, low, C.marble, M.Marble, 3)
+	wallXAt("BackWallLow", F0, -HX, -HZ, HZ, GH, low, C.marble, M.Marble, 3)
 	wallXAt("BackWallHigh", F1, -HX, -HZ, HZ, SH - 32, windowRow(-HZ, HZ, 20, 8, 34), C.marble, M.Marble, 3)
 	deco("SallyPortSign", Vector3.new(0.4, 2, 14), Vector3.new(-HX - 1.8, F0 + 17.5, -20), C.black, M.DiamondPlate)
 	block("SallyDock", Vector3.new(10, FY, 20), Vector3.new(-HX - 5, FY / 2, -20), C.granite, M.Concrete)
@@ -488,7 +489,7 @@ do
 end
 -- the side walls
 for _, s in { { "SideWallS", -HZ }, { "SideWallN", HZ } } do
-	wallZAt(s[1] .. "Low", F0, s[2], -HX, HX, 32, windowRow(-HX, HX, 18, 8, 24), C.marble, M.Marble, 3)
+	wallZAt(s[1] .. "Low", F0, s[2], -HX, HX, GH, windowRow(-HX, HX, 18, 8, 24), C.marble, M.Marble, 3)
 	wallZAt(s[1] .. "High", F1, s[2], -HX, HX, SH - 32, windowRow(-HX, HX, 18, 8, 36), C.marble, M.Marble, 3)
 end
 for k = 0, 3 do
@@ -500,6 +501,7 @@ end
 deco("StringCourseS", Vector3.new(2 * HX + 4, 1.4, 1.4), Vector3.new(0, F1 - 0.5, -HZ - 1.4), C.marbleWarm)
 deco("StringCourseN", Vector3.new(2 * HX + 4, 1.4, 1.4), Vector3.new(0, F1 - 0.5, HZ + 1.4), C.marbleWarm)
 deco("StringCourseB", Vector3.new(1.4, 1.4, 2 * HZ + 4), Vector3.new(-HX - 1.4, F1 - 0.5, 0), C.marbleWarm)
+deco("StringCourseF", Vector3.new(1.4, 1.4, 2 * HZ + 4), Vector3.new(HX + 1.4, F1 - 0.5, 0), C.marbleWarm)
 -- cornices run round the edge of the roof only (a slab here would cap the rotunda)
 local function edgeFrame(name: string, y: number, h: number, out: number, depth: number, color: Color3)
 	block(name, Vector3.new(2 * HX + 2 * out, h, depth), Vector3.new(0, y, -HZ - out + depth / 2), color)
@@ -548,8 +550,8 @@ end
 local OPEN = {
 	{ 0, 8, F0, F0 + 22 }, { math.pi, 12, F0, F0 + 22 }, -- vestibule / stair hall (ground)
 	{ math.pi / 2, 5, F0, F0 + 14 }, { -math.pi / 2, 5, F0, F0 + 14 }, -- the corridors (ground)
-	{ 0, 6, F1, F1 + 16 }, { math.pi, 8, F1, F1 + 16 }, -- upper hall / the bridge (upper)
-	{ math.pi / 2, 5, F1, F1 + 14 }, { -math.pi / 2, 5, F1, F1 + 14 }, -- the upper corridors
+	{ 0, 6, F1 - 1.2, F1 + 16 }, { math.pi, 8, F1 - 1.2, F1 + 16 }, -- upper hall / the bridge (upper)
+	{ math.pi / 2, 5, F1 - 1.2, F1 + 14 }, { -math.pi / 2, 5, F1 - 1.2, F1 + 14 }, -- the upper corridors
 }
 -- a true ring (not a disc): n flat segments round the rotunda's centre
 local function ring(name: string, r: number, width: number, height: number, y: number, color: Color3?, material: Enum.Material?, n: number?)
@@ -558,7 +560,7 @@ local function ring(name: string, r: number, width: number, height: number, y: n
 		local th = (i + 0.5) / count * 2 * math.pi
 		local p = Instance.new("Part")
 		p.Name = name
-		p.Size = Vector3.new(width, height, 2 * math.pi * (r + width / 2) / count + 0.3)
+		p.Size = Vector3.new(width, height + (i % 2) * 0.08, 2 * math.pi * (r + width / 2) / count + 0.3) -- neighbours differ: no shared plane
 		p.CanCollide = false
 		put(p, CFrame.new(onCircle(th, r, y)) * CFrame.Angles(0, -th, 0), color or C.marble, material)
 	end
@@ -581,6 +583,9 @@ for i = 0, N - 1 do
 		if y1 - y0 < 0.05 then return end
 		local p = Instance.new("Part")
 		p.Name = "Drum"
+		-- odd columns sit 0.05 higher, so neighbours never share a top / bottom plane
+		local shift = (i % 2) * 0.05
+		y0, y1 = (if y0 <= F0 + 0.01 then y0 else y0 + shift), y1 + shift
 		p.Size = Vector3.new(2, y1 - y0, SEG_W)
 		put(p, CFrame.new(onCircle(th, RR + 1, (y0 + y1) / 2)) * CFrame.Angles(0, -th, 0), color, material)
 		if transparent then p.Transparency = transparent end
@@ -628,8 +633,8 @@ do
 					if y1 > y0 then block("Poche", Vector3.new(CELL, y1 - y0, CELL), Vector3.new(cx, (y0 + y1) / 2, cz), C.marbleWarm) end
 				end
 				if passage then
-					fill(F0 + 14, F1)
-					fill(F1 + 14, ROOF + 9)
+					fill(F0 + 14.1, F1 - 1.2) -- (a hair above the drum opening's head: no shared plane)
+					fill(F1 + 14.1, ROOF + 9)
 				else
 					fill(F0, ROOF + 9)
 				end
@@ -643,10 +648,10 @@ cylinder("RotundaFloorRing", 0.14, 2 * RR - 8, Vector3.new(RCX, F0 + 0.07, 0), C
 cylinder("RotundaFloorRing", 0.18, 2 * RR - 12, Vector3.new(RCX, F0 + 0.09, 0), C.marble).CanCollide = false
 cylinder("RotundaFloorRing", 0.22, 24, Vector3.new(RCX, F0 + 0.11, 0), C.marbleGreen).CanCollide = false
 cylinder("RotundaFloorRing", 0.26, 16, Vector3.new(RCX, F0 + 0.13, 0), C.marble).CanCollide = false
-for i = 0, 7 do
+for i = 0, 3 do
 	local a = i * math.pi / 4
 	local ray = deco("CompassRay", Vector3.new(if i % 2 == 0 then 22 else 14, 0.3, 1.2), Vector3.new(RCX, F0 + 0.15, 0), C.brass, M.Metal, -a)
-	ray.CFrame = BASE * CFrame.new(RCX, F0 + 0.15, 0) * CFrame.Angles(0, -a, 0)
+	ray.CFrame = BASE * CFrame.new(RCX, F0 + 0.15 + i * 0.03, 0) * CFrame.Angles(0, -a, 0)
 end
 cylinder("CompassHeart", 0.34, 4, Vector3.new(RCX, F0 + 0.17, 0), C.bronze, M.Metal).CanCollide = false
 -- the lower ring of columns (carries the gallery) and the upper ring (carries the drum's entablature)
@@ -663,21 +668,23 @@ for i = 0, N - 1 do
 	local mid = (GAL_IN + RR + 1) / 2
 	local seg = Instance.new("Part")
 	seg.Name = "Gallery"
-	seg.Size = Vector3.new(RR + 1 - GAL_IN, 1.2, 2 * math.pi * (RR + 1) / N + 0.6)
+	local alt = (i % 2) * 0.08
+	seg.Size = Vector3.new(RR + 1 - GAL_IN, 1.2 + alt, 2 * math.pi * (RR + 1) / N + 0.6)
 	put(seg, CFrame.new(onCircle(th, mid, F1 - 0.6)) * CFrame.Angles(0, -th, 0), C.marble)
 	local soffit = Instance.new("Part")
 	soffit.Name = "GallerySoffit"
-	soffit.Size = Vector3.new(RR + 1 - GAL_IN, 1.6, 2 * math.pi * (RR + 1) / N + 0.6)
+	-- the soffit stops at the drum's inner face (it used to run into the wall and share its planes)
+	soffit.Size = Vector3.new(RR - GAL_IN - 0.1, 1.6 + alt, 2 * math.pi * RR / N + 0.36)
 	soffit.CanCollide = false
-	put(soffit, CFrame.new(onCircle(th, mid, F1 - 2)) * CFrame.Angles(0, -th, 0), C.marbleWarm)
+	put(soffit, CFrame.new(onCircle(th, (GAL_IN + RR) / 2 - 0.05, F1 - 2)) * CFrame.Angles(0, -th, 0), C.marbleWarm)
 	-- marble parapet on the inner edge
 	local par = Instance.new("Part")
 	par.Name = "GalleryParapet"
-	par.Size = Vector3.new(0.8, 3.4, 2 * math.pi * GAL_IN / N + 0.4)
+	par.Size = Vector3.new(0.8 + alt, 3.4 + alt, 2 * math.pi * GAL_IN / N + 0.4)
 	put(par, CFrame.new(onCircle(th, GAL_IN + 0.4, F1 + 1.7)) * CFrame.Angles(0, -th, 0), C.marble)
 	local rail = Instance.new("Part")
 	rail.Name = "GalleryRail"
-	rail.Size = Vector3.new(1.1, 0.35, 2 * math.pi * GAL_IN / N + 0.4)
+	rail.Size = Vector3.new(1.1 + alt, 0.35 + alt, 2 * math.pi * GAL_IN / N + 0.56)
 	rail.CanCollide = false
 	put(rail, CFrame.new(onCircle(th, GAL_IN + 0.4, F1 + 3.55)) * CFrame.Angles(0, -th, 0), C.brass, M.Metal)
 end
@@ -731,7 +738,7 @@ do
 			local up = outward:Cross(tangent).Unit * -1
 			local rib = Instance.new("Part")
 			rib.Name = "DomeRib"
-			rib.Size = Vector3.new(1, r * maxLat / RINGS + 0.4, 0.8)
+			rib.Size = Vector3.new(1 + (ring % 2) * 0.1, r * maxLat / RINGS + 0.4, 0.8 + (ring % 2) * 0.08)
 			rib.CanCollide = false
 			put(rib, CFrame.fromMatrix(pos, tangent, up), C.marbleWarm)
 		end
@@ -766,9 +773,9 @@ marker("RotundaSpot", Vector3.new(RCX + 10, F0 + 3, 0))
 ---------------------------------------------------------------------------
 group("Vestibule")
 local VX0 = RCX + RR + 1 -- 70
-wallXAt("VestibuleBack", F0, VX0, -BAND, BAND, 32, { { 0, 16, nil, 22 } }, C.marbleWarm, M.Marble, 2)
-wallZAt("VestibuleS", F0, -BAND, VX0, HX, 32, { { 79, 8, nil, 14 } }, C.marbleWarm, M.Marble)
-wallZAt("VestibuleN", F0, BAND, VX0, HX, 32, { { 79, 8, nil, 14 } }, C.marbleWarm, M.Marble)
+wallXAt("VestibuleBack", F0, VX0, -BAND, BAND, GH, { { 0, 16, nil, 22 } }, C.marbleWarm, M.Marble, 2)
+wallZAt("VestibuleS", F0, -BAND, VX0, HX, GH, { { 79, 8, nil, 14 } }, C.marbleWarm, M.Marble)
+wallZAt("VestibuleN", F0, BAND, VX0, HX, GH, { { 79, 8, nil, 14 } }, C.marbleWarm, M.Marble)
 for xi = 0, 3 do
 	for zi = 0, 15 do
 		deco("VestibuleCoffer", Vector3.new(3.4, 0.6, 3.6), Vector3.new(VX0 + 2.5 + xi * 4.4, F1 - 1.6, -38 + zi * 5), C.marbleGrey)
@@ -805,8 +812,8 @@ local LAND = F0 + 16 -- the half landing
 local LAND_X0, LAND_X1 = SX0, -32
 -- the hall's side walls: solid below (the corridors come in through the rotunda), and a doorway
 -- from each end of the bridge out to the upper corridors
-wallZAt("StairHallS", F0, -BAND, SX0, SX1, 32, nil, C.marbleWarm, M.Marble)
-wallZAt("StairHallN", F0, BAND, SX0, SX1, 32, nil, C.marbleWarm, M.Marble)
+wallZAt("StairHallS", F0, -BAND, SX0, SX1, GH, nil, C.marbleWarm, M.Marble)
+wallZAt("StairHallN", F0, BAND, SX0, SX1, GH, nil, C.marbleWarm, M.Marble)
 wallZAt("StairHallSUp", F1, -BAND, SX0, SX1, SH - 32, { { -1.6, 5, nil, 14 } }, C.marbleWarm, M.Marble)
 wallZAt("StairHallNUp", F1, BAND, SX0, SX1, SH - 32, { { -1.6, 5, nil, 14 } }, C.marbleWarm, M.Marble)
 wallXAt("StairHallBack", F0, SX0, -BAND, BAND, SH, nil, C.marbleWarm, M.Marble, 2)
@@ -817,10 +824,10 @@ do
 		local h = rise * i
 		local x = 0 - (i - 0.5) * run
 		block("CentralStep", Vector3.new(run, h, 24), Vector3.new(x, F0 + h / 2, 0), C.marble)
-		deco("CentralNose", Vector3.new(0.3, 0.2, 24), Vector3.new(x + run / 2 - 0.15, F0 + h - 0.1, 0), C.marbleGrey)
+		deco("CentralNose", Vector3.new(0.34, 0.24, 24.1), Vector3.new(x + run / 2 - 0.13, F0 + h - 0.08, 0), C.marbleGrey)
 	end
 	-- the half landing (the full width of the hall)
-	block("Landing", Vector3.new(LAND_X1 - LAND_X0, LAND - F0, 2 * BAND), Vector3.new((LAND_X0 + LAND_X1) / 2, F0 + (LAND - F0) / 2, 0), C.marble)
+	block("Landing", Vector3.new(LAND_X1 - LAND_X0 - 1, LAND - F0, 2 * BAND - 1.4), Vector3.new((LAND_X0 + LAND_X1) / 2 + 0.5, F0 + (LAND - F0) / 2, 0), C.marble) -- inside the walls' faces
 	-- the flight's balustrades (sloped marble parapets with a brass rail) and newels with lamps
 	local len = math.sqrt((n * run) ^ 2 + (LAND - F0) ^ 2)
 	local slope = math.atan2(LAND - F0, n * run)
@@ -844,12 +851,12 @@ end
 do
 	local n, rise, run = 20, (F1 - LAND) / 20, 1.4
 	for _, side in { -1, 1 } do
-		local zc = side * (BAND - 7) -- z 26..40
+		local zc = side * (BAND - 0.7 - 6.65) -- z 26..39.3: up to the wall face, not into it
 		for i = 1, n do
 			local h = (LAND - F0) + rise * i
 			local x = LAND_X1 + (i - 0.5) * run
-			block("ReturnStep", Vector3.new(run, h, 14), Vector3.new(x, F0 + h / 2, zc), C.marble)
-			deco("ReturnNose", Vector3.new(0.3, 0.2, 14), Vector3.new(x - run / 2 + 0.15, F0 + h - 0.1, zc), C.marbleGrey)
+			block("ReturnStep", Vector3.new(run, h, 13.3), Vector3.new(x, F0 + h / 2, zc), C.marble)
+			deco("ReturnNose", Vector3.new(0.34, 0.24, 14.1), Vector3.new(x - run / 2 + 0.13, F0 + h - 0.08, zc), C.marbleGrey)
 		end
 		local len = math.sqrt((n * run) ^ 2 + (F1 - LAND) ^ 2)
 		local slope = math.atan2(F1 - LAND, n * run)
@@ -900,8 +907,8 @@ for _, y0 in { F0, F1 } do
 end
 -- the corridors' inner walls beside the stair hall / back block are the stair hall walls (above);
 -- beside the rotunda the poche closes them; beside the back block:
-wallZAt("BackBlockS", F0, -BAND, -HX, SX0, 32, { { -70, 8, nil, 14 } })
-wallZAt("BackBlockN", F0, BAND, -HX, SX0, 32, { { -60, 8, nil, 14 } })
+wallZAt("BackBlockS", F0, -BAND, -HX, SX0, GH, { { -70, 8, nil, 14 } })
+wallZAt("BackBlockN", F0, BAND, -HX, SX0, GH, { { -60, 8, nil, 14 } })
 wallZAt("BackBlockSUp", F1, -BAND, -HX, SX0, SH - 32, nil)
 wallZAt("BackBlockNUp", F1, BAND, -HX, SX0, SH - 32, { { -52, 8, nil, 14 } })
 
@@ -910,10 +917,10 @@ wallZAt("BackBlockNUp", F1, BAND, -HX, SX0, SH - 32, { { -52, 8, nil, 14 } })
 ---------------------------------------------------------------------------
 group("SouthGround")
 local S0, S1 = -HZ, -WING
-wallZAt("SouthGroundHall", F0, S1, -HX, HX, 32, { { 59, 10, nil, 14 }, { 10, 8, nil, 14 }, { -20, 6, nil, 12 }, { -59, 10, nil, 14 } })
-wallXAt("SG_Div1", F0, 30, S0, S1, 32, { { -100, 6, nil, 12 } })
-wallXAt("SG_Div2", F0, -10, S0, S1, 32, nil)
-wallXAt("SG_Div3", F0, -30, S0, S1, 32, nil)
+wallZAt("SouthGroundHall", F0, S1, -HX, HX, GH, { { 59, 10, nil, 14 }, { 10, 8, nil, 14 }, { -20, 6, nil, 12 }, { -59, 10, nil, 14 } })
+wallXAt("SG_Div1", F0, 30, S0, S1, GH, { { -100, 6, nil, 12 } })
+wallXAt("SG_Div2", F0, -10, S0, S1, GH, nil)
+wallXAt("SG_Div3", F0, -30, S0, S1, GH, nil)
 -- CLERK OF THE COURT
 roomAt("ClerksOffice", F0, 32, 30, HX, S0, S1, C.marbleWarm, M.Marble, Vector3.new(59, F0 + 3, -58))
 block("ClerkCounter", Vector3.new(44, 4, 3), Vector3.new(63, F0 + 2, -66), C.panel, M.Wood)
@@ -950,11 +957,11 @@ end
 
 group("NorthGround")
 local N0, N1 = WING, HZ
-wallZAt("NorthGroundHall", F0, N0, -HX, HX, 32, { { 59, 10, nil, 14 }, { 20, 6, nil, 12 }, { 0, 6, nil, 12 }, { -20, 6, nil, 12 }, { -59, 8, nil, 14 } })
-wallXAt("NG_Div1", F0, 30, N0, N1, 32, nil)
-wallXAt("NG_Div2", F0, 10, N0, N1, 32, nil)
-wallXAt("NG_Div3", F0, -10, N0, N1, 32, nil)
-wallXAt("NG_Div4", F0, -30, N0, N1, 32, nil)
+wallZAt("NorthGroundHall", F0, N0, -HX, HX, GH, { { 59, 10, nil, 14 }, { 20, 6, nil, 12 }, { 0, 6, nil, 12 }, { -20, 6, nil, 12 }, { -59, 8, nil, 14 } })
+wallXAt("NG_Div1", F0, 30, N0, N1, GH, nil)
+wallXAt("NG_Div2", F0, 10, N0, N1, GH, nil)
+wallXAt("NG_Div3", F0, -10, N0, N1, GH, nil)
+wallXAt("NG_Div4", F0, -30, N0, N1, GH, nil)
 -- LAW LIBRARY
 roomAt("LawLibrary", F0, 32, 30, HX, N0, N1, C.wood, nil, Vector3.new(59, F0 + 3, 58))
 for i = 0, 4 do
@@ -1063,7 +1070,7 @@ block("BenchDais", Vector3.new(12, 4, 28), Vector3.new(CX0 + 8, F1 + 2, CZC), C.
 for k = 1, 4 do
 	block("BenchStep", Vector3.new(10, k, 1.5), Vector3.new(CX0 + 8, F1 + k / 2, CZC + 14 + (4 - k) * 1.5 + 0.75), C.panelDark, M.Wood)
 end
-block("BenchFront", Vector3.new(2, 7, 28), Vector3.new(CX0 + 14, F1 + 3.5, CZC), C.panel, M.Wood)
+block("BenchFront", Vector3.new(2, 7, 28.2), Vector3.new(CX0 + 14, F1 + 3.5, CZC), C.panel, M.Wood)
 for k = -3, 3 do
 	deco("BenchPanel", Vector3.new(0.3, 4.6, 3.2), Vector3.new(CX0 + 15.1, F1 + 3.5, CZC + k * 3.8), C.panelDark, M.Wood)
 end
@@ -1100,7 +1107,7 @@ for row = 0, 7 do
 	for _, side in { -1, 1 } do
 		local zc = CZC + side * 15
 		block("Pew", Vector3.new(2.4, 1.6, 22), Vector3.new(x, F1 + 1.3, zc), C.panel, M.Wood)
-		block("PewBack", Vector3.new(0.5, 3.6, 22), Vector3.new(x + 1.3, F1 + 2.4, zc), C.panel, M.Wood)
+		block("PewBack", Vector3.new(0.5, 3.6, 21.8), Vector3.new(x + 1.3, F1 + 2.4, zc), C.panel, M.Wood)
 		for k = 0, 4 do
 			g += 1
 			local s = chair("GallerySeat" .. g, Vector3.new(x, F1 + 2.2, zc - 9 + k * 4.5), Vector3.new(-1, 0, 0), C.panel, true)
@@ -1166,14 +1173,14 @@ block("Dept2Dais", Vector3.new(10, 3, 22), Vector3.new(-24, F1 + 1.5, -88), C.pa
 for k = 1, 3 do
 	block("Dept2Step", Vector3.new(8, k, 1.4), Vector3.new(-24, F1 + k / 2, -77 + (3 - k) * 1.4 + 0.7), C.panelDark, M.Wood)
 end
-block("Dept2BenchFront", Vector3.new(2, 6, 22), Vector3.new(-18.5, F1 + 3, -88), C.panel, M.Wood)
+block("Dept2BenchFront", Vector3.new(2, 6, 22.2), Vector3.new(-18.5, F1 + 3, -88), C.panel, M.Wood)
 chair("Dept2JudgeSeat", Vector3.new(-25, F1 + 3.6, -88), Vector3.new(1, 0, 0), C.black)
 cylinder("Dept2Seal", 0.5, 9, Vector3.new(-29, F1 + 18, -88), C.brass, M.Metal, "x").CanCollide = false
 block("Dept2Table", Vector3.new(4, 3, 10), Vector3.new(-6, F1 + 1.5, -96), C.panel, M.Wood)
 block("Dept2Table", Vector3.new(4, 3, 10), Vector3.new(-6, F1 + 1.5, -80), C.panel, M.Wood)
 for row = 0, 4 do
 	block("Dept2Pew", Vector3.new(2.4, 1.6, 40), Vector3.new(8 + row * 6, F1 + 1.3, -88), C.panel, M.Wood)
-	block("Dept2PewBack", Vector3.new(0.5, 3.6, 40), Vector3.new(9.3 + row * 6, F1 + 2.4, -88), C.panel, M.Wood)
+	block("Dept2PewBack", Vector3.new(0.5, 3.6, 39.8), Vector3.new(9.3 + row * 6, F1 + 2.4, -88), C.panel, M.Wood)
 end
 -- WITNESS ROOM (x 40..88)
 roomAt("WitnessRoom", F1, UH, 40, HX, S0, S1, C.wood, nil, Vector3.new(64, F1 + 3, -58))
@@ -1209,6 +1216,116 @@ model.PrimaryPart = groups.Entry:FindFirstChild("Podium") :: BasePart
 model.Parent = workspace
 
 ---------------------------------------------------------------------------
+-- TRIM PASS: no two faces may share a plane. Where a trim piece's face lies in the same plane
+-- as an overlapping face of another part, facing the same way, the two flicker (z-fight) as
+-- the camera moves - push the trim out along that face until it has its own space.
+---------------------------------------------------------------------------
+local TRIM_NAMES = { "Nose", "Sill", "Head", "Jamb", "Pilaster", "Rustication", "StringCourse", "Wainscot", "Cornice",
+	"Coffer", "Rosette", "Tile", "Runner", "Rug", "Panel", "Band", "Frieze", "Dentil", "Inlay", "Rail", "Soffit",
+	"Parapet", "Rib", "Rose", "Board", "Plaque", "Text", "InGodWeTrust", "Transom", "DoorHead", "DoorPediment", "Medallion",
+	"Seal", "Flag", "Books", "Files", "Robe", "Monitors", "Grille", "Gate", "Capital", "Abacus", "Cap", "Plinth", "Necking" }
+local LOCKED = { "Wall", "Div", "Hall", "Drum", "Poche", "Floor", "Gallery", "Podium", "Attic", "Roof", "Landing",
+	"Step", "Anta", "Ceiling", "Slab", "Dock", "Port", "Shaft", "Column" }
+local function isTrim(p: BasePart): boolean
+	if not p.CanCollide then return true end
+	local locked = false
+	for _, n in LOCKED do
+		if p.Name:find(n, 1, true) then locked = true end
+	end
+	if not locked then return true end -- furniture and fittings may move a hair
+	for _, n in TRIM_NAMES do
+		if p.Name:find(n, 1, true) then return true end
+	end
+	return false
+end
+local function isBox(p: BasePart): boolean
+	return p:IsA("Part") and (p :: Part).Shape == Enum.PartType.Block
+end
+-- the six faces of a box part: { normal, plane offset (n . point on face), its two in-plane axes + half extents }
+local function faces(p: BasePart)
+	local cf, half = p.CFrame, p.Size / 2
+	local axes = { { cf.RightVector, half.X }, { cf.UpVector, half.Y }, { -cf.LookVector, half.Z } }
+	local out = {}
+	for i, a in axes do
+		local others = {}
+		for j, b in axes do
+			if j ~= i then table.insert(others, b) end
+		end
+		for _, sgn in { 1, -1 } do
+			local n = a[1] * sgn
+			table.insert(out, { n = n, d = n:Dot(cf.Position) + a[2], u = others[1], v = others[2] })
+		end
+	end
+	return out
+end
+-- half extent of a box part along a world direction
+local function extent(p: BasePart, dir: Vector3): number
+	local cf, h = p.CFrame, p.Size / 2
+	return math.abs(dir:Dot(cf.RightVector)) * h.X + math.abs(dir:Dot(cf.UpVector)) * h.Y + math.abs(dir:Dot(cf.LookVector)) * h.Z
+end
+local function overlap1(c1: number, e1: number, c2: number, e2: number): number
+	return math.min(c1 + e1, c2 + e2) - math.max(c1 - e1, c2 - e2)
+end
+-- structural pieces never move (moving a slab would leave a lip at the stairs)
+local STRUCTURAL = { UpperFloor = true, GroundFloor = true, Landing = true, Podium = true, PortFloor = true, PortGround = true,
+	Gallery = true, StairTop = true, SallyDock = true, StaffLanding = true }
+local fixedTrim = 0
+do
+	local params = OverlapParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = { model }
+	local seen: { [string]: boolean } = {}
+	local ids: { [Instance]: number } = {}
+	local nextId = 0
+	local function id(p: Instance): number
+		if not ids[p] then nextId += 1; ids[p] = nextId end
+		return ids[p]
+	end
+	local function movable(p: BasePart): boolean
+		return isTrim(p) and not STRUCTURAL[p.Name]
+	end
+	for _, t in model:GetDescendants() do
+		if t:IsA("BasePart") and isBox(t) and t.Transparency < 1 and (movable(t) or true) then
+			for _, o in workspace:GetPartBoundsInBox(t.CFrame, t.Size + Vector3.new(0.2, 0.2, 0.2), params) do
+				if o ~= t and isBox(o) and o.Transparency < 1 then
+					local a, b = id(t), id(o)
+					local key = if a < b then a .. ":" .. b else b .. ":" .. a
+					if not seen[key] then
+						seen[key] = true
+						-- which one moves: a movable trim piece, the smaller one if both are
+						local mover, other = nil, nil
+						local tm, om = movable(t), movable(o :: BasePart)
+						if tm and om then
+							if t.Size.X * t.Size.Y * t.Size.Z <= o.Size.X * o.Size.Y * o.Size.Z then mover, other = t, o else mover, other = o, t end
+						elseif tm then mover, other = t, o
+						elseif om then mover, other = o, t end
+						if mover and other then
+							local push = Vector3.zero
+							for _, f in faces(mover) do
+								for _, g in faces(other) do
+									if f.n:Dot(g.n) > 0.999 and math.abs(f.d - g.d) < 0.03 then
+										local ou = overlap1(f.u[1]:Dot(mover.Position), f.u[2], f.u[1]:Dot(other.Position), extent(other, f.u[1]))
+										local ov = overlap1(f.v[1]:Dot(mover.Position), f.v[2], f.v[1]:Dot(other.Position), extent(other, f.v[1]))
+										if ou > 0.05 and ov > 0.05 then
+											push += f.n * 0.06
+										end
+									end
+								end
+							end
+							if push.Magnitude > 0 then
+								mover.CFrame = mover.CFrame + push
+								fixedTrim += 1
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+end
+print(("[Courthouse] trim pass: %d face clashes fixed"):format(fixedTrim))
+
+---------------------------------------------------------------------------
 -- CHECK: walk to every room from the street (the cells from the sally port)
 ---------------------------------------------------------------------------
 local PathfindingService = game:GetService("PathfindingService")
@@ -1237,4 +1354,4 @@ reach("~ gallery -> witness stand", at("Room_Courtroom"), at("WitnessSeat"))
 reach("~ rotunda -> gallery (via the grand staircase)", at("RotundaSpot"), (markers.RotundaSpot.CFrame * CFrame.new(-10, F1 - F0, 30)).Position)
 table.sort(report)
 print(("[Courthouse] built: %d parts, %d walkability failures"):format(#model:GetDescendants(), fails))
-return ("%d parts, %d failures\n%s"):format(#model:GetDescendants(), fails, table.concat(report, "\n"))
+return ("%d parts, %d failures, %d trim clashes fixed\n%s"):format(#model:GetDescendants(), fails, fixedTrim, table.concat(report, "\n"))
