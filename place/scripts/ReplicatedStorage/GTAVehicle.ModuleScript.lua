@@ -224,6 +224,7 @@ function M.step(st: any, dt: number, input: any): any
 		local hit = workspace:Raycast(origin, -up * rayLen, st.params)
 		if not hit then
 			w.contact = false
+			w.skid = 0
 			w.lastComp = 0
 			w.spin = w.spin * 0.99
 			continue
@@ -271,7 +272,9 @@ function M.step(st: any, dt: number, input: any): any
 			-- grip (tractionMin) against the direction it's actually moving - so it still
 			-- holds the car sideways, the back steps out and the drift settles instead of
 			-- spinning. Thb (handbrakeForce) = how much grip the locked tyre loses.
-			local muLock = muMin * (1 - 0.35 * math.clamp(h.handbrakeForce, 0, 1))
+			-- (0.35 was too grippy: the tyres killed the sideways slide in a fraction of a
+			-- second, so the car just turned. IV's handbrake breaks the rear properly loose.)
+			local muLock = muMin * (1 - 0.75 * math.clamp(h.handbrakeForce, 0, 1))
 			local f = muLock * N
 			local fl = -vf / planarSpeed * f
 			local fr = -vr / planarSpeed * f
@@ -279,6 +282,8 @@ function M.step(st: any, dt: number, input: any): any
 			fl = sign(fl) * math.min(math.abs(fl), math.abs(vf) * wheelMass / dt)
 			fr = sign(fr) * math.min(math.abs(fr), math.abs(vr) * wheelMass / dt)
 			w.slipping = true
+			w.skid = planarSpeed
+			w.contactPos = hit.Position
 			w.spin = 0
 			local at = hit.Position + up * (w.radius * 0.5)
 			seat:ApplyImpulseAtPosition((up * N + wf * fl + wr * fr) * dt, at)
@@ -305,6 +310,11 @@ function M.step(st: any, dt: number, input: any): any
 			w.slipping = true
 		end
 		w.spin = vf / w.radius + (if w.slipping and drive ~= 0 and fLong * drive > 0 then drive * 25 else 0)
+		-- skid marks / smoke (drawn by the driver's client): sliding sideways past the
+		-- peak, or a wheel spinning / locking
+		w.contactPos = hit.Position
+		w.skid = if slip > peak * 1.3 and math.abs(vr) > 6 then math.abs(vr)
+			elseif w.slipping then math.abs(vf) * 0.5 else 0
 		-- forces act a little above the contact patch (GTA IV's body roll, without tipping every corner)
 		local at = hit.Position + up * (w.radius * 0.5)
 		seat:ApplyImpulseAtPosition((up * N + wf * fLong + wr * fLat) * dt, at)
