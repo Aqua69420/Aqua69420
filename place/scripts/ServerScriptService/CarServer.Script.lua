@@ -698,7 +698,7 @@ do
 end
 
 -- parked GTA cars: the server keeps them standing on their suspension, handbrake on
-RunService.Heartbeat:Connect(function(dt)
+RunService.PreSimulation:Connect(function(dt)
 	for car, st in GTA.cars do
 		if not car.Parent or not st.seat.Parent then
 			GTA.cars[car] = nil

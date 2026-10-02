@@ -117,7 +117,9 @@ local function driveGTA(humanoid, seat, car)
 	humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
 	local drunkSteer = 0
 	local connection
-	connection = RunService.Heartbeat:Connect(function(dt)
+	-- PreSimulation: its dt is the time physics will actually simulate (a hitchy frame's
+	-- Heartbeat dt is longer than that - pushing for it overshot gravity and hopped the car)
+	connection = RunService.PreSimulation:Connect(function(dt)
 		if humanoid.SeatPart ~= seat or not car.Parent then
 			connection:Disconnect()
 			ContextActionService:UnbindAction("GTAHandbrake")
