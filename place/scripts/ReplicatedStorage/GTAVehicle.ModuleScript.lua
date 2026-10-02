@@ -263,23 +263,39 @@ function M.step(st: any, dt: number, input: any): any
 		local peak = math.rad(math.max(h.tractionLateral, 2))
 		local mu = if slip <= peak then muMax * (slip / peak)
 			else muMax + (muMin - muMax) * math.clamp((slip - peak) / (peak * 1.5), 0, 1)
-		if handbrake then
-			mu *= 1 - 0.85 * math.clamp(h.handbrakeForce, 0, 1) -- Thb: how hard the handbrake breaks the rear loose
-		end
 		local wheelMass = mass / nW
 		local fLat = -sign(vr) * math.min(mu * N, math.abs(vr) * wheelMass / dt)
+		local planarSpeed = math.sqrt(vf * vf + vr * vr)
+		if handbrake and planarSpeed > 0.5 then
+			-- GTA IV handbrake: the rear wheels LOCK. A locked tyre slides on its sliding
+			-- grip (tractionMin) against the direction it's actually moving - so it still
+			-- holds the car sideways, the back steps out and the drift settles instead of
+			-- spinning. Thb (handbrakeForce) = how much grip the locked tyre loses.
+			local muLock = muMin * (1 - 0.35 * math.clamp(h.handbrakeForce, 0, 1))
+			local f = muLock * N
+			local fl = -vf / planarSpeed * f
+			local fr = -vr / planarSpeed * f
+			-- never more than it takes to stop that wheel's share this frame
+			fl = sign(fl) * math.min(math.abs(fl), math.abs(vf) * wheelMass / dt)
+			fr = sign(fr) * math.min(math.abs(fr), math.abs(vr) * wheelMass / dt)
+			w.slipping = true
+			w.spin = 0
+			local at = hit.Position + up * (w.radius * 0.5)
+			seat:ApplyImpulseAtPosition((up * N + wf * fl + wr * fr) * dt, at)
+			continue
+		end
 		-- longitudinal: engine (by drive bias), brakes (by brake bias), rolling
 		local driveShare = if w.front then h.driveBiasFront / st.fronts else (1 - h.driveBiasFront) / st.rears
 		local fLong = driveTotal * driveShare
 		local brakeShare = if w.front then h.brakeBiasFront / st.fronts else (1 - h.brakeBiasFront) / st.rears
-		local fBrake = brakeTotal * brakeShare + (if handbrake then mass * G * 1.4 * h.handbrakeForce / st.rears else 0)
+		local fBrake = brakeTotal * brakeShare
 		if drive == 0 and brake == 0 then
 			fBrake += mass * G * 0.02 / nW -- rolling resistance / engine braking
 		end
 		local cancel = math.abs(vf) * wheelMass / dt
 		fLong += -sign(vf) * math.min(fBrake, cancel)
 		-- friction circle: more than the tyre can give = wheelspin / lockup / slide
-		local gripLimit = math.max(muMax, 0.1) * N * (if handbrake then 0.55 else 1)
+		local gripLimit = math.max(muMax, 0.1) * N
 		local total = math.sqrt(fLong * fLong + fLat * fLat)
 		w.slipping = false
 		if total > gripLimit and total > 0 then
@@ -288,7 +304,7 @@ function M.step(st: any, dt: number, input: any): any
 			fLat *= s * 0.85
 			w.slipping = true
 		end
-		w.spin = if handbrake then 0 else vf / w.radius + (if w.slipping and drive ~= 0 and fLong * drive > 0 then drive * 25 else 0)
+		w.spin = vf / w.radius + (if w.slipping and drive ~= 0 and fLong * drive > 0 then drive * 25 else 0)
 		-- forces act a little above the contact patch (GTA IV's body roll, without tipping every corner)
 		local at = hit.Position + up * (w.radius * 0.5)
 		seat:ApplyImpulseAtPosition((up * N + wf * fLong + wr * fLat) * dt, at)
