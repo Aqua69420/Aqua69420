@@ -22,6 +22,17 @@
 
 local M = {}
 
+-- tuning knobs (GTAHandlingData.TopSpeedScale / AccelScale override these)
+M.TopSpeedScale = 1.2 -- real top speed vs handling.dat Tv (IV runs ~20% past it)
+M.AccelScale = 1.0 -- 1.0 = GTA IV 0-100 times
+
+function M.configure(data: any)
+	if type(data) == "table" then
+		M.TopSpeedScale = tonumber(data.TopSpeedScale) or M.TopSpeedScale
+		M.AccelScale = tonumber(data.AccelScale) or M.AccelScale
+	end
+end
+
 -- GTA IV handling.dat (the real file): A B C D E F G | Tt Tg Tf Ti Tv | Tb Tbb Thb | Ts |
 -- Wc+ Wc- Wc-(lat) Ws+ Wbias | Sf Scd Srd Su Sl Sr Sb | Dc Dw Dd De | Ms Mv Mmf Mhf Ma
 M.COLUMNS_IV = {
@@ -161,7 +172,8 @@ function M.step(st: any, dt: number, input: any): any
 	local vel = seat.AssemblyLinearVelocity
 	local fwdSpeed = vel:Dot(fwd)
 	local speed = vel.Magnitude
-	local maxV = math.max(h.maxVel, 10) / 3.6 * S
+	-- IV cars run ~20% past their handling.dat velocity (Infernus 160 -> ~192 km/h)
+	local maxV = math.max(h.maxVel, 10) * M.TopSpeedScale / 3.6 * S
 
 	-- steering: GTA IV turns in slowly, centres quicker, and locks less at speed
 	local speedFrac = math.clamp(math.abs(fwdSpeed) / maxV, 0, 1)
@@ -183,17 +195,20 @@ function M.step(st: any, dt: number, input: any): any
 	local frac = math.clamp(math.abs(fwdSpeed) / maxV, 0, 1.2)
 	local gear = math.clamp(math.floor(frac * gears) + 1, 1, gears)
 	st.gear = if fwdSpeed < -1 and drive < 0 then -1 else gear
-	local gearMult = 1.4 - 0.65 * (gear - 1) / math.max(1, gears - 1)
+	local gearMult = 1.25 - 0.5 * (gear - 1) / math.max(1, gears - 1)
 	st.rpm = math.clamp((frac * gears) % 1 * 0.8 + 0.2, 0, 1)
 	local accel
-	-- IV's drive force (0.10 trucks .. 0.26 supercars) and brake force (0.1 .. 0.45) are
-	-- scaled so an Admiral does 0-100 km/h in ~8 s and stops in about a car's length per 10 km/h
+	-- GTA IV performance: launch acceleration (in g) = 4.25 x driveForce^1.5. Simulated:
+	--   Infernus 0.25 -> 0-100 km/h ~4.7 s, top ~187 km/h;  Sabre GT -> ~6.3 s, ~168;
+	--   Admiral 0.17 -> ~9 s, ~161;  Bus 0.12 -> ~15 s, ~157;  Mule -> ~23 s, ~111.
+	-- Power holds until near top speed, then runs out (no hard wall)
+	local launch = 4.25 * math.max(h.driveForce, 0) ^ 1.5 * M.AccelScale
 	if drive >= 0 then
-		local limiter = math.clamp((1 - frac) / 0.06, 0, 1)
-		accel = h.driveForce * 1.6 * G * gearMult * limiter
+		local taper = math.clamp(1 - frac ^ 4, 0, 1)
+		accel = launch * G * gearMult * taper
 	else
 		local revMax = maxV * 0.28
-		accel = h.driveForce * 1.6 * G * 1.1 * math.clamp((revMax + fwdSpeed) / (revMax * 0.15), 0, 1)
+		accel = launch * G * 0.9 * math.clamp((revMax + fwdSpeed) / (revMax * 0.15), 0, 1)
 	end
 	local driveTotal = mass * accel * drive
 	local brakeTotal = mass * h.brakeForce * 3.6 * G * brake
@@ -281,7 +296,9 @@ function M.step(st: any, dt: number, input: any): any
 
 	-- aerodynamic drag: grows with speed squared
 	if speed > 1 then
-		local k = 0.1 * G / (maxV * maxV) * (h.dragMult / 6) -- IV drag runs ~3 (slippery) .. 9 (bricks), 6 typical
+		-- IV drag runs ~3 (slippery) .. 9 (bricks), 6 typical; small next to the engine,
+		-- it mostly shapes how fast speed bleeds off when you lift
+		local k = 0.04 * G / (maxV * maxV) * (h.dragMult / 6)
 		seat:ApplyImpulse(-vel.Unit * k * speed * speed * mass * dt)
 	end
 	-- a touch of air control and self-righting when all wheels are off the ground (IV lets you rock the car)

@@ -12,6 +12,11 @@ return {
 	-- one metre in studs. 2.8 = Roblox character scale (a 5-stud avatar is ~1.8 m).
 	MetersToStuds = 2.8,
 
+	-- performance: 1.0 / 1.2 = GTA IV (0-100 km/h: Infernus ~4.7 s, Admiral ~9 s; real top
+	-- speed ~1.2x the handling line's Tv). Raise AccelScale for quicker cars everywhere.
+	AccelScale = 1.0,
+	TopSpeedScale = 1.2,
+
 	-- which handling line each car uses
 	Cars = {
 		["Sports Car"] = "INFERNUS",

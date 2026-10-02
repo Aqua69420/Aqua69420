@@ -99,6 +99,7 @@ local function driveGTA(humanoid, seat, car)
 		warn("[GTAHandling] client couldn't load the handling modules")
 		return
 	end
+	Vehicle.configure(data)
 	local lines = Vehicle.parse(tostring(data.Text or ""), data.Columns)
 	local h = lines[seat:GetAttribute("GTAHandling")]
 	local st = h and Vehicle.new(car, seat, h, data.MetersToStuds or 2.8)

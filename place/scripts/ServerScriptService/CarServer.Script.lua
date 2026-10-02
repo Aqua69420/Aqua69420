@@ -534,6 +534,7 @@ function GTA.load()
 		return
 	end
 	GTA.Vehicle, GTA.data = Vehicle, data
+	Vehicle.configure(data)
 	GTA.lines = Vehicle.parse(tostring(data.Text or ""), data.Columns)
 	local n = 0
 	for _, h in GTA.lines do
