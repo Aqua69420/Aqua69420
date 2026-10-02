@@ -207,7 +207,10 @@ end
 -- input = { throttle = -1..1 (S = brake / reverse), steer = -1..1, handbrake = bool }
 function M.step(st: any, dt: number, input: any): any
 	local seat, h, S = st.seat, st.h, st.S
-	dt = math.clamp(dt, 1 / 240, 1 / 20)
+	-- the real frame time: gravity pulled for the whole frame, so the springs must push for
+	-- all of it too (clamping a hitchy frame to 1/20 s let the car sink, then spring-hop)
+	local rawDt = dt
+	dt = math.clamp(dt, 1 / 240, 0.25)
 	local G = 9.81 * S -- real gravity, in studs
 	local mass = seat.AssemblyMass
 	local cf = seat.CFrame
@@ -304,6 +307,7 @@ function M.step(st: any, dt: number, input: any): any
 		end
 		-- never more than ~3 g through one wheel: enough to catch a landing, never a launch
 		N = math.min(N, share * bias * 3)
+		w.dbg = ("%s c%.2f v%.0f N%.1fx"):format(hit.Instance.Name, comp, compVel, N / (share * bias))
 		local Nspring = N -- holds the real weight
 		N = N * gripScale -- tyre load at real-gravity scale
 
@@ -369,6 +373,29 @@ function M.step(st: any, dt: number, input: any): any
 		-- forces act a little above the contact patch (GTA IV's body roll, without tipping every corner)
 		local at = hit.Position + up * (w.radius * 0.5)
 		push(st, (up * Nspring + wf * fLong + wr * fLat) * dt, at, up)
+	end
+
+	-- HOP LOG (temporary): the body suddenly rising - which wheel / what it hit
+	local vUp = seat.AssemblyLinearVelocity:Dot(up)
+	local jump = vUp - (st.lastVUp or vUp)
+	st.lastVUp = vUp
+	if jump > 4 and os.clock() - (st.lastHopLog or 0) > 0.3 then
+		st.lastHopLog = os.clock()
+		local parts = {}
+		for _, w in st.wheels do
+			table.insert(parts, (if w.front then "F" else "R") .. ":" .. (if w.contact then (w.dbg or "?") else "AIR"))
+		end
+		print(("[GTAHop] +%.1f up (now %.1f) dt %.0f ms (prev %.0f) %.0f km/h contacts %d | %s"):format(jump, vUp, rawDt * 1000, (st.lastDt or 0) * 1000, math.abs(fwdSpeed) / S * 3.6, contacts, table.concat(parts, " | ")))
+	end
+
+	st.lastDt = rawDt
+	-- planted: on four wheels, suspension alone never throws the body up faster than ~3 studs/s
+	if contacts == nW then
+		local v = seat.AssemblyLinearVelocity
+		local rise = v:Dot(up)
+		if rise > 3 then
+			seat:ApplyImpulse(-up * (rise - 3) * mass)
+		end
 	end
 
 	-- aerodynamic drag: grows with speed squared
