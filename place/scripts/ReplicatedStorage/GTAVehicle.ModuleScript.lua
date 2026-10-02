@@ -27,7 +27,7 @@ M.TopSpeedScale = 1.2 -- real top speed vs handling.dat Tv (IV runs ~20% past it
 M.AccelScale = 1.3
 M.AccelByLine = {} :: { [string]: number } -- per handling line, e.g. INFERNUS = 1.1
 M.RideHeight = 0.3 -- studs the body rides higher than the model was built
-M.BodyRoll = 1.8 -- studs below the contact patch the tyre forces act: more = more lean / nose dive (0 = stiff)
+M.BodyRoll = 1 -- 1 = GTA IV's lean / nose dive / squat from its suspension values, 0 = none
 
 function M.configure(data: any)
 	if type(data) == "table" then
@@ -227,6 +227,15 @@ local function push(st: any, impulse: Vector3, at: Vector3, up: Vector3)
 	seat:ApplyAngularImpulse((angular - yaw) + yaw * st.yawScale)
 end
 
+-- Where a tyre's road force acts. The springs hold the car's full Roblox weight (Gw) but
+-- the tyres grip at real 1 g (G), so at the contact patch the lean / dive / squat would come
+-- out Gw/G (~7x) too small. Acting at hCOM * (Gw/G - 1) below the patch gives exactly the
+-- lean IV's springs produce at real gravity. BodyRoll 1 = exact, 0 = none.
+local function tyrePoint(st: any, contact: Vector3, up: Vector3, G: number, Gw: number): Vector3
+	local hCOM = math.max(0, (st.seat.AssemblyCenterOfMass - contact):Dot(up))
+	return contact - up * (hCOM * (Gw / G - 1) * M.BodyRoll)
+end
+
 -- input = { throttle = -1..1 (S = brake / reverse), steer = -1..1, handbrake = bool }
 function M.step(st: any, dt: number, input: any): any
 	local seat, h, S = st.seat, st.h, st.S
@@ -320,10 +329,13 @@ function M.step(st: any, dt: number, input: any): any
 		local comp = math.clamp((rayLen - dist) / travel, 0, 1.6)
 		-- where the wheel centre sits now, relative to where it was built (for the visual)
 		w.drop = upper - (dist - w.radius) + h.suspRaise * S - M.RideHeight
-		-- spring: at rest a wheel sits about half way through its travel (suspForce 2)
+		-- spring, GTA IV's own rule (handling.dat header: "1 / (Force * NumWheels) = lower
+		-- limit for zero force at full extension"): at full compression a wheel pushes with
+		-- fSuspensionForce x the car's whole weight, so at rest it sits 1/(Force*wheels) into
+		-- its travel. fSuspensionBias splits stiffness front / rear.
 		local share = mass * Gw / nW
 		local bias = (if w.front then h.suspBiasFront else 1 - h.suspBiasFront) * 2
-		local k = share / 0.5 * (h.suspForce / 2) * bias
+		local k = h.suspForce * mass * Gw * bias
 		local compVel = ((comp - (w.lastComp or comp)) * travel) / dt
 		w.lastComp = comp
 		local kPerStud = k / travel
@@ -336,7 +348,7 @@ function M.step(st: any, dt: number, input: any): any
 		if comp >= 1 then
 			N += (comp - 1) * k * 3 -- bump stop
 		end
-		N = math.min(N, share * 3.5) -- never more than 3.5x this wheel's share of the weight
+		N = math.min(N, k * 1.6 + share) -- hard cap: a kerb edge jolts, it doesn't launch
 		local Nspring = N
 		N = N * gripScale -- tyre load at real-gravity scale (see WEIGHT above)
 
@@ -379,7 +391,7 @@ function M.step(st: any, dt: number, input: any): any
 			w.skid = planarSpeed
 			w.contactPos = hit.Position
 			w.spin = 0
-			local at = hit.Position - up * M.BodyRoll -- low virtual point: the body leans out in corners and dives under braking
+			local at = tyrePoint(st, hit.Position, up, G, Gw)
 			dbgN += N; dbgLat += wf * fl + wr * fr; table.insert(dbgComp, math.floor(comp * 100) / 100)
 			push(st, (up * N + wf * fl + wr * fr) * dt, at, up)
 			continue
@@ -416,7 +428,7 @@ function M.step(st: any, dt: number, input: any): any
 		w.skid = if slip > peak * 1.3 and math.abs(vr) > 6 then math.abs(vr)
 			elseif w.slipping then math.abs(vf) * 0.5 else 0
 		-- forces act a little above the contact patch (GTA IV's body roll, without tipping every corner)
-		local at = hit.Position - up * M.BodyRoll -- low virtual point: the body leans out in corners and dives under braking
+		local at = tyrePoint(st, hit.Position, up, G, Gw)
 		dbgN += N; dbgLat += wf * fLong + wr * fLat; table.insert(dbgComp, math.floor(comp * 100) / 100)
 		push(st, (up * Nspring + wf * fLong + wr * fLat) * dt, at, up)
 	end
