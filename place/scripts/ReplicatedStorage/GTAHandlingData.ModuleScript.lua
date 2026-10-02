@@ -19,6 +19,8 @@ return {
 	-- per handling line, on top of AccelScale: time a car in your copy of GTA IV and
 	-- nudge it here (1.1 = 10% quicker), e.g. INFERNUS = 1.1, ADMIRAL = 0.95
 	AccelByLine = {},
+	-- body lean in corners / nose dive under braking: 1.8 = IV-like sway, 0 = stiff, 3 = boaty
+	BodyRoll = 1.8,
 
 	-- which handling line each car uses
 	Cars = {

@@ -27,11 +27,13 @@ M.TopSpeedScale = 1.2 -- real top speed vs handling.dat Tv (IV runs ~20% past it
 M.AccelScale = 1.3
 M.AccelByLine = {} :: { [string]: number } -- per handling line, e.g. INFERNUS = 1.1
 M.RideHeight = 0.3 -- studs the body rides higher than the model was built
+M.BodyRoll = 1.8 -- studs below the contact patch the tyre forces act: more = more lean / nose dive (0 = stiff)
 
 function M.configure(data: any)
 	if type(data) == "table" then
 		M.TopSpeedScale = tonumber(data.TopSpeedScale) or M.TopSpeedScale
 		M.AccelScale = tonumber(data.AccelScale) or M.AccelScale
+		M.BodyRoll = tonumber(data.BodyRoll) or M.BodyRoll
 		if type(data.AccelByLine) == "table" then
 			M.AccelByLine = {}
 			for k, v in data.AccelByLine do
@@ -327,10 +329,14 @@ function M.step(st: any, dt: number, input: any): any
 		local kPerStud = k / travel
 		local crit = 2 * math.sqrt(kPerStud * (mass / nW))
 		local dampValue = if compVel > 0 then h.suspCompDamp else h.suspReboundDamp
-		local N = math.max(0, comp * k + compVel * crit * math.clamp(dampValue * 0.3, 0.05, 2.5))
+		-- the damper's kick is limited: a ray jumping onto a kerb edge reads a huge
+		-- compression speed in one frame, which used to fire the car into the air
+		local damper = math.clamp(compVel * crit * math.clamp(dampValue * 0.3, 0.05, 2.5), -share * 1.5, share * 1.5)
+		local N = math.max(0, comp * k + damper)
 		if comp >= 1 then
-			N += (comp - 1) * k * 6 -- bump stop
+			N += (comp - 1) * k * 3 -- bump stop
 		end
+		N = math.min(N, share * 3.5) -- never more than 3.5x this wheel's share of the weight
 		local Nspring = N
 		N = N * gripScale -- tyre load at real-gravity scale (see WEIGHT above)
 
@@ -373,7 +379,7 @@ function M.step(st: any, dt: number, input: any): any
 			w.skid = planarSpeed
 			w.contactPos = hit.Position
 			w.spin = 0
-			local at = hit.Position + up * (w.radius * 0.5)
+			local at = hit.Position - up * M.BodyRoll -- low virtual point: the body leans out in corners and dives under braking
 			dbgN += N; dbgLat += wf * fl + wr * fr; table.insert(dbgComp, math.floor(comp * 100) / 100)
 			push(st, (up * N + wf * fl + wr * fr) * dt, at, up)
 			continue
@@ -410,7 +416,7 @@ function M.step(st: any, dt: number, input: any): any
 		w.skid = if slip > peak * 1.3 and math.abs(vr) > 6 then math.abs(vr)
 			elseif w.slipping then math.abs(vf) * 0.5 else 0
 		-- forces act a little above the contact patch (GTA IV's body roll, without tipping every corner)
-		local at = hit.Position + up * (w.radius * 0.5)
+		local at = hit.Position - up * M.BodyRoll -- low virtual point: the body leans out in corners and dives under braking
 		dbgN += N; dbgLat += wf * fLong + wr * fLat; table.insert(dbgComp, math.floor(comp * 100) / 100)
 		push(st, (up * Nspring + wf * fLong + wr * fLat) * dt, at, up)
 	end
