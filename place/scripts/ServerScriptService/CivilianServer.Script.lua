@@ -435,6 +435,18 @@ local function dropCivilianLoot(position)
 	end)
 end
 
+-- v263b: every pedestrian is somebody - a name (not shown over their head) the police,
+-- the news and the court use when something happens to them
+local FIRST_NAMES = { "Maria", "James", "Luis", "Aisha", "Daniel", "Grace", "Marcus", "Elena", "Tyrone", "Sofia", "Kevin",
+	"Priya", "Robert", "Jasmine", "Victor", "Hannah", "Andre", "Mei", "Carlos", "Rachel", "Darnell", "Olivia", "Hector",
+	"Linda", "Samuel", "Nadia", "Frank", "Tasha", "Miguel", "Erin", "Walter", "Yolanda", "Brian", "Leila", "Oscar", "Denise" }
+local LAST_NAMES = { "Delgado", "Thompson", "Nguyen", "Okafor", "Russo", "Patel", "Washington", "Kowalski", "Ramirez",
+	"Brooks", "Haddad", "Sullivan", "Moreno", "Chen", "Jefferson", "Novak", "Alvarez", "Greene", "Ibarra", "Fitzgerald",
+	"Castillo", "Morgan", "Yamamoto", "Price", "Santos", "Becker", "Holloway", "Mendez", "Lindqvist", "Carter" }
+local function personName(): string
+	return FIRST_NAMES[math.random(1, #FIRST_NAMES)] .. " " .. LAST_NAMES[math.random(1, #LAST_NAMES)]
+end
+
 local function spawnOne(isDealer)
 	if #templates == 0 then
 		return
@@ -454,6 +466,7 @@ local function spawnOne(isDealer)
 	-- Once one is taken into custody it belongs to the prison; a replacement
 	-- pedestrian spawns here in the city.
 	npc:SetAttribute("CityCivilian", true)
+	npc:SetAttribute("FullName", personName())
 	local replaced = false
 	npc:GetAttributeChangedSignal("PoliceArrested"):Connect(function()
 		if replaced or not npc:GetAttribute("PoliceArrested") then return end
@@ -487,10 +500,13 @@ local function spawnOne(isDealer)
 		end
 		activeCivilians[npc]=nil
 		if killer and killer:IsA("Player") then
+			-- the case file names the victim (read when the murder is logged, just below)
+			killer:SetAttribute("LastVictim", npc:GetAttribute("FullName") or "an unidentified pedestrian")
+			killer:SetAttribute("LastVictimAt", os.time())
 			local reportCrime = ServerStorage:FindFirstChild("ReportCrime")
 			if reportCrime then
 				reportCrime:Invoke(killer,"Murder",2)
-				print(("[CivilianServer] MURDER REPORTED: %s killed %s"):format(killer.Name,npc.Name))
+				print(("[CivilianServer] MURDER REPORTED: %s killed %s"):format(killer.Name, tostring(npc:GetAttribute("FullName") or npc.Name)))
 			else
 				warn("[CivilianServer] ReportCrime missing; cannot dispatch murder")
 			end

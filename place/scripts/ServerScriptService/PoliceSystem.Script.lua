@@ -4963,6 +4963,16 @@ function Cop:die()
 	self:cleanup()
 	self.align:Destroy()
 	if killer then
+		-- v263b: the officer has a name in the case file
+		pcall(function()
+			local m = self.model
+			local name = m and m:GetAttribute("FullName")
+			if not name then
+				name = "Officer " .. ({ "Reyes", "Murphy", "Callahan", "Okoye", "Brennan", "Diaz", "Kowalski", "Hayes", "Lindgren", "Tran", "Walsh", "Ortega" })[math.random(1, 12)]
+			end
+			killer:SetAttribute("LastVictim", name)
+			killer:SetAttribute("LastVictimAt", os.time())
+		end)
 		Heat.addCrime(killer, "CopKilled")
 	end
 	if self.onDied then
@@ -10621,6 +10631,7 @@ function Justice.jail(player: Player, officer: Player?, preferredTransport: any?
 	-- v242: the permanent record; repeat offenders get longer
 	if Justice.Records then
 		local okR, idx = pcall(Justice.Records.addArrest, player, { charges = text, stars = stars, route = scene.route,
+			incidents = if Justice.CaseFile then Justice.CaseFile.summaries(player) else nil,
 			complied = scene.complied, turnedIn = scene.turnedIn, where = Justice.placeName(scene.pos or Vector3.zero) })
 		if okR then scene.recIndex = idx end
 		local priors = Justice.Records.priorArrests(player)
@@ -14036,13 +14047,28 @@ function Justice.init()
 				pcall(BL.init,{tell=tell,charge=charge,payBank=payBank,Records=Justice.Records})
 			else warn("[Bail] failed to load: "..tostring(BL)) end
 		end
+		-- v263b: the case file - every crime with its victim, place, time, weapon, witnesses + location tracking
+		local cfm=script:FindFirstChild("CaseFile")
+		if cfm then
+			local ok,CFm=pcall(require,cfm)
+			if ok then
+				Justice.CaseFile=CFm
+				pcall(CFm.init,{placeName=Justice.placeName,inBuilding=function(pos: Vector3): boolean
+					local F=Justice.Facilities
+					if not F then return false end
+					local okZ,_,b=pcall(F.zoneAt,pos)
+					return okZ and b~=nil
+				end})
+				State.onCrime=CFm.onCrime
+			else warn("[CaseFile] failed to load: "..tostring(CFm)) end
+		end
 		-- v263: the day in court at the Clark County Courthouse (arraignment, plea, bench / jury trial)
 		local cm=script:FindFirstChild("Court")
 		if cm then
 			local ok,CM=pcall(require,cm)
 			if ok then
 				Justice.Court=CM
-				pcall(CM.init,{Records=Justice.Records})
+				pcall(CM.init,{Records=Justice.Records,CaseFile=Justice.CaseFile})
 				-- court dates for defendants out on bail are heard at the courthouse now
 				if Justice.Bail and Justice.Bail.setCourt then
 					pcall(Justice.Bail.setCourt, CM, function(p: Player, sec: number, txt: string, idx: number?) return PrisonFlow.remand(p, sec, txt, idx) end)
@@ -14055,7 +14081,11 @@ function Justice.init()
 		if im then
 			local ok,IM=pcall(require,im)
 			if ok then
-				Justice.Interrogation=IM;State.onCrime=IM.onCrime
+				Justice.Interrogation=IM
+				State.onCrime=function(...)
+					pcall(IM.onCrime,...)
+					if Justice.CaseFile then pcall(Justice.CaseFile.onCrime,...) end
+				end
 				IM.init({F=Justice.Facilities,Heat=Heat,
 					inCustody=function(p) return custody[p]==true or PrisonFlow.hq[p]~=nil or sentenceEnd[p]~=nil end})
 			else warn("[Interrogation] failed to load: "..tostring(IM)) end

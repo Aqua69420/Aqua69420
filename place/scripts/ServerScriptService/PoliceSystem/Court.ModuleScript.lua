@@ -56,8 +56,10 @@ local FIRM_TIER = {
 }
 
 local Records: any = nil
+local CaseFile: any = nil
 function Court.init(c: any)
 	Records = c.Records
+	CaseFile = c.CaseFile
 end
 
 ---------------------------------------------------------------------------
@@ -198,7 +200,60 @@ local function isCapital(text: string): boolean
 	return t:find("death row", 1, true) ~= nil or t:find("5 police", 1, true) ~= nil or t:find("five police", 1, true) ~= nil
 end
 
--- the State's evidence, built from the real arrest and interview
+-- v263b: the DA builds the case from the case file - the real incidents: witnesses, officers who
+-- saw it, the seized weapon (ballistics), security cameras, cell-tower records, other incidents.
+-- -> evidence pieces (strongest first), and how much they add to the case's strength
+local function caseEvidence(player: Player, incidents: { any }, iv: any?): ({ any }, number)
+	local top = incidents[1]
+	if not top then return {}, 0 end
+	local items = {}
+	local function add(line: string, kind: string, weight: number) table.insert(items, { line = line, kind = kind, weight = weight }) end
+	local who = if top.victim then top.victim else "the victim"
+	local deadly = top.crime == "Murder" or top.crime == "CopKilled"
+	if top.officers > 0 then
+		add(("%d police officer%s saw %s at %s, %s."):format(top.officers, if top.officers == 1 then "" else "s", top.charge, top.place, top.clock), "officer", 0.08)
+	end
+	if top.witnesses > 0 then
+		add(("%d witness%s place you at %s around %s. One of them is here to testify."):format(top.witnesses, if top.witnesses == 1 then "" else "es", top.place, top.clock), "witness", 0.04 * math.min(top.witnesses, 4))
+	end
+	local seized = tostring(player:GetAttribute("SeizedProperty") or "")
+	if top.weapon and deadly then
+		local matched = seized:find(top.weapon, 1, true) ~= nil
+		add(if matched then ("The %s taken from you at your arrest. Ballistics match the bullet that killed %s."):format(top.weapon, who)
+			else ("Shell casings from a %s at the scene - the same kind of gun witnesses saw in your hand."):format(top.weapon), "physical", if matched then 0.12 else 0.06)
+	elseif top.weapon then
+		add(("The %s you were carrying at %s."):format(top.weapon, top.place), "physical", 0.05)
+	end
+	if top.camera then
+		add(("Security cameras at %s recorded it - time-stamped %s."):format(top.place, top.clock), "video", 0.1)
+	end
+	if CaseFile then
+		local trail = CaseFile.trail(player, top.t, 360)
+		if #trail >= 1 then
+			local stops = {}
+			for i = math.max(1, #trail - 2), #trail do
+				table.insert(stops, ("%s (%s)"):format(trail[i].place, trail[i].clock))
+			end
+			add("Cell-tower records put your phone at " .. table.concat(stops, ", then ") .. ".", "tracking", 0.05)
+		end
+	end
+	if iv and iv.confessed then
+		add("The recording of your statement in the interview room.", "statement", 0.15)
+	end
+	if iv and iv.named and #iv.named > 0 then
+		add(("A sworn statement from %s naming you."):format(tostring(iv.named[1])), "witness", 0.05)
+	end
+	if #incidents > 1 then
+		add(("A pattern: %d other incident%s - including %s."):format(#incidents - 1, if #incidents == 2 then "" else "s",
+			if CaseFile then CaseFile.describe(incidents[2]) else incidents[2].charge), "record", 0.04)
+	end
+	table.sort(items, function(a, b) return a.weight > b.weight end)
+	local bonus = 0
+	for _, it in items do bonus += it.weight end
+	return items, math.min(bonus, 0.3)
+end
+
+-- the State's evidence, built from the real arrest and interview (when there's no case file)
 local function evidence(text: string, iv: any?): { { line: string, kind: string } }
 	local list = {}
 	local first = (text:split(",")[1] or text):gsub("^%s+", "")
@@ -248,6 +303,8 @@ function Court.run(player: Player, ctx: any): any
 	local capital = isCapital(text)
 	local priors = tonumber(ctx.priors) or 0
 	local iv = ctx.interview
+	local incidents = if CaseFile then CaseFile.caseFor(player) else {}
+	local items, evidenceBonus = caseEvidence(player, incidents, iv)
 	local npcs: { Model } = {}
 	local function add(m: Model?): Model?
 		if m then table.insert(npcs, m) end
@@ -360,12 +417,25 @@ function Court.run(player: Player, ctx: any): any
 			(if rec.court.lastVerdict == "not guilty" then "Back again. Last time you walked out of here. Not today."
 				else "Back in my courtroom. I remember you.")
 			else judge.greet
-		card(player, judge.name, {
-			greet,
-			("The People of the State of Nevada v. %s."):format(player.DisplayName),
-			("Charges: %s."):format(text),
-			("Maximum sentence: %s.%s"):format(clock(maxSecs), if capital then " This is a capital case." else ""),
-		}, { "Continue" })
+		local reading = { greet, ("The People of the State of Nevada v. %s."):format(player.DisplayName) }
+		if #incidents > 0 and CaseFile then
+			for i = 1, math.min(4, #incidents) do
+				table.insert(reading, ("Count %d: %s."):format(i, CaseFile.describe(incidents[i])))
+			end
+			if #incidents > 4 then
+				table.insert(reading, ("...and %d more count%s."):format(#incidents - 4, if #incidents == 5 then "" else "s"))
+			end
+		else
+			table.insert(reading, ("Charges: %s."):format(text))
+		end
+		table.insert(reading, ("Maximum sentence: %s.%s"):format(clock(maxSecs), if capital then " This is a capital case." else ""))
+		card(player, judge.name, reading, { "Continue" })
+		-- discovery: counsel walks you through what the DA has
+		if #items > 0 then
+			local lines = { "Here's what the DA has on you:" }
+			for i = 1, math.min(4, #items) do table.insert(lines, "- " .. items[i].line) end
+			card(player, firm .. " (your lawyer)", lines, { "OK" })
+		end
 		if not alive() then return end
 
 		------------------------------------------------------------ 4. plea
@@ -392,7 +462,7 @@ function Court.run(player: Player, ctx: any): any
 		offerScale += math.min(0.2, 0.05 * priors)
 		offerScale = math.clamp(offerScale, 0.3, 0.95)
 		local offer = if capital or ctx.minor then nil else math.floor(secs * offerScale)
-		local strength = caseStrength(ctx, tier, prepared)
+		local strength = math.clamp(caseStrength(ctx, tier, prepared) + evidenceBonus, 0.1, 0.97)
 		if not ctx.minor then
 			local pick = card(player, judge.name, { "How do you plead?" }, { "Not guilty", "Guilty", "Let my lawyer speak first" })
 			if not alive() then return end
@@ -477,7 +547,14 @@ function Court.run(player: Player, ctx: any): any
 		end
 		local lean = strength + judge.tilt
 		local testified = false
-		for i, ev in evidence(text, iv) do
+		-- the DA's three strongest pieces (from the case file), topped up with the general ones
+		local pieces = {}
+		for i = 1, math.min(3, #items) do table.insert(pieces, items[i]) end
+		for _, ev in evidence(text, iv) do
+			if #pieces >= 3 then break end
+			table.insert(pieces, ev)
+		end
+		for i, ev in pieces do
 			if not alive() then return end
 			ctx.tell(("%s presents the State's evidence (%d/3)"):format(prosecutor, i))
 			local opts = { "Object!", "Challenge the evidence", "Testify", "Stay silent" }
@@ -495,9 +572,14 @@ function Court.run(player: Player, ctx: any): any
 				end
 			elseif what == "Challenge the evidence" then
 				local chance = 0.25 + 0.07 * tier + (if ev.kind == "statement" and iv and iv.violation then 0.3 else 0)
+					+ (if ev.kind == "tracking" then 0.15 elseif ev.kind == "witness" then 0.08 elseif ev.kind == "video" or ev.kind == "physical" then -0.1 else 0)
 				if math.random() < chance then
 					lean -= 0.12
-					card(player, firm, { if ev.kind == "statement" then "That statement wasn't taken by the book - and they know it." else "We just put a hole in that." }, { "OK" })
+					card(player, firm, { if ev.kind == "statement" then "That statement wasn't taken by the book - and they know it."
+						elseif ev.kind == "tracking" then "A cell tower covers half the city. That proves nothing."
+						elseif ev.kind == "witness" then "Their witness admitted it was dark and they were across the street."
+						elseif ev.kind == "physical" then "The chain of custody on that evidence has a gap. They know it."
+						else "We just put a hole in that." }, { "OK" })
 				else
 					lean += 0.02
 					card(player, firm, { "That didn't land. Let's move on." }, { "OK" })
@@ -584,6 +666,13 @@ function Court.run(player: Player, ctx: any): any
 				if some then "On some of the counts." else "On all counts.",
 				("Sentence: %s."):format(clock(result.secs)),
 			}, { "..." })
+			-- the victim's family speaks at a murder sentencing
+			local top = incidents[1]
+			if top and top.victim and (top.crime == "Murder" or top.crime == "CopKilled") then
+				card(player, ("%s's family"):format(top.victim), {
+					("Every day we wake up and %s isn't there. I hope you think about that, every day you're inside."):format(top.victim:split(" ")[1]),
+				}, { "..." })
+			end
 		elseif verdict == "dismissed" then
 			result = { verdict = "dismissed", secs = 0, judge = judge.name }
 			card(player, judge.name, { "The State has dropped the charges. You're free to go." }, { "OK" })
@@ -613,6 +702,7 @@ function Court.run(player: Player, ctx: any): any
 	if Records and Records.touch then pcall(Records.touch, player) end
 	player:SetAttribute("CourtJudge", nil)
 	player:SetAttribute("CasePrepared", nil)
+	if CaseFile then CaseFile.close(player) end -- the case is over: a fresh file for whatever comes next
 	print(("[Court] VERDICT %s: %s, %ds (%s)"):format(player.Name, result.verdict, result.secs, judge.name))
 	return result
 end
