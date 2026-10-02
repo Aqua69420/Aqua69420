@@ -5592,8 +5592,33 @@ function Van:crewLost()
 end
 
 function Van:groundY(x: number, z: number, near: number): number
-	local hit = Util.groundAt(Vector3.new(x, near, z), 10, 30)
-	return if hit then hit.Y else near
+	-- the road under the cruiser, never another vehicle: the ray used to land on a car the
+	-- cruiser was alongside / over (player, traffic or police) and the cruiser hopped onto it
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local ignore = { self.model }
+	for _, r in Util.ignoreRoots do table.insert(ignore, r) end
+	for _, c in Util.playerCharacters() do table.insert(ignore, c) end
+	local spawned = Workspace:FindFirstChild("SpawnedCars")
+	if spawned then table.insert(ignore, spawned) end
+	params.FilterDescendantsInstances = ignore
+	params.IgnoreWater = true
+	local origin = Vector3.new(x, near + 10, z)
+	for _ = 1, 8 do
+		local hit = Workspace:Raycast(origin, Vector3.new(0, -40, 0), params)
+		if not hit then return near end
+		local inst = hit.Instance
+		local model = inst:FindFirstAncestorWhichIsA("Model")
+		local vehicle = inst.CollisionGroup == "PoliceVehicle"
+			or (model ~= nil and model ~= Workspace and (model:GetAttribute("TrafficCarType") ~= nil or model:GetAttribute("TrafficActive") ~= nil
+				or model:GetAttribute("CustodyTransport") ~= nil or model:FindFirstChildWhichIsA("VehicleSeat", true) ~= nil))
+		if vehicle or (inst:IsA("BasePart") and not inst:IsA("Terrain") and inst.Transparency >= 0.6) then
+			params:AddToFilter(if vehicle and model then model else inst)
+			continue
+		end
+		return hit.Position.Y
+	end
+	return near
 end
 
 function Van:drive(route: { Vector3 }, stopShort: number, goalFn: (() -> Vector3?)?, onArrive: (any, { CFrame }) -> ())

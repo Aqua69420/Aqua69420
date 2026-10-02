@@ -144,9 +144,39 @@ function M.new(car: Model, seat: BasePart, h: any, metersToStuds: number): any
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = { car }
 	params.RespectCanCollide = true
+
+	-- Yaw inertia (measured: the Sports Car resisted spinning only 0.48x as much as a real
+	-- car its size - its mass sits in the middle). The server measures what Roblox has
+	-- against m (L^2 + W^2) / 12 and stamps the ratio; the turning part of every tyre
+	-- force is scaled by it, so handbrake turns and steering rotate the car like a real one.
+	local yawScale = 1
+	local stamped = seat:GetAttribute("GTAYawScale")
+	if type(stamped) == "number" then
+		yawScale = stamped
+	elseif game:GetService("RunService"):IsServer() then
+		local com = seat.AssemblyCenterOfMass
+		local upV = seat.CFrame.UpVector
+		local iRb = 0
+		for _, p in car:GetDescendants() do
+			if p:IsA("BasePart") and not p.Massless and p.AssemblyRootPart == seat.AssemblyRootPart then
+				local m = p:GetMass()
+				local d = p.Position - com
+				d -= upV * d:Dot(upV)
+				iRb += m * d:Dot(d) + m * (p.Size.X * p.Size.X + p.Size.Z * p.Size.Z) / 12
+			end
+		end
+		local _, size = car:GetBoundingBox()
+		local L, W = math.max(size.X, size.Z), math.min(size.X, size.Z)
+		local iReal = seat.AssemblyMass * (L * L + W * W) / 12
+		if iRb > 0 and iReal > 0 then
+			yawScale = math.clamp(iRb / iReal, 0.1, 1)
+		end
+		seat:SetAttribute("GTAYawScale", yawScale)
+		print(("[GTAHandling] %s: turning resistance %.2fx a real car -> turning forces x%.2f"):format(car.Name, iRb / math.max(iReal, 1), yawScale))
+	end
 	return {
 		car = car, seat = seat, h = h, S = metersToStuds, wheels = wheels, fronts = math.max(1, fronts), rears = math.max(1, rears),
-		spins = spins, steers = steers, params = params, steer = 0, gear = 1, rpm = 0,
+		spins = spins, steers = steers, params = params, steer = 0, gear = 1, rpm = 0, yawScale = yawScale,
 		anti = seat:FindFirstChild("GTAAntiGravity"), steerDirection = seat:GetAttribute("SteerDirection") or 1,
 	}
 end
@@ -162,6 +192,16 @@ end
 
 local function sign(x: number): number
 	return if x > 0 then 1 elseif x < 0 then -1 else 0
+end
+
+-- a tyre impulse: the push through the centre of mass in full, its spin around the car's
+-- up axis scaled to a real car's inertia (roll and pitch untouched)
+local function push(st: any, impulse: Vector3, at: Vector3, up: Vector3)
+	local seat = st.seat
+	local angular = (at - seat.AssemblyCenterOfMass):Cross(impulse)
+	local yaw = up * angular:Dot(up)
+	seat:ApplyImpulse(impulse)
+	seat:ApplyAngularImpulse((angular - yaw) + yaw * st.yawScale)
 end
 
 -- input = { throttle = -1..1 (S = brake / reverse), steer = -1..1, handbrake = bool }
@@ -295,7 +335,7 @@ function M.step(st: any, dt: number, input: any): any
 			w.slipping = true
 			w.spin = 0
 			local at = hit.Position + up * (w.radius * 0.5)
-			seat:ApplyImpulseAtPosition((up * Nspring + wf * fl + wr * fr) * dt, at)
+			push(st, (up * Nspring + wf * fl + wr * fr) * dt, at, up)
 			continue
 		end
 		-- longitudinal: engine (by drive bias), brakes (by brake bias), rolling
@@ -321,7 +361,7 @@ function M.step(st: any, dt: number, input: any): any
 		w.spin = vf / w.radius + (if w.slipping and drive ~= 0 and fLong * drive > 0 then drive * 25 else 0)
 		-- forces act a little above the contact patch (GTA IV's body roll, without tipping every corner)
 		local at = hit.Position + up * (w.radius * 0.5)
-		seat:ApplyImpulseAtPosition((up * Nspring + wf * fLong + wr * fLat) * dt, at)
+		push(st, (up * Nspring + wf * fLong + wr * fLat) * dt, at, up)
 	end
 
 	-- aerodynamic drag: grows with speed squared
