@@ -31,6 +31,7 @@ M.BodyRoll = 1 -- 1 = GTA IV's lean / nose dive / squat from its suspension valu
 -- a normal GTA IV car's proportions (metres): every frame leans and turns as if its wheels
 -- were this far apart, whatever the Roblox model's size (replace per car once the real
 -- IV model dimensions are in)
+M.NormalizeProportions = false
 M.RefTrack = 1.55
 M.RefWheelbase = 2.65
 
@@ -155,8 +156,10 @@ function M.new(car: Model, seat: BasePart, h: any, metersToStuds: number): any
 	-- lean, dive and the turning circle are worked out as if the wheels were there
 	local track = math.max(maxX - minX, 0.5)
 	local wheelbase = math.max(math.abs(rearZ / math.max(1, rears) - frontZ / math.max(1, fronts)), 1)
-	local trackRatio = track / (M.RefTrack * metersToStuds)
-	local wbRatio = wheelbase / (M.RefWheelbase * metersToStuds)
+	-- (off by default: scaling lean / turning to "normal" proportions took the body's
+	-- lean and dive away and the cars felt weightless - the user tested it worse)
+	local trackRatio = if M.NormalizeProportions then track / (M.RefTrack * metersToStuds) else 1
+	local wbRatio = if M.NormalizeProportions then wheelbase / (M.RefWheelbase * metersToStuds) else 1
 	local spins, steers = {}, {}
 	for _, obj in car:GetDescendants() do
 		if obj:IsA("HingeConstraint") then
