@@ -81,6 +81,10 @@ function B.amountFor(player: Player, info: any): (number?, string?)
 	if info.turnedIn then
 		amount *= CFG.TurnedInScale
 	end
+	-- v257: a lawyer on retainer argues bail down
+	if player:GetAttribute("CounselRetained") then
+		amount *= 0.8
+	end
 	return math.floor(amount / 50 + 0.5) * 50, nil
 end
 
@@ -176,6 +180,24 @@ function B.desk(player: Player): boolean
 	return false
 end
 
+-- v256: court reminders come in as a phone call (Clark County Court); the old
+-- notice is the fallback when the phone system isn't there
+local function courtCall(player: Player, text: string)
+	local phone = game:GetService("ServerStorage"):FindFirstChild("Phone")
+	if phone and phone:IsA("BindableFunction") then
+		task.spawn(function()
+			local ok = pcall(phone.Invoke, phone, "call", player, {
+				from = "Clark County Court", kind = "court",
+				lines = { text, "Failure to appear will result in a warrant for your arrest." },
+				options = { "I'll be there" }, expires = CFG.CourtWindow + 5 * 60,
+			})
+			if not ok then ctx.tell(player, "Notice", text) end
+		end)
+	else
+		ctx.tell(player, "Notice", text)
+	end
+end
+
 -- court dates: reminders, and failures to appear
 local function failToAppear(player: Player, p: any)
 	savePending(player, nil)
@@ -226,14 +248,19 @@ function B.init(c: any)
 				local p = B.pending(player)
 				if p then
 					player:SetAttribute("CourtDateAt", p.due)
+					if not p.warnedPost and now > (tonumber(p.due) or now) - CFG.CourtIn + 30 then
+						-- v256: the court calls once after release to confirm the date
+						p.warnedPost = true
+						courtCall(player, ("This is the Clark County Court. You are scheduled to appear in %d minute(s) at the Police HQ front desk."):format(math.max(1, math.ceil((p.due - now) / 60))))
+					end
 					if now > p.due + CFG.CourtWindow then
 						failToAppear(player, p)
 					elseif not p.warned5 and now > p.due - 5 * 60 then
 						p.warned5 = true
-						ctx.tell(player, "Notice", "Reminder: your court date is in 5 minutes - Police HQ front desk")
+						courtCall(player, "Reminder: your court date is in 5 minutes - Police HQ front desk.")
 					elseif not p.warned0 and now >= p.due then
 						p.warned0 = true
-						ctx.tell(player, "Notice", ("Court is now - you have %d minutes to get to the Police HQ front desk"):format(CFG.CourtWindow // 60))
+						courtCall(player, ("Your case is being called NOW. You have %d minutes to get to the Police HQ front desk."):format(CFG.CourtWindow // 60))
 					end
 				end
 			end

@@ -25,11 +25,15 @@ local M = {}
 -- tuning knobs (GTAHandlingData.TopSpeedScale / AccelScale override these)
 M.TopSpeedScale = 1.2 -- real top speed vs handling.dat Tv (IV runs ~20% past it)
 M.AccelScale = 1.0 -- 1.0 = GTA IV 0-100 times
+M.GripScale = 1.45 -- tyre grip vs raw handling.dat (1.0 slid everywhere on Roblox roads)
+M.SlideGrip = 0.85 -- grip left once a tyre slides past its peak, as a share of peak grip
 
 function M.configure(data: any)
 	if type(data) == "table" then
 		M.TopSpeedScale = tonumber(data.TopSpeedScale) or M.TopSpeedScale
 		M.AccelScale = tonumber(data.AccelScale) or M.AccelScale
+		M.GripScale = tonumber(data.GripScale) or M.GripScale
+		M.SlideGrip = tonumber(data.SlideGrip) or M.SlideGrip
 	end
 end
 
@@ -282,6 +286,7 @@ function M.step(st: any, dt: number, input: any): any
 		local hit = workspace:Raycast(origin, -up * rayLen, st.params)
 		if not hit then
 			w.contact = false
+			w.hitPos = nil -- skid marks: no ground under this tyre
 			-- forget the old compression: landing again from 0 read as a huge compression
 			-- speed, the damper fired a spike and the car hopped
 			w.lastComp = nil
@@ -290,6 +295,8 @@ function M.step(st: any, dt: number, input: any): any
 		end
 		contacts += 1
 		w.contact = true
+		w.hitPos = hit.Position -- skid marks are laid here (CarDriveClient)
+		w.hitNormal = hit.Normal
 		local dist = (hit.Position - origin).Magnitude
 		local comp = math.clamp((rayLen - dist) / travel, 0, 1.6)
 		-- spring: at rest a wheel sits about half way through its travel (suspForce 2)
@@ -323,7 +330,8 @@ function M.step(st: any, dt: number, input: any): any
 		local pv = seat:GetVelocityAtPosition(hit.Position)
 		local vf, vr = pv:Dot(wf), pv:Dot(wr)
 		local tBias = (if w.front then h.tractionBiasFront else 1 - h.tractionBiasFront) * 2
-		local muMax, muMin = h.tractionMax * tBias, h.tractionMin * tBias
+		local muMax = h.tractionMax * tBias * M.GripScale
+		local muMin = math.max(h.tractionMin * tBias * M.GripScale, muMax * M.SlideGrip)
 		local handbrake = input.handbrake == true and not w.front
 		-- lateral: grip builds with slip angle to the peak, then falls to the sliding grip
 		local slip = math.atan2(math.abs(vr), math.max(math.abs(vf), 3))
@@ -346,6 +354,7 @@ function M.step(st: any, dt: number, input: any): any
 			fl = sign(fl) * math.min(math.abs(fl), math.abs(vf) * wheelMass / dt)
 			fr = sign(fr) * math.min(math.abs(fr), math.abs(vr) * wheelMass / dt)
 			w.slipping = true
+			w.locked = true
 			w.spin = 0
 			local at = hit.Position + up * (w.radius * 0.5)
 			push(st, up * Nspring * springDt + (wf * fl + wr * fr) * dt, at, up)
@@ -365,6 +374,8 @@ function M.step(st: any, dt: number, input: any): any
 		local gripLimit = math.max(muMax, 0.1) * N
 		local total = math.sqrt(fLong * fLong + fLat * fLat)
 		w.slipping = false
+		w.locked = false
+		w.slipSpeed = math.abs(vr) -- sideways slide speed (skid marks)
 		if total > gripLimit and total > 0 then
 			local s = gripLimit / total
 			fLong *= s

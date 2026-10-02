@@ -218,6 +218,34 @@ function Knowledge.predictedPath(inc: any): { Vector3 }?
 	return if k.predicted then k.predicted.pts else nil
 end
 
+-- v258: last seen inside a mapped building (bank vault, store...) and still in it = contained.
+-- The perimeter would see them leave, so police keep searching the building instead of
+-- extrapolating a getaway; confidence drains far slower.
+local Fac: any = nil
+local function facilities(): any?
+	if Fac == nil then
+		Fac = false
+		local mod = script.Parent and script.Parent.Parent and script.Parent.Parent:FindFirstChild("Facilities")
+		if mod then
+			local ok, F = pcall(require, mod)
+			if ok then Fac = F end
+		end
+	end
+	return Fac or nil
+end
+
+local function containedIn(inc: any, k: any): any?
+	local F = facilities()
+	if not F or not k.obsPos then return nil end
+	local ok, b = pcall(F.buildingAt, k.obsPos)
+	if not ok or not b or b.type == "City" then return nil end
+	local char = inc.player and inc.player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return nil end
+	local ok2, cur = pcall(F.buildingAt, root.Position)
+	return if ok2 and cur == b then b else nil
+end
+
 function Knowledge.update(inc: any, dt: number, now: number)
 	local k = inc.knowledge
 	local T = Tuning.Knowledge
@@ -241,6 +269,16 @@ function Knowledge.update(inc: any, dt: number, now: number)
 		level = L.RECENT
 		k.conf = math.max(k.conf - dt * 0.02, 0.8)
 		k.pos = k.obsPos + flat(k.vel) * math.min(sinceAny, 1.5)
+	elseif containedIn(inc, k) then
+		-- v258: building contained - search it, no getaway extrapolation
+		level = if sinceAny <= T.PredictWindow then L.PREDICTED else L.SEARCHING
+		k.pos = k.obsPos
+		if inc.player:GetAttribute("BankScene") then
+			-- active bank robbery scene: full response until the building is cleared
+			k.conf = math.max(k.conf, 0.6)
+		else
+			k.conf = math.max(0, k.conf - (T.SearchDecay[stars] or 0.04) * (T.ContainedDecayScale or 0.1) * dt)
+		end
 	elseif sinceAny <= T.PredictWindow then
 		level = L.PREDICTED
 		k.conf = math.max(0, k.conf - T.PredictDecay * dt)

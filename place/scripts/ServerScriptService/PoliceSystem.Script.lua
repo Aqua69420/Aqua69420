@@ -6922,6 +6922,73 @@ local function buildApi()
 		end
 	end)
 
+	-- v258: BankSweep:Invoke(buildingType, extraPoints?) -> true when the building is cleared.
+	-- A SWAT stack spawns at the nearest road, runs in and clears every mapped room (plus
+	-- extra points, e.g. the vault floor), guns out, then leaves. Yields until done.
+	local sweeping: { [string]: boolean } = {}
+	local sweep = Instance.new("BindableFunction")
+	sweep.Name = "BankSweep"
+	sweep.Parent = folder
+	sweep.OnInvoke = function(ftype: any, extra: any): boolean
+		ftype = tostring(ftype or "Bank")
+		if sweeping[ftype] then return false end
+		local F = State.Facilities
+		local b = F and F.get(ftype)
+		local rooms: { Vector3 } = {}
+		if b then for _, z in b.zones do table.insert(rooms, z.center) end end
+		if type(extra) == "table" then for _, p in extra do if typeof(p) == "Vector3" then table.insert(rooms, p) end end end
+		if #rooms == 0 then return false end
+		sweeping[ftype] = true
+		local center = Vector3.zero
+		for _, p in rooms do center += p end
+		center /= #rooms
+		local RG = __require("RoadGraph")
+		local node = RG.ready and RG.nearest(center, 400)
+		local entry = (node and RG.nodePos(node)) or (center + Vector3.new(40, 0, 0))
+		-- nearest room first, then nearest-neighbour order
+		local order, left, at = {}, table.clone(rooms), entry
+		while #left > 0 do
+			local bi, bd = 1, math.huge
+			for i, p in left do local d = (p - at).Magnitude; if d < bd then bi, bd = i, d end end
+			at = table.remove(left, bi); table.insert(order, at)
+		end
+		print(("[PoliceAI] SCENE SWEEP %s: SWAT stack clearing %d room(s)"):format(ftype, #order))
+		local team = {}
+		for i = 1, 4 do
+			local g = Util.groundAt(entry + Vector3.new((i - 2.5) * 3, 0, 0), 10, 40) or entry
+			local ok, cop = pcall(CopAI.new, "SWAT", CFrame.lookAt(g, g + Util.safeUnit(Util.flat(center - g), Vector3.zAxis)), { role = "SWAT", dormant = true })
+			if ok and cop then
+				pcall(function() cop.root:SetNetworkOwner(nil) end)
+				pcall(cop.setGunOut, cop, true)
+				table.insert(team, cop)
+			end
+		end
+		local function walkAll(goal: Vector3, limit: number)
+			local deadline = os.clock() + limit
+			while os.clock() < deadline do
+				local moving = false
+				for i, cop in team do
+					if cop.model and cop.model.Parent and cop.hum and cop.hum.Health > 0 then
+						local off = Vector3.new((i - 2.5) * 2.5, 0, 0) -- loose stack around the point
+						local ok, s = pcall(cop.moveTo, cop, goal + off, true)
+						if ok and s == "moving" then moving = true end
+					end
+				end
+				if not moving then break end
+				task.wait(0.25)
+			end
+		end
+		for _, room in order do
+			walkAll(room, 20)
+			task.wait(1.5) -- hold and clear corners
+		end
+		walkAll(entry, 25)
+		for _, cop in team do pcall(cop.despawn, cop, "scene cleared") end
+		sweeping[ftype] = nil
+		print(("[PoliceAI] SCENE SWEEP %s: clear"):format(ftype))
+		return true
+	end
+
 	local getWanted = Instance.new("BindableFunction")
 	getWanted.Name = "GetWanted"
 	getWanted.Parent = folder
@@ -10617,7 +10684,7 @@ function Justice.jail(player: Player, officer: Player?, preferredTransport: any?
 			-- v242: serious cases are booked at HQ first; the prison transport then leaves from HQ
 			local caseData = bookingCase[player]
 			local okHQ, res = pcall(PrisonFlow.hqCustody, player, secs, text,
-				{ mode = "transfer", stars = stars, complied = scene.complied, turnedIn = scene.turnedIn, recIndex = scene.recIndex })
+				{ mode = "transfer", stars = stars, complied = scene.complied, turnedIn = scene.turnedIn, recIndex = scene.recIndex, keys = keys })
 			if okHQ and res == true then return end -- escaped / left during the HQ stop
 			if not okHQ or res ~= "transfer" then
 				warn("[Custody] HQ booking stop failed for "..player.Name.." ("..tostring(res)..") - straight to prison")
@@ -10629,7 +10696,10 @@ function Justice.jail(player: Player, officer: Player?, preferredTransport: any?
 				if okT and resT == true then return end
 				if not okT then warn("[Custody] transfer holding failed for "..player.Name..": "..tostring(resT)) end
 				-- v246/v249: the interview changes the case (deals, false statements)
-				local ir = tOpts.result
+				-- v257b: the interview now happens at Police HQ (hqCustody); the City Jail one is the fallback
+				local ir = tOpts.result or (PrisonFlow.interviews and PrisonFlow.interviews[player])
+				if PrisonFlow.interviews then PrisonFlow.interviews[player] = nil end
+				player:SetAttribute("InterviewDone", nil)
 				if ir then
 					secs = math.max(20, math.floor(secs * (ir.secsScale or 1)))
 					if ir.extraCharges and #ir.extraCharges > 0 then text = text .. ", " .. table.concat(ir.extraCharges, ", ") end
@@ -10847,6 +10917,56 @@ end
 
 -- v241c: the cruiser ride to HQ, owned by PoliceSystem (PrisonExtras' X.ride only exists
 -- once the prison nav has built, ~50 s after start, so early arrests were teleported)
+-- v258: the lawyer visit after "I want a lawyer" in the interview room. Retained counsel
+-- (LawFirms) if you have it, otherwise the Public Defender. Yields while you talk.
+function PrisonFlow.lawyerVisit(player: Player, res: any, text: string, alive: () -> boolean)
+	local SS = game:GetService("ServerStorage")
+	local law = SS:FindFirstChild("LawFirms")
+	local phone = SS:FindFirstChild("Phone")
+	if not (phone and phone:IsA("BindableFunction")) then return end
+	local firm = nil
+	if law and law:IsA("BindableFunction") then
+		local ok, f = pcall(law.Invoke, law, "retained", player)
+		if ok and type(f) == "string" then firm = f end
+	end
+	firm = firm or tostring(player:GetAttribute("LawyerFirm") or "Public Defender")
+	player:SetAttribute("BookingState", "LawyerVisit")
+	player:SetAttribute("LawyerPresent", true)
+	tell(player, "Custody", "Your lawyer is here - " .. firm)
+	print(("[Custody] LAWYER VISIT %s with %s"):format(player.Name, firm))
+	task.wait(2)
+	local function card(lines: { string }, options: { string }): number?
+		if not alive() then return nil end
+		local ok, how, idx = pcall(phone.Invoke, phone, "dialog", player, { from = firm, lines = lines, options = options })
+		return if ok and how == "answered" then idx else nil
+	end
+	local cheap = firm == "Public Defender"
+	local pick = card({
+		if cheap then "Public Defender's office. I've got your file - I have twelve more today, so let's be quick." else "I came as fast as I could. Don't say another word to them without me.",
+		"Charges: " .. (if text ~= "" then text else "pending"),
+		if res.confessed then "You talked before asking for me. That hurts us, but we'll work with it." else "Good - you asked for me before you said anything. That matters.",
+	}, { "What happens now?", "Can you get me out?", "I want a better lawyer", "That's all" })
+	for _ = 1, 4 do
+		if pick == 1 then
+			pick = card({ "They're transferring you to the State Prison to wait for trial.", "Serious charges mean no bail at this stage. Keep your head down, say nothing about the case on the phones - they're recorded." },
+				{ "Can you get me out?", "I want a better lawyer", "That's all" })
+			pick = if pick then pick + 1 else nil
+		elseif pick == 2 then
+			pick = card({ if cheap then "Honestly? Not today. I'll file for a bail hearing, but on these charges don't count on it." else "I'll push for a bail hearing and go after their evidence. No promises, but this isn't over." },
+				{ "What happens now?", "I want a better lawyer", "That's all" })
+			pick = if pick == 1 then 1 elseif pick == 2 then 3 elseif pick == 3 then 4 else nil
+		elseif pick == 3 then
+			if law then pcall(law.Invoke, law, "menu", player) end
+			task.wait(8)
+			break
+		else
+			break
+		end
+	end
+	if law and not cheap then pcall(law.Invoke, law, "bill", player, "meeting") end
+	print(("[Custody] LAWYER VISIT %s done"):format(player.Name))
+end
+
 function PrisonFlow.hqRide(player: Player, dest: Vector3, alive: () -> boolean): string
 	local char, hum, root = Util.charInfo(player)
 	if not char or not hum or not root then return "no character" end
@@ -10914,7 +11034,10 @@ function PrisonFlow.hqRide(player: Player, dest: Vector3, alive: () -> boolean):
 		if Util.flat(body.Position - dest).Magnitude < 25 then break end
 		if os.clock() > deadline then how = "timeout"; break end
 		if Util.flat(body.Position - lastPos).Magnitude > 4 then lastPos, lastMove = body.Position, os.clock() end
-		if os.clock() - lastMove > 15 then how = "stuck"; break end
+		-- v258: stopped near the destination = arrived; stopped elsewhere = give up fast
+		local still = os.clock() - lastMove
+		if still > 2 and Util.flat(body.Position - dest).Magnitude < 120 then how = "stuck"; break end
+		if still > 5 then how = "stuck"; break end
 		task.wait(0.5)
 	end
 	if not started then how = "no route" end
@@ -11162,6 +11285,48 @@ function PrisonFlow.hqCustody(player: Player, secs: number, text: string, opts: 
 
 	-- 3. decision
 	if opts.mode == "transfer" then
+		-- v257b: the interview at Police HQ (Interrogation rooms), after booking
+		local IM = Justice.Interrogation
+		if IM and opts.keys and F.zone("PoliceHQ", "Interrogation") then
+			local should, why = IM.shouldInterrogate(player, opts.keys, tonumber(opts.stars) or 3)
+			local room = if should then IM.reserveRoom(player, "PoliceHQ") else nil
+			print(("[Custody] INTERROGATION (HQ) %s: %s (%s)%s"):format(player.Name, tostring(should), why,
+				if should and not room then " - no free interview room" else ""))
+			if room then
+				local roomFloor = floorAt(room.center + Vector3.new(0, 1, 0))
+				escortTo(roomFloor, "DETECTIVE", "Taken to an interview room")
+				if alive() then
+					do
+						local _, _, rIn = Util.charInfo(player)
+						if rIn and not F.inZone(room, rIn.Position - Vector3.new(0, 3, 0), 1) then rIn.CFrame = CFrame.new(roomFloor + Vector3.new(0, 3, 0)) end
+					end
+					uncuff(player)
+					player:SetAttribute("BookingState", "Interrogation")
+					local det = nameEscort(escortCop(roomFloor + Vector3.new(4, 0, 0), Vector3.new(-1, 0, 0)), "DETECTIVE")
+					local okI, res = pcall(IM.run, player, { keys = opts.keys, priors = priors, stars = opts.stars,
+						counsel = player:GetAttribute("LawyerPresent") == true, alive = alive })
+					if det then det:despawn("done") end
+					if okI then
+						PrisonFlow.interviews = PrisonFlow.interviews or {}
+						PrisonFlow.interviews[player] = res
+						player:SetAttribute("InterviewDone", true)
+						if Rec and res then
+							Rec.setOutcome(player, opts.recIndex, "Pending", { confessed = res.confessed, lawyered = res.lawyered,
+								deal = res.secsScale, named = table.concat(res.named or {}, ", "), violation = res.violation })
+						end
+					else
+						warn("[Custody] interrogation error for " .. player.Name .. ": " .. tostring(res))
+					end
+					-- v258: "I want a lawyer" -> counsel comes to the interview room before the transfer
+					if okI and res and res.lawyered and alive() then
+						pcall(PrisonFlow.lawyerVisit, player, res, text, alive)
+					end
+				end
+				IM.releaseRoom(room)
+				if not alive() then return true end
+				player:SetAttribute("BookingState", "HQBooking")
+			end
+		end
 		-- v254: serious charges are held without bail until trial
 		tell(player, "Custody", "Serious charges - held without bail until trial")
 		tell(player, "Custody", "Booked - being transferred to the State Prison")
@@ -11447,9 +11612,10 @@ function PrisonFlow.transferHold(player: Player, text: string, opts: any?): any
 	-- v246: interrogation first (serious crimes, accomplices, thin evidence). Each
 	-- co-defendant gets their own room; the result is handed back in opts.result.
 	local IM = Justice.Interrogation
-	if IM and opts.keys then
+	-- v257b: already interviewed at Police HQ -> no second interview here
+	if IM and opts.keys and not player:GetAttribute("InterviewDone") then
 		local should, why = IM.shouldInterrogate(player, opts.keys, opts.stars or 3)
-		local room = if should then IM.reserveRoom(player) else nil
+		local room = if should then IM.reserveRoom(player, "CityJail") else nil
 		print(("[Custody] INTERROGATION %s: %s (%s)%s"):format(player.Name, tostring(should), why,
 			if should and not room then " - no free interview room" else ""))
 		if room then
@@ -12612,7 +12778,15 @@ local function onRequest(player: Player, action: any, arg: any)
 		local name=tostring(arg or "")
 		local counsel=COUNSEL[name]
 		if not counsel then return end
-		if counsel.price>0 and not charge(player,counsel.price) then
+		-- v257: counsel is a retainer + hourly billing (LawFirms); a firm already on retainer costs nothing here
+		local law=ServerStorage:FindFirstChild("LawFirms")
+		if law and law:IsA("BindableFunction") then
+			local okL,res=pcall(law.Invoke,law,"hireAtBooking",player,name)
+			if not okL or res~=true then
+				tell(player,"Notice",tostring(if okL then res else "Counsel unavailable"))
+				return
+			end
+		elseif counsel.price>0 and not charge(player,counsel.price) then
 			tell(player,"Notice",string.format("You need $%d for %s",counsel.price,name))
 			return
 		end

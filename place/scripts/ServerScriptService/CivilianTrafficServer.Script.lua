@@ -856,7 +856,15 @@ local function retireTraffic(state)
 	claimDestination(state,nil)
 	if car.Parent then car:SetAttribute("TrafficActive",false) end
 	spinWheels(state,false,0)
-    if car.Parent and state.humanoid.Health>0 then car:Destroy() end
+	-- A retired car ALWAYS leaves the road. The drivers run with EvaluateStateMachine
+	-- off, so Humanoid.Died never fires for them and the old "wait for Died" cleanup
+	-- left dead cars parked on the road forever - they piled up into city-wide jams.
+	if car.Parent and state.humanoid.Health>0 then car:Destroy()
+	else
+		task.delay(RESPAWN_DELAY,function()
+			if car.Parent and not car:GetAttribute("TrafficStolen") then car:Destroy() end
+		end)
+	end
 end
 
 game:GetService("RunService").Heartbeat:Connect(function()
@@ -1034,6 +1042,10 @@ spawnCar=function()
 	end
 
 	driverHumanoid.Died:Connect(cleanup)
+	-- Died never fires with the state machine off: watch the health itself
+	driverHumanoid.HealthChanged:Connect(function(hp)
+		if hp<=0 then cleanup() end
+	end)
 	car.AncestryChanged:Connect(function()
 		if not car:IsDescendantOf(workspace) and driverHumanoid.Health>0 then
 			driverHumanoid.Health=0

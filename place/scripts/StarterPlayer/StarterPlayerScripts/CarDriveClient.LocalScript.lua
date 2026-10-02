@@ -92,6 +92,78 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ContextActionService = game:GetService("ContextActionService")
 local handbrakeDown = false
 
+---------------------------------------------------------------------------
+-- Skid marks (restored): dark strips where a tyre locks (handbrake) or slides.
+-- Drawn here at once, and sent through ReplicatedStorage.SkidMarks so everyone
+-- else sees them too (SkidMarksRelay). They fade after a while; at most MAX_SKIDS.
+---------------------------------------------------------------------------
+local Debris = game:GetService("Debris")
+local MAX_SKIDS, SKID_LIFE = 500, 30
+local skidFolder = workspace:FindFirstChild("SkidMarks") or Instance.new("Folder")
+skidFolder.Name = "SkidMarks"
+skidFolder.Parent = workspace
+local skidList = {}
+local function drawSkid(a, b, n, width)
+	local len = (b - a).Magnitude
+	if len < 0.05 or len > 12 then return end
+	local p = Instance.new("Part")
+	p.Name = "Skid"
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Material = Enum.Material.SmoothPlastic
+	p.Color = Color3.fromRGB(22, 22, 22)
+	p.Transparency = 0.3
+	p.Size = Vector3.new(width, 0.04, len + 0.15)
+	p.CFrame = CFrame.lookAt((a + b) / 2 + n * 0.03, b + n * 0.03, n)
+	p.Parent = skidFolder
+	table.insert(skidList, p)
+	while #skidList > MAX_SKIDS do
+		local old = table.remove(skidList, 1)
+		if old then old:Destroy() end
+	end
+	Debris:AddItem(p, SKID_LIFE)
+end
+local skidRemote = ReplicatedStorage:WaitForChild("SkidMarks", 10)
+if skidRemote then
+	skidRemote.OnClientEvent:Connect(function(segs)
+		if type(segs) ~= "table" then return end
+		for _, s in segs do
+			if typeof(s[1]) == "Vector3" and typeof(s[2]) == "Vector3" and typeof(s[3]) == "Vector3" then
+				drawSkid(s[1], s[2], s[3], tonumber(s[4]) or 0.8)
+			end
+		end
+	end)
+end
+local pendingSkids, lastSkidSend = {}, 0
+-- after each physics step: extend the mark under every tyre that is locked / sliding
+local function laySkids(st, speed)
+	for _, w in st.wheels do
+		local sliding = w.contact and w.hitPos and speed > 8
+			and (w.locked or (w.slipping and (w.slipSpeed or 0) > 6) or (w.slipSpeed or 0) > 14)
+		if sliding then
+			local pos, n = w.hitPos, w.hitNormal or Vector3.yAxis
+			if w.skidLast and (pos - w.skidLast).Magnitude >= 1.2 then
+				local width = math.clamp(math.min(w.part.Size.X, w.part.Size.Y, w.part.Size.Z), 0.5, 1.4)
+				drawSkid(w.skidLast, pos, n, width)
+				table.insert(pendingSkids, { w.skidLast, pos, n, width })
+				w.skidLast = pos
+			elseif not w.skidLast then
+				w.skidLast = pos
+			end
+		else
+			w.skidLast = nil
+		end
+	end
+	if #pendingSkids > 0 and os.clock() - lastSkidSend > 0.25 and skidRemote then
+		lastSkidSend = os.clock()
+		skidRemote:FireServer(pendingSkids)
+		pendingSkids = {}
+	end
+end
+
 local function driveGTA(humanoid, seat, car)
 	local okM, Vehicle = pcall(require, ReplicatedStorage:WaitForChild("GTAVehicle", 10))
 	local okD, data = pcall(require, ReplicatedStorage:WaitForChild("GTAHandlingData", 10))
@@ -147,7 +219,8 @@ local function driveGTA(humanoid, seat, car)
 		if seat:GetAttribute("VehicleDestroyed") then
 			throttle = 0
 		end
-		Vehicle.step(st, dt, { throttle = throttle, steer = steer, handbrake = handbrakeDown })
+		local res = Vehicle.step(st, dt, { throttle = throttle, steer = steer, handbrake = handbrakeDown })
+		pcall(laySkids, st, seat.AssemblyLinearVelocity.Magnitude)
 	end)
 end
 

@@ -522,8 +522,17 @@ local function openVault(bank, robber)
 	end
 	bank.open = true
 	bank.robbedBy = {}
+	-- v258: the bank is a crime scene until the police secure it (scene loop below)
+	bank.sceneSince = os.clock()
+	bank.sceneClearSince = nil
+	bank.sceneSuspects = {}
+	if robber then
+		bank.sceneSuspects[robber] = true
+		robber:SetAttribute("BankScene", bank.name)
+	end
 	for _, info in ipairs(bank.doorParts) do
 		info.part.CanCollide = false
+		info.part.CanQuery = false -- v258: bullets pass through the open vault door
 		TweenService:Create(info.part, TweenInfo.new(1.5), { Transparency = 1 }):Play()
 	end
 	bank.keypadPrompt.ActionText = "Reset vault"
@@ -557,6 +566,7 @@ local function resetVault(bank, by)
 	bank.open = false
 	for _, info in ipairs(bank.doorParts) do
 		info.part.CanCollide = info.collide
+		info.part.CanQuery = info.query ~= false
 		TweenService:Create(info.part, TweenInfo.new(1.5), { Transparency = info.transparency }):Play()
 	end
 	bank.keypadPrompt.ActionText = "Enter code"
@@ -569,9 +579,85 @@ local function resetVault(bank, by)
 		bank.robbing[player] = nil
 		heist:FireClient(player, "RobCancelled", bank.id, "The vault was locked!")
 	end
-	notifyAll(("%s vault was secured by %s."):format(bank.name, by and by.Name or "staff"))
+	for player in pairs(bank.sceneSuspects or {}) do
+		if player:GetAttribute("BankScene") == bank.name then player:SetAttribute("BankScene", nil) end
+	end
+	bank.sceneSuspects, bank.sceneSince, bank.sceneClearSince = {}, nil, nil
+	notifyAll(("%s vault was secured by %s."):format(bank.name, if typeof(by) == "string" then by elseif by then by.Name else "staff"))
 	heist:FireAllClients("VaultReset", bank.id)
 end
+
+-- v258: crime scene. While the vault is open every robber is tagged BankScene; the police
+-- AI holds a tagged suspect inside the bank as contained (full SWAT entry, never "lost").
+-- Once no free suspect has been inside for SCENE_CLEAR_SECONDS, SWAT sweeps the building
+-- and the police secure the bank.
+local SCENE_CLEAR_SECONDS = 20
+local SCENE_MIN_SECONDS = 45
+local Facilities = nil
+task.spawn(function()
+	local ps = game:GetService("ServerScriptService"):WaitForChild("PoliceSystem", 60)
+	local fm = ps and ps:WaitForChild("Facilities", 30)
+	if fm then
+		local ok, m = pcall(require, fm)
+		if ok then Facilities = m end
+	end
+end)
+
+local function insideBank(bank, pos)
+	if Facilities then
+		local ok, b = pcall(Facilities.buildingAt, pos)
+		if ok and b and b.type == "Bank" then return true end
+	end
+	return (pos - bank.floor.Position).Magnitude < 60
+end
+
+local function inCustody(player)
+	return player:GetAttribute("CustodyStage") ~= nil or player:GetAttribute("BookingState") ~= nil
+end
+
+task.spawn(function()
+	while true do
+		task.wait(2)
+		for _, bank in pairs(banks) do
+			if bank.open and bank.sceneSince then
+				local anyInside = false
+				for player in pairs(bank.sceneSuspects) do
+					local root = player.Parent and rootOf(player)
+					local hum = root and root.Parent:FindFirstChildOfClass("Humanoid")
+					if root and hum and hum.Health > 0 and not inCustody(player) and insideBank(bank, root.Position) then
+						anyInside = true
+						player:SetAttribute("BankScene", bank.name)
+					elseif player.Parent and player:GetAttribute("BankScene") == bank.name then
+						player:SetAttribute("BankScene", nil) -- out of the building: a normal chase
+					end
+				end
+				if anyInside then
+					bank.sceneClearSince = nil
+				else
+					bank.sceneClearSince = bank.sceneClearSince or os.clock()
+					if not bank.sweeping and os.clock() - bank.sceneClearSince >= SCENE_CLEAR_SECONDS and os.clock() - bank.sceneSince >= SCENE_MIN_SECONDS then
+						-- SWAT clears the building room by room before the bank is handed back
+						bank.sweeping = true
+						task.spawn(function()
+							local police = ServerStorage:FindFirstChild("PoliceAI")
+							local sweep = police and police:FindFirstChild("BankSweep")
+							if sweep and sweep:IsA("BindableFunction") then
+								notifyAll(("SWAT is clearing the %s."):format(bank.name))
+								pcall(sweep.Invoke, sweep, "Bank", { bank.floor.Position + Vector3.new(0, 3, 0) })
+							end
+							bank.sweeping = false
+							-- a suspect turned up during the sweep: the scene stays open
+							if bank.open and bank.sceneClearSince then
+								print(("[BankServer] SCENE SECURED %s by police"):format(bank.name))
+								resetVault(bank, "the police")
+							end
+						end)
+					end
+				end
+			end
+		end
+	end
+end)
 
 -- Finds a "computer" part for the hack: prefers a nearby monitor (a part
 -- showing a logo), falls back to the desk's own biggest part. Searches near
@@ -620,7 +706,7 @@ local function setupBank(id, name, staffTeam, vault, desk)
 	newCode(bank)
 	for _, part in ipairs(vault:GetDescendants()) do
 		if part:IsA("BasePart") and part ~= keypad then
-			table.insert(bank.doorParts, { part = part, collide = part.CanCollide, transparency = part.Transparency })
+			table.insert(bank.doorParts, { part = part, collide = part.CanCollide, query = part.CanQuery, transparency = part.Transparency })
 		end
 	end
 
@@ -747,6 +833,10 @@ local function setupBank(id, name, staffTeam, vault, desk)
 		print(("[BankServer] %s vault roll for %s: $%d / $%d / $%d"):format(
 			name, player.Name, amounts[1], amounts[2], amounts[3]))
 		bank.robbing[player] = { amounts = amounts, choosing = true }
+		if bank.sceneSuspects then -- v258: looters are scene suspects too
+			bank.sceneSuspects[player] = true
+			player:SetAttribute("BankScene", bank.name)
+		end
 		heist:FireClient(player, "RobChoice", id, amounts, times)
 	end)
 	print(("[BankServer] %s: vault, keypad and %s ready"):format(name, deskPart and ("computer (" .. deskPart:GetFullName() .. ")") or "NO computer"))

@@ -66,6 +66,14 @@ local function build()
 		Font = Enum.Font.Gotham, TextColor3 = Color3.new(1, 1, 1), TextWrapped = true, TextScaled = true,
 		TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Text = "" }, panel)
 	new("UITextSizeConstraint", { MaxTextSize = 20 }, ui.line)
+	-- v257b transcript: the last few lines stay readable above the panel
+	ui.history = new("TextLabel", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 0, -6), Size = UDim2.new(1, 0, 0, 96),
+		BackgroundColor3 = Color3.fromRGB(10, 12, 18), BackgroundTransparency = 0.35, Font = Enum.Font.Gotham, TextSize = 15,
+		TextColor3 = Color3.fromRGB(185, 190, 200), TextWrapped = true, RichText = true,
+		TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Bottom, Text = "" }, panel)
+	corner(ui.history, 10)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), PaddingBottom = UDim.new(0, 6) }, ui.history)
+	ui.log = {}
 	ui.choices = new("ScrollingFrame", { Size = UDim2.new(1, -20, 0.62, -40), Position = UDim2.new(0, 10, 0.38, 30),
 		BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 6, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y }, panel)
 	new("UIListLayout", { Padding = UDim.new(0, 6) }, ui.choices)
@@ -151,10 +159,15 @@ local function clearChoices()
 	for _, c in ui.choices:GetChildren() do if c:IsA("GuiButton") then c:Destroy() end end
 end
 
+local TONE_COLORS = {
+	calm = Color3.fromRGB(40, 48, 62), lie = Color3.fromRGB(95, 75, 30), aggressive = Color3.fromRGB(110, 40, 40),
+	lawyer = Color3.fromRGB(35, 85, 60), snitch = Color3.fromRGB(85, 40, 85), side = Color3.fromRGB(35, 60, 95),
+	truth = Color3.fromRGB(60, 60, 60),
+}
 local function showChoices(list: { any })
 	clearChoices()
 	for i, c in list do
-		local b = button(ui.choices, c.text, if c.key == "lawyer" then Color3.fromRGB(40, 80, 60) elseif c.key == "blame" then Color3.fromRGB(90, 45, 45) else nil)
+		local b = button(ui.choices, c.text, TONE_COLORS[c.tone or ""] or (if c.key == "lawyer" then TONE_COLORS.lawyer elseif c.key == "blame" then TONE_COLORS.snitch else nil))
 		b.LayoutOrder = i
 		b.Activated:Connect(function()
 			if qteActive then return end
@@ -404,8 +417,19 @@ remote.OnClientEvent:Connect(function(kind: string, a: any, b: any, c: any)
 	elseif not gui then
 		return
 	elseif kind == "say" then
+		-- the previous line goes into the transcript
+		if ui.line.Text ~= "" then
+			local who = ui.who.Text
+			local line = ui.line.Text:gsub("<", "&lt;"):gsub(">", "&gt;")
+			local prev = (if who ~= "" then ("<b>%s:</b> "):format(who) else "") .. line
+			table.insert(ui.log, prev)
+			while #ui.log > 4 do table.remove(ui.log, 1) end
+			ui.history.Text = table.concat(ui.log, "\n")
+		end
 		ui.who.Text = tostring(a)
 		ui.line.Text = tostring(b)
+		ui.who.TextColor3 = if a == "YOUR LAWYER" then Color3.fromRGB(120, 220, 150) elseif a == "" then Color3.fromRGB(170, 170, 170)
+			elseif a == player.Name then Color3.fromRGB(150, 190, 255) else Color3.fromRGB(255, 200, 90)
 	elseif kind == "choices" then
 		showChoices(a or {})
 	elseif kind == "meters" then
@@ -423,6 +447,8 @@ remote.OnClientEvent:Connect(function(kind: string, a: any, b: any, c: any)
 			.. (if s.named and #s.named > 0 then "You named: " .. table.concat(s.named, ", ") .. ". " else "")
 			.. (if (s.falseStatements or 0) > 0 then "They caught you lying. " else "")
 			.. (if s.protective then "Protective custody granted. " else "")
+			.. (if (s.bluffs or 0) > 0 then ("You called %d bluff(s). "):format(s.bluffs) else "")
+			.. (if s.violation then ("The detective crossed the line (%s) - your lawyer can use that. "):format(tostring(s.violation)) else "")
 		task.delay(6, function()
 			stopEffects()
 			if gui then gui:Destroy(); gui = nil end
