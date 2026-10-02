@@ -3,15 +3,20 @@
 -- 60 Centre Street: the grand staircase and the giant Corinthian portico of the opening
 -- shot, the marble rotunda, the courtroom and the jury room.
 --
--- FLOOR PLAN (local: x = depth, back -88 .. front +88; z = width -116 .. 116; front = +X)
---   front     grand staircase (18 x 0.5-stud steps) -> portico -> 3 bronze doors
---   centre    ROTUNDA x 26..88, z -50..50 (stairs along both side walls to a U balcony)
---             MAIN COURTROOM (Dept. 1) x -52..26, z -50..50
---   corridors SOUTH z -62..-50 and NORTH z 50..62 (x -60..88), BACK x -60..-52 (z -62..62)
---   south     Clerk's Office | Records | Restrooms | Courtroom Dept. 2
---   north     Attorney Conference 1 & 2 | Law Library | Witness Waiting | THE JURY ROOM
---   back      Court Holding (+ prisoner sally port) | Court Officers | Robing Room | Judge's Chambers
--- Every room is reached through a doorway; the build checks it with PathfindingService.
+-- A REAL TWO-STOREY BUILDING behind the facade (local: x = depth, back -88 .. front +88;
+-- z = width -116 .. 116; front = +X). Ground F0..F1 (32 high), upper F1..ROOF (48 high).
+--   front    grand staircase (18 x 0.5-stud steps) -> portico -> 3 bronze doors -> VESTIBULE
+--   centre   THE ROTUNDA: a circular drum (r 34) with a ring of green marble columns carrying a
+--            circular gallery at the upper floor, an upper order of columns, clerestory windows
+--            above the roof, and a REAL hollow coffered dome with an oculus and lantern
+--            THE STAIR HALL: an imperial staircase - central flight to a landing (Lady Justice in a
+--            niche), twin return flights up to a bridge into the rotunda gallery
+--   both floors  corridors z +-(40..52) the whole depth; rooms beyond them
+--   ground   Clerk | Records | Restrooms | Jury Assembly || Law Library | Attorney Conf A, B |
+--            Witness Waiting | Court Officers || back: sally port, holding cells, secure stair
+--   upper    MAIN COURTROOM | Jury Room | Press Room || Judge's Chambers | Robing | Courtroom Dept. 2 |
+--            Witness Room || back: court holding || front: the upper hall behind the portico
+-- The build checks every room (and the trial routes) with PathfindingService.
 --
 -- Markers (CourtMarkers): JudgeSeat, WitnessSeat, DefendantSeat, DefenseSeat, ProsecutorSeat,
 --   JurorSeat1-12, GallerySeat1-n, JuryRoomSeat1-12 | BailiffSpot, ClerkWindow, ClerkSpot,
@@ -385,11 +390,50 @@ for i = 0, 4 do
 end
 
 ---------------------------------------------------------------------------
--- THE SHELL: marble walls, tall windows, rusticated base, cornice, attic, roof, dome
+-- THE BUILDING BEHIND THE FACADE - two real storeys
+--   ground  F0 .. F1 (32)   upper  F1 .. ROOF (48)
+--   central band z -40..40: VESTIBULE (x 70..88) | ROTUNDA (circle, centre x 35, r 34) |
+--                           STAIR HALL (x -47..1, the imperial staircase) | BACK BLOCK (x -88..-47)
+--   corridors z +-(40..52) on both floors, the whole depth; rooms z +-(52..116)
+---------------------------------------------------------------------------
+local F1 = F0 + 32 -- the upper floor
+local ROOF = F0 + 80 -- underside of the roof
+local SH = ROOF - F0
+local BAND, CORR = 40, 12
+local WING = BAND + CORR -- 52: where the rooms start
+local RCX, RR = 35, 34 -- rotunda centre (x) and inner radius
+local SX0, SX1 = -47, 1 -- the stair hall
+local BX1 = SX0 -- the back block: x -88..-47
+
+-- walls with a base height (upper storey)
+local function wallXAt(name: string, y0: number, x: number, z0: number, z1: number, h: number, openings: { { number } }?, color: Color3?, material: Enum.Material?, thick: number?)
+	runWall(name, x, z0, z1, false, h, openings, color, material, thick, y0)
+end
+local function wallZAt(name: string, y0: number, z: number, x0: number, x1: number, h: number, openings: { { number } }?, color: Color3?, material: Enum.Material?, thick: number?)
+	runWall(name, z, x0, x1, true, h, openings, color, material, thick, y0)
+end
+-- a room on a storey: floor finish, ceiling lights, its marker (the ceiling is the slab above)
+local function roomAt(name: string, y0: number, h: number, x0: number, x1: number, z0: number, z1: number, floorColor: Color3?, floorMat: Enum.Material?, markerPos: Vector3?)
+	if floorColor then
+		deco(name .. "Floor", Vector3.new(x1 - x0 - 0.6, 0.12, z1 - z0 - 0.6), Vector3.new((x0 + x1) / 2, y0 + 0.06, (z0 + z1) / 2), floorColor, floorMat or M.WoodPlanks)
+	end
+	local nx = math.max(1, math.floor((x1 - x0) / 24))
+	local nz = math.max(1, math.floor((z1 - z0) / 24))
+	for i = 0, nx - 1 do
+		for k = 0, nz - 1 do
+			local p = Vector3.new(x0 + (i + 0.5) * (x1 - x0) / nx, y0 + h - 1.2, z0 + (k + 0.5) * (z1 - z0) / nz)
+			deco("CeilingRose", Vector3.new(3, 0.3, 3), p + Vector3.new(0, 0.9, 0), C.marbleWarm)
+			lamp(p, 30)
+		end
+	end
+	marker("Room_" .. name, markerPos or Vector3.new((x0 + x1) / 2, y0 + 3, (z0 + z1) / 2))
+end
+
+---------------------------------------------------------------------------
+-- SHELL: outer walls (two rows of windows), cornices, attic, roof (with the drum's hole)
 ---------------------------------------------------------------------------
 group("Shell")
-local SH = COL_H + 10
-local function windows(a: number, b: number, every: number, skip: { number }?): { { number } }
+local function windowRow(a: number, b: number, every: number, sill: number, head: number, skip: { { number } }?): { { number } }
 	local g = {}
 	local n = math.floor((b - a) / every)
 	local start = a + ((b - a) - (n - 1) * every) / 2
@@ -397,459 +441,766 @@ local function windows(a: number, b: number, every: number, skip: { number }?): 
 		local c = start + i * every
 		local ok = true
 		for _, s in skip or {} do
-			if math.abs(c - s) < 8 then ok = false end
+			if math.abs(c - s[1]) < s[2] then ok = false end
 		end
-		if ok then table.insert(g, { c, 7, 10, 26 }) end
+		if ok then table.insert(g, { c, 7, sill, head }) end
 	end
 	return g
 end
--- front: the three bronze doorways
+-- front wall: the three bronze doorways below, tall windows above (behind the portico)
 local DOORS = { { -32, 12, 26 }, { 0, 14, 30 }, { 32, 12, 26 } }
 do
 	local o = {}
 	for _, d in DOORS do table.insert(o, { d[1], d[2], nil, d[3] }) end
-	wallX("FrontWall", FRONT, -HZ, HZ, SH, o, C.marble, M.Marble, 3)
+	for _, z in { -96, -76, -60, 60, 76, 96 } do table.insert(o, { z, 7, 8, 24 }) end -- ground windows of the wings
+	wallXAt("FrontWallLow", F0, FRONT, -HZ, HZ, 32, o, C.marble, M.Marble, 3)
+	wallXAt("FrontWallHigh", F1, FRONT, -HZ, HZ, SH - 32, windowRow(-HZ, HZ, 20, 8, 34), C.marble, M.Marble, 3)
 	for _, d in DOORS do
 		local z, w, top = d[1], d[2], d[3]
 		for _, s in { -1, 1 } do
-			deco("BronzeDoor", Vector3.new(w / 2, top - 8, 0.5), Vector3.new(FRONT - w / 4 - 1.6, F0 + (top - 8) / 2, z + s * (w / 2 - 0.25)), C.bronze, M.Metal, math.rad(90))
+			deco("BronzeDoor", Vector3.new(w / 2, top - 6, 0.5), Vector3.new(FRONT - w / 4 - 1.6, F0 + (top - 6) / 2, z + s * (w / 2 - 0.25)), C.bronze, M.Metal, math.rad(90))
 		end
-		local tr = deco("Transom", Vector3.new(0.4, 7, w), Vector3.new(FRONT, F0 + top - 4, z), C.bronze, M.DiamondPlate)
+		local tr = deco("Transom", Vector3.new(0.4, 5, w), Vector3.new(FRONT, F0 + top - 3, z), C.bronze, M.DiamondPlate)
 		tr.Transparency = 0.25
 		deco("DoorHead", Vector3.new(4, 2.4, w + 4), Vector3.new(FRONT + 1.6, F0 + top + 1.2, z), C.marbleGrey)
 		deco("DoorPediment", Vector3.new(4.6, 1.2, w + 6), Vector3.new(FRONT + 2, F0 + top + 3, z), C.marble)
 	end
 end
--- the back: the prisoner sally port (a roll-up gate) and a staff door
-wallX("BackWall", -HX, -HZ, HZ, SH, { { -86, 14, nil, 16 }, { 86, 8 } }, C.marble, M.Marble, 3)
-deco("SallyPortGate", Vector3.new(0.4, 2, 14), Vector3.new(-HX - 0.5, F0 + 15, -86), C.black, M.DiamondPlate)
-block("SallyDock", Vector3.new(10, FY, 18), Vector3.new(-HX - 5, FY / 2, -86), C.granite, M.Concrete)
-for i = 1, 18 do -- the prisoner ramp: shallow steps down to the drive
-	local h = FY * (18 - i + 1) / 19
-	block("SallyStep", Vector3.new(1.4, h, 18), Vector3.new(-HX - 10 - (i - 0.5) * 1.4, h / 2, -86), C.granite, M.Concrete)
+-- back wall: the prisoner sally port, the judges' private entrance, windows
+do
+	local low = windowRow(-HZ, HZ, 20, 8, 24, { { -20, 12 }, { 86, 10 } })
+	table.insert(low, { -20, 14, nil, 16 }) -- sally port
+	table.insert(low, { 86, 8, nil, 14 }) -- staff door into the north corridor
+	wallXAt("BackWallLow", F0, -HX, -HZ, HZ, 32, low, C.marble, M.Marble, 3)
+	wallXAt("BackWallHigh", F1, -HX, -HZ, HZ, SH - 32, windowRow(-HZ, HZ, 20, 8, 34), C.marble, M.Marble, 3)
+	deco("SallyPortSign", Vector3.new(0.4, 2, 14), Vector3.new(-HX - 1.8, F0 + 17.5, -20), C.black, M.DiamondPlate)
+	block("SallyDock", Vector3.new(10, FY, 20), Vector3.new(-HX - 5, FY / 2, -20), C.granite, M.Concrete)
+	for i = 1, 18 do
+		local h = FY * (18 - i + 1) / 19
+		block("SallyStep", Vector3.new(1.4, h, 20), Vector3.new(-HX - 10 - (i - 0.5) * 1.4, h / 2, -20), C.granite, M.Concrete)
+	end
+	marker("PrisonerDropoff", Vector3.new(-HX - 46, 3, -20))
+	block("StaffLanding", Vector3.new(6, FY, 10), Vector3.new(-HX - 3, FY / 2, 86), C.granite, M.Concrete)
+	for i = 1, 18 do
+		local h = FY * (18 - i + 1) / 19
+		block("StaffStep", Vector3.new(1.4, h, 10), Vector3.new(-HX - 6 - (i - 0.5) * 1.4, h / 2, 86), C.granite, M.Concrete)
+	end
 end
-marker("PrisonerDropoff", Vector3.new(-HX - 44, 3, -86))
-block("StaffLanding", Vector3.new(6, FY, 10), Vector3.new(-HX - 3, FY / 2, 86), C.granite, M.Concrete)
-for i = 1, 18 do
-	local h = FY * (18 - i + 1) / 19
-	block("StaffStep", Vector3.new(1.4, h, 10), Vector3.new(-HX - 6 - (i - 0.5) * 1.4, h / 2, 86), C.granite, M.Concrete)
+-- the side walls
+for _, s in { { "SideWallS", -HZ }, { "SideWallN", HZ } } do
+	wallZAt(s[1] .. "Low", F0, s[2], -HX, HX, 32, windowRow(-HX, HX, 18, 8, 24), C.marble, M.Marble, 3)
+	wallZAt(s[1] .. "High", F1, s[2], -HX, HX, SH - 32, windowRow(-HX, HX, 18, 8, 36), C.marble, M.Marble, 3)
 end
-wallZ("SideWallS", -HZ, -HX, HX, SH, windows(-HX, HX, 22), C.marble, M.Marble, 3)
-wallZ("SideWallN", HZ, -HX, HX, SH, windows(-HX, HX, 22), C.marble, M.Marble, 3)
 for k = 0, 3 do
 	local y = FY + 2 + k * 2.4
 	deco("Rustication", Vector3.new(0.4, 0.4, 2 * HZ), Vector3.new(-HX - 1.7, y, 0), C.marbleGrey)
 	deco("Rustication", Vector3.new(2 * HX, 0.4, 0.4), Vector3.new(0, y, -HZ - 1.7), C.marbleGrey)
 	deco("Rustication", Vector3.new(2 * HX, 0.4, 0.4), Vector3.new(0, y, HZ + 1.7), C.marbleGrey)
 end
-deco("StringCourse", Vector3.new(2 * HX + 4, 1.2, 2 * HZ + 4), Vector3.new(0, F0 + 40, 0), C.marbleWarm)
-block("MainCornice", Vector3.new(2 * HX + 8, 3, 2 * HZ + 8), Vector3.new(0, F0 + SH + 1.5, 0), C.marble)
-block("Attic", Vector3.new(2 * HX, 6, 2 * HZ), Vector3.new(0, F0 + SH + 6, 0), C.marbleWarm)
-block("AtticCornice", Vector3.new(2 * HX + 4, 1.6, 2 * HZ + 4), Vector3.new(0, F0 + SH + 9.8, 0), C.marble)
-block("Roof", Vector3.new(2 * HX - 6, 2, 2 * HZ - 6), Vector3.new(0, F0 + SH + 11.4, 0), C.roof, M.Slate)
-block("Floor", Vector3.new(2 * HX - 3, 0.6, 2 * HZ - 3), Vector3.new(0, FY + 0.3, 0), C.marbleWarm)
+deco("StringCourseS", Vector3.new(2 * HX + 4, 1.4, 1.4), Vector3.new(0, F1 - 0.5, -HZ - 1.4), C.marbleWarm)
+deco("StringCourseN", Vector3.new(2 * HX + 4, 1.4, 1.4), Vector3.new(0, F1 - 0.5, HZ + 1.4), C.marbleWarm)
+deco("StringCourseB", Vector3.new(1.4, 1.4, 2 * HZ + 4), Vector3.new(-HX - 1.4, F1 - 0.5, 0), C.marbleWarm)
+-- cornices run round the edge of the roof only (a slab here would cap the rotunda)
+local function edgeFrame(name: string, y: number, h: number, out: number, depth: number, color: Color3)
+	block(name, Vector3.new(2 * HX + 2 * out, h, depth), Vector3.new(0, y, -HZ - out + depth / 2), color)
+	block(name, Vector3.new(2 * HX + 2 * out, h, depth), Vector3.new(0, y, HZ + out - depth / 2), color)
+	block(name, Vector3.new(depth, h, 2 * HZ + 2 * out - 2 * depth), Vector3.new(-HX - out + depth / 2, y, 0), color)
+	block(name, Vector3.new(depth, h, 2 * HZ + 2 * out - 2 * depth), Vector3.new(HX + out - depth / 2, y, 0), color)
+end
+edgeFrame("MainCornice", ROOF + 1.5, 3, 4, 10, C.marble)
+-- attic + roof as a frame round the drum's hole (x 1..69, z -40..40)
+do
+	local function roofRect(x0: number, x1: number, z0: number, z1: number)
+		block("Attic", Vector3.new(x1 - x0, 6, z1 - z0), Vector3.new((x0 + x1) / 2, ROOF + 6, (z0 + z1) / 2), C.marbleWarm)
+		block("Roof", Vector3.new(x1 - x0, 1.2, z1 - z0), Vector3.new((x0 + x1) / 2, ROOF + 9.6, (z0 + z1) / 2), C.roof, M.Slate)
+	end
+	roofRect(-HX, RCX - RR, -HZ, HZ)
+	roofRect(RCX + RR, HX, -HZ, HZ)
+	roofRect(RCX - RR, RCX + RR, -HZ, -BAND)
+	roofRect(RCX - RR, RCX + RR, BAND, HZ)
+	edgeFrame("AtticCornice", ROOF + 9, 1.4, 2, 6, C.marble)
+end
+block("GroundFloor", Vector3.new(2 * HX - 3, 0.6, 2 * HZ - 3), Vector3.new(0, FY + 0.3, 0), C.marbleWarm)
 
 ---------------------------------------------------------------------------
--- THE ROTUNDA (x 26..88, z -50..50)
+-- THE UPPER FLOOR SLAB (F1): everywhere except the rotunda and the stair hall's void
+---------------------------------------------------------------------------
+group("Floors")
+local function slab(x0: number, x1: number, z0: number, z1: number)
+	block("UpperFloor", Vector3.new(x1 - x0, 1.2, z1 - z0), Vector3.new((x0 + x1) / 2, F1 - 0.6, (z0 + z1) / 2), C.marbleWarm)
+end
+slab(-HX, HX, BAND, HZ) -- north wing + corridor
+slab(-HX, HX, -HZ, -BAND) -- south wing + corridor
+slab(-HX, SX0, -BAND, BAND) -- back block
+slab(RCX + RR, HX, -BAND, BAND) -- over the vestibule: the upper hall
+slab(-4, 1, -BAND, BAND) -- the bridge at the top of the staircase
+
+---------------------------------------------------------------------------
+-- THE ROTUNDA: drum, infill, column rings, gallery, the real dome, oculus, lantern
 ---------------------------------------------------------------------------
 group("Rotunda")
-local RX0, RX1, RZ = 26, FRONT, 50
-local RCX = (RX0 + RX1) / 2
-local RH = 64
-local MEZ = F0 + 20 -- the balcony floor
-do
-	local dome = ball("DomeOutside", 62, Vector3.new(RCX, F0 + SH + 25, 0), C.roof, M.Slate)
-	dome.CanCollide = false
-	cylinder("Drum", 14, 64, Vector3.new(RCX, F0 + SH + 18, 0), C.marble)
-	for i = 0, 15 do
-		local a = i / 16 * math.pi * 2
-		cylinder("DrumColumn", 12, 1.8, Vector3.new(RCX + math.cos(a) * 33, F0 + SH + 18, math.sin(a) * 33), C.marble)
-	end
-	cylinder("Lantern", 8, 10, Vector3.new(RCX, F0 + SH + 58, 0), C.marble)
-	ball("LanternCap", 9, Vector3.new(RCX, F0 + SH + 62, 0), C.roof, M.Slate)
-	block("Finial", Vector3.new(0.6, 6, 0.6), Vector3.new(RCX, F0 + SH + 69, 0), C.brass, M.Metal)
+local DRUM_TOP = ROOF + 16
+local N = 48
+local function onCircle(theta: number, r: number, y: number): Vector3
+	return Vector3.new(RCX + math.cos(theta) * r, y, math.sin(theta) * r)
 end
--- the rotunda's side walls (doors to the corridors at both ends) and the courtroom wall
-wallZ("RotundaS", -RZ, RX0, RX1, RH, { { 34, 8 }, { 80, 8 } }, C.marbleWarm, M.Marble)
-wallZ("RotundaN", RZ, RX0, RX1, RH, { { 34, 8 }, { 80, 8 } }, C.marbleWarm, M.Marble)
-wallX("RotundaBack", RX0, -RZ, RZ, RH, { { 0, 14, nil, 18 } }, C.marbleWarm, M.Marble)
--- checkerboard floor + medallion
-for xi = 0, math.floor((RX1 - RX0) / 4) - 1 do
-	for zi = 0, math.floor(2 * RZ / 4) - 1 do
-		if (xi + zi) % 2 == 0 then
-			deco("Tile", Vector3.new(4, 0.08, 4), Vector3.new(RX0 + 2 + xi * 4, F0 + 0.04, -RZ + 2 + zi * 4), C.marbleDark)
+-- openings in the drum: { centre angle, half-width (studs), y from, y to }
+local OPEN = {
+	{ 0, 8, F0, F0 + 22 }, { math.pi, 12, F0, F0 + 22 }, -- vestibule / stair hall (ground)
+	{ math.pi / 2, 5, F0, F0 + 14 }, { -math.pi / 2, 5, F0, F0 + 14 }, -- the corridors (ground)
+	{ 0, 6, F1, F1 + 16 }, { math.pi, 8, F1, F1 + 16 }, -- upper hall / the bridge (upper)
+	{ math.pi / 2, 5, F1, F1 + 14 }, { -math.pi / 2, 5, F1, F1 + 14 }, -- the upper corridors
+}
+-- a true ring (not a disc): n flat segments round the rotunda's centre
+local function ring(name: string, r: number, width: number, height: number, y: number, color: Color3?, material: Enum.Material?, n: number?)
+	local count = n or 48
+	for i = 0, count - 1 do
+		local th = (i + 0.5) / count * 2 * math.pi
+		local p = Instance.new("Part")
+		p.Name = name
+		p.Size = Vector3.new(width, height, 2 * math.pi * (r + width / 2) / count + 0.3)
+		p.CanCollide = false
+		put(p, CFrame.new(onCircle(th, r, y)) * CFrame.Angles(0, -th, 0), color or C.marble, material)
+	end
+end
+local function angleDiff(a: number, b: number): number
+	local d = (a - b) % (2 * math.pi)
+	if d > math.pi then d -= 2 * math.pi end
+	return math.abs(d)
+end
+-- the drum wall: segments, cut where a doorway passes, clerestory windows above the roof
+local SEG_W = 2 * math.pi * (RR + 1) / N + 0.4
+for i = 0, N - 1 do
+	local th = (i + 0.5) / N * 2 * math.pi
+	local cuts = {}
+	for _, o in OPEN do
+		if angleDiff(th, o[1]) * (RR + 1) < o[2] then table.insert(cuts, { o[3], o[4] }) end
+	end
+	table.sort(cuts, function(a, b) return a[1] < b[1] end)
+	local function piece(y0: number, y1: number, color: Color3, material: Enum.Material, transparent: number?)
+		if y1 - y0 < 0.05 then return end
+		local p = Instance.new("Part")
+		p.Name = "Drum"
+		p.Size = Vector3.new(2, y1 - y0, SEG_W)
+		put(p, CFrame.new(onCircle(th, RR + 1, (y0 + y1) / 2)) * CFrame.Angles(0, -th, 0), color, material)
+		if transparent then p.Transparency = transparent end
+	end
+	local y = F0
+	local stops = { DRUM_TOP }
+	for _, c in cuts do
+		piece(y, c[1], C.marbleWarm, M.Marble)
+		y = c[2]
+	end
+	-- above the roof: the clerestory band (every other segment a window)
+	if y < ROOF + 3 then
+		piece(y, ROOF + 3, C.marbleWarm, M.Marble)
+		y = ROOF + 3
+	end
+	if i % 2 == 0 then
+		piece(y, ROOF + 12, C.glass, M.Glass, 0.45)
+	else
+		piece(y, ROOF + 12, C.marble, M.Marble)
+	end
+	piece(ROOF + 12, stops[1], C.marble, M.Marble)
+end
+-- pilasters round the outside of the drum, and its cornice ring
+for i = 0, N - 1, 2 do
+	local th = (i + 1) / N * 2 * math.pi
+	local p = Instance.new("Part")
+	p.Name = "DrumPilaster"
+	p.Size = Vector3.new(1, DRUM_TOP - ROOF - 10, 2)
+	p.CanCollide = false
+	put(p, CFrame.new(onCircle(th, RR + 2.4, (ROOF + 10 + DRUM_TOP) / 2)) * CFrame.Angles(0, -th, 0), C.marble)
+end
+ring("DrumCornice", RR + 3, 4, 2.4, DRUM_TOP + 1.2, C.marble)
+ring("DrumInnerCornice", RR - 0.6, 2.2, 1.6, DRUM_TOP - 0.6, C.marbleWarm)
+-- solid masonry filling the corners between the circle and the square band (the "poche")
+do
+	local CELL = 4
+	for x = RCX - RR, RCX + RR - CELL, CELL do
+		for z = -BAND, BAND - CELL, CELL do
+			local cx, cz = x + CELL / 2, z + CELL / 2
+			local r = math.sqrt((cx - RCX) ^ 2 + cz ^ 2)
+			if r > RR + 2.6 then
+				-- leave the side passages open (ground and upper doorways at the corridors)
+				local passage = math.abs(cx - RCX) < 6 and math.abs(cz) > 30
+				local function fill(y0: number, y1: number)
+					if y1 > y0 then block("Poche", Vector3.new(CELL, y1 - y0, CELL), Vector3.new(cx, (y0 + y1) / 2, cz), C.marbleWarm) end
+				end
+				if passage then
+					fill(F0 + 14, F1)
+					fill(F1 + 14, ROOF + 9)
+				else
+					fill(F0, ROOF + 9)
+				end
+			end
 		end
 	end
 end
-cylinder("Medallion", 0.12, 26, Vector3.new(RCX, F0 + 0.1, 0), C.marbleGreen).CanCollide = false
-cylinder("Medallion", 0.16, 18, Vector3.new(RCX, F0 + 0.12, 0), C.marble).CanCollide = false
-cylinder("MedallionStar", 0.2, 8, Vector3.new(RCX, F0 + 0.14, 0), C.brass, M.Metal).CanCollide = false
--- the ring of green marble columns
-for i = 0, 11 do
-	local a = i / 12 * math.pi * 2 + math.pi / 12
-	column(RCX + math.cos(a) * 21, F0, math.sin(a) * 21, 40, 3, C.marbleGreen)
+-- the floor: concentric marble rings and a compass star
+cylinder("RotundaFloorRing", 0.1, 2 * RR, Vector3.new(RCX, F0 + 0.05, 0), C.marbleGrey).CanCollide = false
+cylinder("RotundaFloorRing", 0.14, 2 * RR - 8, Vector3.new(RCX, F0 + 0.07, 0), C.marbleDark).CanCollide = false
+cylinder("RotundaFloorRing", 0.18, 2 * RR - 12, Vector3.new(RCX, F0 + 0.09, 0), C.marble).CanCollide = false
+cylinder("RotundaFloorRing", 0.22, 24, Vector3.new(RCX, F0 + 0.11, 0), C.marbleGreen).CanCollide = false
+cylinder("RotundaFloorRing", 0.26, 16, Vector3.new(RCX, F0 + 0.13, 0), C.marble).CanCollide = false
+for i = 0, 7 do
+	local a = i * math.pi / 4
+	local ray = deco("CompassRay", Vector3.new(if i % 2 == 0 then 22 else 14, 0.3, 1.2), Vector3.new(RCX, F0 + 0.15, 0), C.brass, M.Metal, -a)
+	ray.CFrame = BASE * CFrame.new(RCX, F0 + 0.15, 0) * CFrame.Angles(0, -a, 0)
 end
-cylinder("RingBeam", 3, 48, Vector3.new(RCX, F0 + 41.5, 0), C.marble).CanCollide = false
--- the U balcony: along both side walls (z 38..50) and across the back (x 26..36)
-for _, side in { -1, 1 } do
-	block("Balcony", Vector3.new(RX1 - RX0 - 2, 1.2, 12), Vector3.new((RX0 + RX1) / 2, MEZ - 0.6, side * (RZ - 6)), C.marble)
-	block("BalconyRail", Vector3.new(RX1 - RX0 - 18, 0.4, 0.4), Vector3.new((RX0 + RX1) / 2 + 8, MEZ + 3.4, side * (RZ - 12)), C.brass, M.Metal)
-	block("BalconyParapet", Vector3.new(RX1 - RX0 - 18, 3, 0.5), Vector3.new((RX0 + RX1) / 2 + 8, MEZ + 1.5, side * (RZ - 12)), C.marble)
+cylinder("CompassHeart", 0.34, 4, Vector3.new(RCX, F0 + 0.17, 0), C.bronze, M.Metal).CanCollide = false
+-- the lower ring of columns (carries the gallery) and the upper ring (carries the drum's entablature)
+local GAL_IN = RR - 9 -- the gallery's inner edge
+for i = 0, 15 do
+	local th = i / 16 * 2 * math.pi + math.pi / 16
+	local p = onCircle(th, GAL_IN + 2.5, 0)
+	column(p.X, F0, p.Z, F1 - F0 - 1.2, 2.6, C.marbleGreen)
+	column(p.X, F1, p.Z, 30, 2.2, C.marble)
 end
-block("BalconyBack", Vector3.new(10, 1.2, 2 * RZ - 2), Vector3.new(RX0 + 5, MEZ - 0.6, 0), C.marble)
-block("BalconyBackParapet", Vector3.new(0.5, 3, 2 * RZ - 26), Vector3.new(RX0 + 10, MEZ + 1.5, 0), C.marble)
--- twin staircases along the side walls: from the front of the hall up to the balcony
+-- the gallery: a ring floor at F1, with a marble parapet and a brass rail
+for i = 0, N - 1 do
+	local th = (i + 0.5) / N * 2 * math.pi
+	local mid = (GAL_IN + RR + 1) / 2
+	local seg = Instance.new("Part")
+	seg.Name = "Gallery"
+	seg.Size = Vector3.new(RR + 1 - GAL_IN, 1.2, 2 * math.pi * (RR + 1) / N + 0.6)
+	put(seg, CFrame.new(onCircle(th, mid, F1 - 0.6)) * CFrame.Angles(0, -th, 0), C.marble)
+	local soffit = Instance.new("Part")
+	soffit.Name = "GallerySoffit"
+	soffit.Size = Vector3.new(RR + 1 - GAL_IN, 1.6, 2 * math.pi * (RR + 1) / N + 0.6)
+	soffit.CanCollide = false
+	put(soffit, CFrame.new(onCircle(th, mid, F1 - 2)) * CFrame.Angles(0, -th, 0), C.marbleWarm)
+	-- marble parapet on the inner edge
+	local par = Instance.new("Part")
+	par.Name = "GalleryParapet"
+	par.Size = Vector3.new(0.8, 3.4, 2 * math.pi * GAL_IN / N + 0.4)
+	put(par, CFrame.new(onCircle(th, GAL_IN + 0.4, F1 + 1.7)) * CFrame.Angles(0, -th, 0), C.marble)
+	local rail = Instance.new("Part")
+	rail.Name = "GalleryRail"
+	rail.Size = Vector3.new(1.1, 0.35, 2 * math.pi * GAL_IN / N + 0.4)
+	rail.CanCollide = false
+	put(rail, CFrame.new(onCircle(th, GAL_IN + 0.4, F1 + 3.55)) * CFrame.Angles(0, -th, 0), C.brass, M.Metal)
+end
+ring("UpperEntablature", GAL_IN + 2.5, 5, 3, F1 + 31.5, C.marbleWarm)
+-- THE DOME: a real hollow shell. Inside: coffers (checkered) on rings, ribs; outside: copper.
 do
-	local n = 20
-	local rise = (MEZ - F0) / n
-	local run = 2
-	for _, side in { -1, 1 } do
-		local z = side * (RZ - 15) -- the flight is 6 wide, just inside the balcony's edge
-		for i = 1, n do
-			local h = rise * i
-			local x = RX1 - 6 - i * run -- climbing toward the back
-			block("GrandStep", Vector3.new(run, h, 6), Vector3.new(x, F0 + h / 2, z), C.marble)
+	local MER = 32
+	local RINGS = 10
+	local maxLat = math.rad(82) -- the oculus opens above this
+	for ring = 0, RINGS - 1 do
+		local a0 = ring / RINGS * maxLat
+		local a1 = (ring + 1) / RINGS * maxLat
+		local am = (a0 + a1) / 2
+		for m = 0, MER - 1 do
+			local th = (m + 0.5) / MER * 2 * math.pi
+			for _, shell in { { RR + 1, if (ring + m) % 2 == 0 then C.plaster else C.marbleWarm, M.Plaster, 1.2 }, { RR + 3.4, C.roof, M.Slate, 1.6 } } do
+				local r = shell[1]
+				local pos = Vector3.new(RCX + math.cos(th) * math.cos(am) * r, DRUM_TOP + math.sin(am) * r, math.sin(th) * math.cos(am) * r)
+				local outward = (pos - Vector3.new(RCX, DRUM_TOP, 0)).Unit
+				local tangent = Vector3.new(-math.sin(th), 0, math.cos(th))
+				local up = outward:Cross(tangent).Unit * -1
+				local width = 2 * math.pi * r * math.cos(a0) / MER + 0.5
+				local height = r * (a1 - a0) + 0.4
+				local p = Instance.new("Part")
+				p.Name = if shell[1] < RR + 2 then "DomeInner" else "DomeOuter"
+				p.Size = Vector3.new(width, height, shell[4])
+				put(p, CFrame.fromMatrix(pos, tangent, up), shell[2], shell[3])
+				if shell[1] < RR + 2 then
+					p.CanCollide = false
+					-- a gilded rosette in every other coffer
+					if (ring + m) % 2 == 0 and ring < RINGS - 2 then
+						local rosette = Instance.new("Part")
+						rosette.Name = "DomeRosette"
+						rosette.Size = Vector3.new(1.2, 1.2, 0.3)
+						rosette.CanCollide = false
+						put(rosette, CFrame.fromMatrix(pos - outward * 0.75, tangent, up), C.brass, M.Metal)
+					end
+				end
+			end
 		end
-		block("StairTop", Vector3.new(4, MEZ - F0, 6), Vector3.new(RX1 - 6 - n * run - 2, F0 + (MEZ - F0) / 2, z), C.marble)
-		-- brass rail on the open side, newel posts at the foot
-		local railLen = n * run
-		local rail = block("StairRail", Vector3.new(railLen + 2, 0.4, 0.4), Vector3.zero, C.brass, M.Metal)
-		rail.CanCollide = false
-		rail.CFrame = BASE * CFrame.new(RX1 - 6 - railLen / 2, F0 + (MEZ - F0) / 2 + 3, z - side * 3.2) * CFrame.Angles(0, 0, math.atan2(MEZ - F0, railLen))
-		cylinder("Newel", 5, 1.4, Vector3.new(RX1 - 5, F0 + 2.5, z - side * 3.2), C.marble)
-		ball("NewelCap", 1.8, Vector3.new(RX1 - 5, F0 + 5.4, z - side * 3.2), C.brass, M.Metal)
+	end
+	-- ribs on the inside at every fourth meridian
+	for m = 0, MER - 1, 4 do
+		local th = m / MER * 2 * math.pi
+		for ring = 0, RINGS - 1 do
+			local am = (ring + 0.5) / RINGS * maxLat
+			local r = RR + 0.3
+			local pos = Vector3.new(RCX + math.cos(th) * math.cos(am) * r, DRUM_TOP + math.sin(am) * r, math.sin(th) * math.cos(am) * r)
+			local outward = (pos - Vector3.new(RCX, DRUM_TOP, 0)).Unit
+			local tangent = Vector3.new(-math.sin(th), 0, math.cos(th))
+			local up = outward:Cross(tangent).Unit * -1
+			local rib = Instance.new("Part")
+			rib.Name = "DomeRib"
+			rib.Size = Vector3.new(1, r * maxLat / RINGS + 0.4, 0.8)
+			rib.CanCollide = false
+			put(rib, CFrame.fromMatrix(pos, tangent, up), C.marbleWarm)
+		end
+	end
+	-- the oculus ring and the lantern on top (open to the sky through its windows)
+	local topY = DRUM_TOP + math.sin(maxLat) * (RR + 1)
+	local ocR = math.cos(maxLat) * (RR + 1)
+	ring("OculusRing", ocR + 0.2, 1.6, 1.2, topY, C.brass, M.Metal, 24)
+	for i = 0, 7 do
+		local th = i / 8 * 2 * math.pi
+		cylinder("LanternColumn", 8, 0.7, Vector3.new(RCX + math.cos(th) * (ocR + 0.5), topY + 4, math.sin(th) * (ocR + 0.5)), C.marble)
+	end
+	cylinder("LanternGlass", 7, 2 * ocR, Vector3.new(RCX, topY + 4, 0), C.glass, M.Glass).Transparency = 0.7
+	cylinder("LanternRoof", 1.2, 2 * ocR + 3, Vector3.new(RCX, topY + 8.6, 0), C.roof, M.Slate)
+	ball("LanternCap", 2 * ocR, Vector3.new(RCX, topY + 9, 0), C.roof, M.Slate)
+	block("Finial", Vector3.new(0.6, 6, 0.6), Vector3.new(RCX, topY + 9 + ocR + 3, 0), C.brass, M.Metal)
+	ball("FinialOrb", 1.4, Vector3.new(RCX, topY + 9 + ocR + 6, 0), C.brass, M.Metal)
+	light(ball("OculusGlow", 3, Vector3.new(RCX, topY + 3, 0), C.light, M.Neon), 90, 2.2)
+end
+-- light in the rotunda: lamps on the gallery parapet and round the drum
+for i = 0, 7 do
+	local th = i / 8 * 2 * math.pi + math.pi / 8
+	local p = onCircle(th, GAL_IN + 0.4, F1 + 4.6)
+	light(ball("ParapetLamp", 1.2, p, C.light, M.Neon), 40, 1.2)
+	local q = onCircle(th, RR - 0.5, F0 + 14)
+	light(ball("DrumSconce", 1.4, q, C.light, M.Neon), 36, 1.2)
+end
+marker("RotundaSpot", Vector3.new(RCX + 10, F0 + 3, 0))
+
+---------------------------------------------------------------------------
+-- THE VESTIBULE (x 70..88, ground) and the UPPER HALL above it
+---------------------------------------------------------------------------
+group("Vestibule")
+local VX0 = RCX + RR + 1 -- 70
+wallXAt("VestibuleBack", F0, VX0, -BAND, BAND, 32, { { 0, 16, nil, 22 } }, C.marbleWarm, M.Marble, 2)
+wallZAt("VestibuleS", F0, -BAND, VX0, HX, 32, { { 79, 8, nil, 14 } }, C.marbleWarm, M.Marble)
+wallZAt("VestibuleN", F0, BAND, VX0, HX, 32, { { 79, 8, nil, 14 } }, C.marbleWarm, M.Marble)
+for xi = 0, 3 do
+	for zi = 0, 15 do
+		deco("VestibuleCoffer", Vector3.new(3.4, 0.6, 3.6), Vector3.new(VX0 + 2.5 + xi * 4.4, F1 - 1.6, -38 + zi * 5), C.marbleGrey)
 	end
 end
--- dome inside: coffers, oculus, chandelier
-block("RotundaCeiling", Vector3.new(RX1 - RX0, 1, 2 * RZ), Vector3.new(RCX, F0 + RH + 0.5, 0), C.plaster)
-cylinder("DomeRing", 2, 50, Vector3.new(RCX, F0 + RH - 0.5, 0), C.marbleWarm).CanCollide = false
-for ring = 0, 2 do
-	local r, n = 21 - ring * 6, 16 - ring * 4
-	for i = 0, n - 1 do
-		local a = i / n * math.pi * 2
-		deco("DomeCoffer", Vector3.new(4.5 - ring, 0.6, 4.5 - ring), Vector3.new(RCX + math.cos(a) * r, F0 + RH - 1.2 - ring * 0.6, math.sin(a) * r), C.marbleGrey, M.Marble, -a)
-	end
+for _, z in { -24, 24 } do
+	cylinder("VestibuleColumn", 30.6, 3, Vector3.new(VX0 + 9, F0 + 15.3, z), C.marbleGreen)
 end
-light(cylinder("Oculus", 0.4, 10, Vector3.new(RCX, F0 + RH + 1.1, 0), C.light, M.Neon), 60, 1.6)
-cylinder("ChandelierChain", 20, 0.3, Vector3.new(RCX, F0 + RH - 10, 0), C.brass, M.Metal).CanCollide = false
-for tier = 0, 2 do
-	local r, y = 5 - tier * 1.4, F0 + RH - 20 - tier * 2.5
-	cylinder("ChandelierRing", 0.4, r * 2, Vector3.new(RCX, y, 0), C.brass, M.Metal).CanCollide = false
-	for i = 0, 9 - tier * 2 do
-		local a = i / (10 - tier * 2) * math.pi * 2
-		ball("ChandelierLight", 0.9, Vector3.new(RCX + math.cos(a) * r, y + 0.6, math.sin(a) * r), C.light, M.Neon).CanCollide = false
-	end
-end
-light(ball("ChandelierHeart", 2.2, Vector3.new(RCX, F0 + RH - 24, 0), C.light, M.Neon), 70, 2)
--- security at the doors, a directory board, benches
-deco("DetectorL", Vector3.new(1, 8, 1), Vector3.new(FRONT - 9, F0 + 4, -3.5), C.black, M.Metal)
-deco("DetectorR", Vector3.new(1, 8, 1), Vector3.new(FRONT - 9, F0 + 4, 3.5), C.black, M.Metal)
-deco("DetectorTop", Vector3.new(1.2, 1, 8), Vector3.new(FRONT - 9, F0 + 8.5, 0), C.black, M.Metal)
-block("SecurityDesk", Vector3.new(4, 3.6, 10), Vector3.new(FRONT - 13, F0 + 1.8, -16), C.panel, M.Wood)
-marker("MetalDetector", Vector3.new(FRONT - 9, F0 + 3, 0))
-marker("RotundaSpot", Vector3.new(RCX, F0 + 3, 0))
-do
-	local board = block("Directory", Vector3.new(0.5, 8, 10), Vector3.new(RX0 + 1.2, F0 + 6, -20), C.panelDark, M.Wood)
-	local gui = Instance.new("SurfaceGui")
-	gui.Face = Enum.NormalId.Right
-	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
-	gui.PixelsPerStud = 30
-	gui.Parent = board
-	local t = Instance.new("TextLabel")
-	t.Size = UDim2.fromScale(1, 1)
-	t.BackgroundTransparency = 1
-	t.Font = Enum.Font.Garamond
-	t.TextScaled = true
-	t.TextColor3 = Color3.fromRGB(230, 214, 170)
-	t.Text = "DIRECTORY\nCourtroom Dept. 1 ............ ahead\nClerk of the Court ........ south hall\nCourtroom Dept. 2 ........ south hall\nRecords .......................... south hall\nAttorney Conference ...... north hall\nLaw Library ................... north hall\nWitness Waiting ............ north hall"
-	t.TextXAlignment = Enum.TextXAlignment.Left
-	t.Parent = gui
-end
+deco("DetectorL", Vector3.new(1, 8, 1), Vector3.new(VX0 + 6, F0 + 4, -3.6), C.black, M.Metal)
+deco("DetectorR", Vector3.new(1, 8, 1), Vector3.new(VX0 + 6, F0 + 4, 3.6), C.black, M.Metal)
+deco("DetectorTop", Vector3.new(1.2, 1, 8.2), Vector3.new(VX0 + 6, F0 + 8.5, 0), C.black, M.Metal)
+block("SecurityDesk", Vector3.new(4, 3.6, 10), Vector3.new(VX0 + 6, F0 + 1.8, -16), C.panel, M.Wood)
+marker("MetalDetector", Vector3.new(VX0 + 6, F0 + 3, 0))
 for _, z in { -30, 30 } do
-	block("HallBench", Vector3.new(10, 1.8, 2.6), Vector3.new(RX0 + 8, F0 + 0.9, z), C.panel, M.Wood)
+	lamp(Vector3.new(VX0 + 9, F1 - 3, z), 36)
+end
+lamp(Vector3.new(VX0 + 9, F1 - 3, 0), 36)
+-- upper hall (above the vestibule, looking out through the portico)
+wallXAt("UpperHallBack", F1, VX0, -BAND, BAND, SH - 32, { { 0, 12, nil, 18 } }, C.marbleWarm, M.Marble, 2)
+wallZAt("UpperHallS", F1, -BAND, VX0, HX, SH - 32, { { 79, 8, nil, 14 } }, C.marbleWarm, M.Marble)
+wallZAt("UpperHallN", F1, BAND, VX0, HX, SH - 32, { { 79, 8, nil, 14 } }, C.marbleWarm, M.Marble)
+roomAt("UpperHall", F1, SH - 32, VX0, HX, -BAND, BAND, C.wood)
+for _, z in { -20, 20 } do
+	block("HallBench", Vector3.new(2.6, 1.8, 10), Vector3.new(VX0 + 4, F1 + 0.9, z), C.panel, M.Wood)
 end
 
 ---------------------------------------------------------------------------
--- CORRIDORS: south z -62..-50, north z 50..62 (x -60..88), back x -60..-52 (z -62..62)
+-- THE STAIR HALL (x -47..1): an imperial staircase. A broad central flight climbs to a
+-- landing with Lady Justice in a niche, then twin flights turn back up to the bridge,
+-- which crosses over the foot of the stairs into the rotunda's gallery.
+---------------------------------------------------------------------------
+group("StairHall")
+local LAND = F0 + 16 -- the half landing
+local LAND_X0, LAND_X1 = SX0, -32
+-- the hall's side walls: solid below (the corridors come in through the rotunda), and a doorway
+-- from each end of the bridge out to the upper corridors
+wallZAt("StairHallS", F0, -BAND, SX0, SX1, 32, nil, C.marbleWarm, M.Marble)
+wallZAt("StairHallN", F0, BAND, SX0, SX1, 32, nil, C.marbleWarm, M.Marble)
+wallZAt("StairHallSUp", F1, -BAND, SX0, SX1, SH - 32, { { -1.6, 5, nil, 14 } }, C.marbleWarm, M.Marble)
+wallZAt("StairHallNUp", F1, BAND, SX0, SX1, SH - 32, { { -1.6, 5, nil, 14 } }, C.marbleWarm, M.Marble)
+wallXAt("StairHallBack", F0, SX0, -BAND, BAND, SH, nil, C.marbleWarm, M.Marble, 2)
+-- central flight: 20 steps, 24 wide, from x 0 back to x -32
+do
+	local n, rise, run = 20, (LAND - F0) / 20, 1.6
+	for i = 1, n do
+		local h = rise * i
+		local x = 0 - (i - 0.5) * run
+		block("CentralStep", Vector3.new(run, h, 24), Vector3.new(x, F0 + h / 2, 0), C.marble)
+		deco("CentralNose", Vector3.new(0.3, 0.2, 24), Vector3.new(x + run / 2 - 0.15, F0 + h - 0.1, 0), C.marbleGrey)
+	end
+	-- the half landing (the full width of the hall)
+	block("Landing", Vector3.new(LAND_X1 - LAND_X0, LAND - F0, 2 * BAND), Vector3.new((LAND_X0 + LAND_X1) / 2, F0 + (LAND - F0) / 2, 0), C.marble)
+	-- the flight's balustrades (sloped marble parapets with a brass rail) and newels with lamps
+	local len = math.sqrt((n * run) ^ 2 + (LAND - F0) ^ 2)
+	local slope = math.atan2(LAND - F0, n * run)
+	for _, side in { -1, 1 } do
+		local z = side * 12.4
+		local par = block("CentralParapet", Vector3.new(len, 3.4, 0.8), Vector3.zero, C.marble)
+		par.CFrame = BASE * CFrame.new(-n * run / 2, F0 + (LAND - F0) / 2 + 1.7, z) * CFrame.Angles(0, 0, -slope)
+		local rail = deco("CentralRail", Vector3.new(len, 0.35, 1.1), Vector3.zero, C.brass, M.Metal)
+		rail.CFrame = BASE * CFrame.new(-n * run / 2, F0 + (LAND - F0) / 2 + 3.6, z) * CFrame.Angles(0, 0, -slope)
+		cylinder("Newel", 4.4, 2, Vector3.new(0.8, F0 + 2.2, z), C.marble)
+		cylinder("NewelLampPost", 6, 0.5, Vector3.new(0.8, F0 + 7.4, z), C.bronze, M.Metal)
+		light(ball("NewelLamp", 2.2, Vector3.new(0.8, F0 + 11, z), C.light, M.Neon), 36, 1.4)
+	end
+	-- the landing's open edge between the flights
+	for _, side in { -1, 1 } do
+		block("LandingParapet", Vector3.new(0.8, 3.4, 13), Vector3.new(LAND_X1 - 0.4, LAND + 1.7, side * 19), C.marble)
+		deco("LandingRail", Vector3.new(1.1, 0.35, 13), Vector3.new(LAND_X1 - 0.4, LAND + 3.55, side * 19), C.brass, M.Metal)
+	end
+end
+-- twin return flights: 20 steps each, 14 wide, from the landing (x -32) up to the bridge (x -4)
+do
+	local n, rise, run = 20, (F1 - LAND) / 20, 1.4
+	for _, side in { -1, 1 } do
+		local zc = side * (BAND - 7) -- z 26..40
+		for i = 1, n do
+			local h = (LAND - F0) + rise * i
+			local x = LAND_X1 + (i - 0.5) * run
+			block("ReturnStep", Vector3.new(run, h, 14), Vector3.new(x, F0 + h / 2, zc), C.marble)
+			deco("ReturnNose", Vector3.new(0.3, 0.2, 14), Vector3.new(x - run / 2 + 0.15, F0 + h - 0.1, zc), C.marbleGrey)
+		end
+		local len = math.sqrt((n * run) ^ 2 + (F1 - LAND) ^ 2)
+		local slope = math.atan2(F1 - LAND, n * run)
+		local z = side * (BAND - 14.4)
+		local par = block("ReturnParapet", Vector3.new(len, 3.4, 0.8), Vector3.zero, C.marble)
+		par.CFrame = BASE * CFrame.new(LAND_X1 + n * run / 2, LAND + (F1 - LAND) / 2 + 1.7, z) * CFrame.Angles(0, 0, slope)
+		local rail = deco("ReturnRail", Vector3.new(len, 0.35, 1.1), Vector3.zero, C.brass, M.Metal)
+		rail.CFrame = BASE * CFrame.new(LAND_X1 + n * run / 2, LAND + (F1 - LAND) / 2 + 3.6, z) * CFrame.Angles(0, 0, slope)
+	end
+end
+-- the bridge's parapet (facing back down the stairs), between the two flight tops
+block("BridgeParapet", Vector3.new(0.8, 3.4, 2 * (BAND - 14)), Vector3.new(-4.4, F1 + 1.7, 0), C.marble)
+deco("BridgeRail", Vector3.new(1.1, 0.35, 2 * (BAND - 14)), Vector3.new(-4.4, F1 + 3.55, 0), C.brass, M.Metal)
+-- Lady Justice in a niche on the landing, framed by green marble columns; a great window above
+block("NicheBack", Vector3.new(1, 30, 16), Vector3.new(SX0 + 1.2, LAND + 15, 0), C.marbleGreen)
+for _, z in { -9, 9 } do
+	column(SX0 + 3, LAND, z, 26, 2.2, C.marble)
+end
+statue("StairJustice", SX0 + 5, LAND, 0, 1.3, true)
+-- the stair hall's coffered ceiling and lanterns
+for xi = 0, 8 do
+	for zi = 0, 11 do
+		deco("StairCoffer", Vector3.new(4.2, 0.6, 5.4), Vector3.new(SX0 + 3 + xi * 5.3, ROOF - 0.9, -BAND + 3.5 + zi * 6.6), C.marbleGrey)
+	end
+end
+block("StairHallCeiling", Vector3.new(SX1 - SX0, 1, 2 * BAND), Vector3.new((SX0 + SX1) / 2, ROOF - 0.1, 0), C.plaster, M.Plaster)
+for _, x in { -36, -14 } do
+	for _, z in { -22, 22 } do
+		cylinder("LanternRod", 14, 0.25, Vector3.new(x, ROOF - 7, z), C.bronze, M.Metal).CanCollide = false
+		light(ball("StairLantern", 3, Vector3.new(x, ROOF - 15, z), C.light, M.Neon), 46, 1.4)
+	end
+end
+marker("Room_StairLanding", Vector3.new(-40, LAND + 3, 20))
+marker("Room_Bridge", Vector3.new(-1.5, F1 + 3, 0))
+
+---------------------------------------------------------------------------
+-- CORRIDORS (both floors): z +-(40..52), x -88..88
 ---------------------------------------------------------------------------
 group("Corridors")
-local CW = 12
-for _, side in { -1, 1 } do
-	local zc = side * (RZ + CW / 2)
-	deco("Runner", Vector3.new(146, 0.1, 4), Vector3.new(15, F0 + 0.06, zc), Color3.fromRGB(110, 28, 34), M.Fabric)
-	block("CorridorCeiling", Vector3.new(148, 0.8, CW), Vector3.new(14, F0 + IH + 0.4, zc), C.plaster, M.Plaster)
-	for x = -48, 80, 32 do
-		lamp(Vector3.new(x, F0 + IH - 1.5, zc), 30)
+for _, y0 in { F0, F1 } do
+	for _, side in { -1, 1 } do
+		local zc = side * (BAND + CORR / 2)
+		deco("Runner", Vector3.new(2 * HX - 6, 0.1, 5), Vector3.new(0, y0 + 0.06, zc), Color3.fromRGB(110, 28, 34), M.Fabric)
+		for x = -76, 76, 19 do
+			lamp(Vector3.new(x, (if y0 == F0 then F1 else ROOF) - 1.5, zc), 28)
+		end
 	end
 end
-block("BackCorridorCeiling", Vector3.new(8, 0.8, 2 * (RZ + CW)), Vector3.new(-56, F0 + IH + 0.4, 0), C.plaster, M.Plaster)
-lamp(Vector3.new(-56, F0 + IH - 1.5, 0), 30)
+-- the corridors' inner walls beside the stair hall / back block are the stair hall walls (above);
+-- beside the rotunda the poche closes them; beside the back block:
+wallZAt("BackBlockS", F0, -BAND, -HX, SX0, 32, { { -70, 8, nil, 14 } })
+wallZAt("BackBlockN", F0, BAND, -HX, SX0, 32, { { -60, 8, nil, 14 } })
+wallZAt("BackBlockSUp", F1, -BAND, -HX, SX0, SH - 32, nil)
+wallZAt("BackBlockNUp", F1, BAND, -HX, SX0, SH - 32, { { -52, 8, nil, 14 } })
 
 ---------------------------------------------------------------------------
--- MAIN COURTROOM, Dept. 1 (x -52..26, z -50..50)
+-- GROUND FLOOR ROOMS
 ---------------------------------------------------------------------------
-group("Courtroom")
-local CX0, CX1, CZ = -52, RX0, RZ
-local CH = 44
--- side walls double as corridor walls: a door at the bench end (south: from holding / north: jury)
-wallZ("CourtS", -CZ, CX0, CX1, CH, { { -40, 6 }, { -20, 7, 14, 38 }, { -2, 7, 14, 38 }, { 16, 7, 14, 38 } })
-wallZ("CourtN", CZ, CX0, CX1, CH, { { -40, 6 }, { -20, 7, 14, 38 }, { -2, 7, 14, 38 }, { 16, 7, 14, 38 } })
-wallX("CourtW", CX0, -CZ, CZ, CH, { { 30, 6 } }) -- the judge's door from the back corridor (north end)
-block("CourtCeiling", Vector3.new(CX1 - CX0, 1, 2 * CZ), Vector3.new((CX0 + CX1) / 2, F0 + CH + 0.5, 0), C.plaster, M.Plaster)
+group("SouthGround")
+local S0, S1 = -HZ, -WING
+wallZAt("SouthGroundHall", F0, S1, -HX, HX, 32, { { 59, 10, nil, 14 }, { 10, 8, nil, 14 }, { -20, 6, nil, 12 }, { -59, 10, nil, 14 } })
+wallXAt("SG_Div1", F0, 30, S0, S1, 32, { { -100, 6, nil, 12 } })
+wallXAt("SG_Div2", F0, -10, S0, S1, 32, nil)
+wallXAt("SG_Div3", F0, -30, S0, S1, 32, nil)
+-- CLERK OF THE COURT
+roomAt("ClerksOffice", F0, 32, 30, HX, S0, S1, C.marbleWarm, M.Marble, Vector3.new(59, F0 + 3, -58))
+block("ClerkCounter", Vector3.new(44, 4, 3), Vector3.new(63, F0 + 2, -66), C.panel, M.Wood)
+deco("ClerkGrille", Vector3.new(44, 7, 0.3), Vector3.new(63, F0 + 7.5, -66.6), C.brass, M.DiamondPlate).Transparency = 0.45
+deco("ClerkGate", Vector3.new(4, 3.4, 0.4), Vector3.new(36, F0 + 1.7, -66), C.panelDark, M.Wood)
+marker("ClerkWindow", Vector3.new(63, F0 + 3, -60))
+marker("ClerkSpot", Vector3.new(63, F0 + 3, -71))
 for i = 0, 3 do
-	deco("CeilingBeam", Vector3.new(2.4, 2.4, 2 * CZ), Vector3.new(CX0 + 10 + i * 20, F0 + CH - 1.2, 0), C.panelDark, M.Wood)
+	block("ClerkDesk", Vector3.new(6, 3, 4), Vector3.new(44 + i * 11, F0 + 1.5, -84), C.panelDark, M.Wood)
+	chair("ClerkChair" .. i, Vector3.new(44 + i * 11, F0 + 1, -87.5), Vector3.new(0, 0, 1))
+	block("FilingCabinet", Vector3.new(4, 6, 2.2), Vector3.new(44 + i * 11, F0 + 3, S0 + 2.6), C.marbleGrey, M.Metal)
 end
-for k = 0, 4 do
-	local x = CX0 + 3 + k * 18
-	for _, z in { -CZ + 1.3, CZ - 1.3 } do
-		deco("Pilaster", Vector3.new(3, CH - 4, 0.9), Vector3.new(x, F0 + (CH - 4) / 2, z), C.marble)
-		deco("PilasterCap", Vector3.new(4, 2, 1.4), Vector3.new(x, F0 + CH - 5, z), C.marbleWarm)
+-- RECORDS
+roomAt("Records", F0, 32, -10, 30, S0, S1, C.wood, nil, Vector3.new(10, F0 + 3, -58))
+for i = 0, 5 do
+	block("RecordShelf", Vector3.new(30, 14, 2), Vector3.new(10, F0 + 7, -66 - i * 8), C.panelDark, M.Wood)
+	for k = 0, 3 do
+		deco("Files", Vector3.new(29, 2, 2.1), Vector3.new(10, F0 + 2 + k * 3.2, -66 - i * 8), Color3.fromRGB(196 - k * 18, 178, 140), M.Fabric)
 	end
 end
-for _, z in { -CZ + 1.2, CZ - 1.2 } do
-	deco("CourtCornice", Vector3.new(CX1 - CX0, 1.6, 1.6), Vector3.new((CX0 + CX1) / 2, F0 + CH - 2.5, z), C.marbleWarm)
-	deco("Wainscot", Vector3.new(CX1 - CX0, 10, 0.4), Vector3.new((CX0 + CX1) / 2, F0 + 5, z - (z / math.abs(z)) * 0.6), C.panel, M.Wood)
+-- RESTROOMS
+roomAt("Restrooms", F0, 32, -30, -10, S0, S1, C.tile, M.SmoothPlastic, Vector3.new(-20, F0 + 3, -58))
+for i = 0, 3 do
+	block("Stall", Vector3.new(0.4, 8, 8), Vector3.new(-27 + i * 5, F0 + 4, -110), C.marbleGrey)
+	block("Sink", Vector3.new(2, 3, 3), Vector3.new(-28, F0 + 3, -70 - i * 6), C.tile, M.SmoothPlastic)
 end
-deco("BenchWall", Vector3.new(0.6, 30, 2 * CZ - 24), Vector3.new(CX0 + 1.2, F0 + 15, -6), C.marble)
-for _, z in { -30, 18 } do
-	deco("GreenPanel", Vector3.new(0.3, 18, 12), Vector3.new(CX0 + 1.6, F0 + 14, z), C.marbleGreen)
+-- JURY ASSEMBLY (where the jury pool waits to be called)
+roomAt("JuryAssembly", F0, 32, -HX, -30, S0, S1, C.wood, nil, Vector3.new(-59, F0 + 3, -58))
+for row = 0, 4 do
+	for k = 0, 5 do
+		chair("AssemblySeat" .. row .. "_" .. k, Vector3.new(-80 + k * 8, F0 + 1, -70 - row * 8), Vector3.new(0, 0, 1), C.panel)
+	end
 end
-deco("Floorboards", Vector3.new(CX1 - CX0, 0.2, 2 * CZ), Vector3.new((CX0 + CX1) / 2, F0 + 0.1, 0), C.wood, M.WoodPlanks)
-block("BenchDais", Vector3.new(12, 4, 30), Vector3.new(CX0 + 8, F0 + 2, 0), C.panelDark, M.Wood)
-for k = 1, 4 do -- the judge's steps up onto the bench, from the door side
-	block("BenchStep", Vector3.new(10, k, 1.5), Vector3.new(CX0 + 8, F0 + k / 2, 15 + (4 - k) * 1.5 + 0.75), C.panelDark, M.Wood)
+
+group("NorthGround")
+local N0, N1 = WING, HZ
+wallZAt("NorthGroundHall", F0, N0, -HX, HX, 32, { { 59, 10, nil, 14 }, { 20, 6, nil, 12 }, { 0, 6, nil, 12 }, { -20, 6, nil, 12 }, { -59, 8, nil, 14 } })
+wallXAt("NG_Div1", F0, 30, N0, N1, 32, nil)
+wallXAt("NG_Div2", F0, 10, N0, N1, 32, nil)
+wallXAt("NG_Div3", F0, -10, N0, N1, 32, nil)
+wallXAt("NG_Div4", F0, -30, N0, N1, 32, nil)
+-- LAW LIBRARY
+roomAt("LawLibrary", F0, 32, 30, HX, N0, N1, C.wood, nil, Vector3.new(59, F0 + 3, 58))
+for i = 0, 4 do
+	block("Bookcase", Vector3.new(34, 20, 2), Vector3.new(63, F0 + 10, 70 + i * 9), C.panelDark, M.Wood)
+	for k = 0, 5 do
+		deco("Books", Vector3.new(33, 2.6, 2.1), Vector3.new(63, F0 + 2 + k * 3.3, 70 + i * 9), if k % 2 == 0 then C.books else C.green, M.Fabric)
+	end
 end
-block("BenchFront", Vector3.new(2, 7, 30), Vector3.new(CX0 + 14, F0 + 3.5, 0), C.panel, M.Wood)
+for _, x in { 38, 80 } do
+	block("ReadingTable", Vector3.new(4, 3, 14), Vector3.new(x, F0 + 1.5, 108), C.panel, M.Wood)
+	ball("BankerLamp", 1.2, Vector3.new(x, F0 + 3.8, 108), C.green, M.Glass).CanCollide = false
+end
+-- ATTORNEY CONFERENCE A / B
+for i, r in { { 10, 30 }, { -10, 10 } } do
+	local cx = (r[1] + r[2]) / 2
+	roomAt("AttorneyConference" .. i, F0, 32, r[1], r[2], N0, N1, C.wood, nil, Vector3.new(cx, F0 + 3, 58))
+	block("ConfTable", Vector3.new(8, 0.6, 24), Vector3.new(cx, F0 + 3.2, 88), C.panelDark, M.Wood)
+	block("ConfTableBase", Vector3.new(3, 2.9, 14), Vector3.new(cx, F0 + 1.45, 88), C.panelDark, M.Wood)
+	for k = 0, 3 do
+		chair("Conf" .. i .. "_" .. k .. "a", Vector3.new(cx - 6, F0 + 1, 79 + k * 6), Vector3.new(1, 0, 0), C.leather)
+		chair("Conf" .. i .. "_" .. k .. "b", Vector3.new(cx + 6, F0 + 1, 79 + k * 6), Vector3.new(-1, 0, 0), C.leather)
+	end
+end
+-- WITNESS WAITING
+roomAt("WitnessWaiting", F0, 32, -30, -10, N0, N1, C.wood, nil, Vector3.new(-20, F0 + 3, 58))
+for k = 0, 4 do
+	block("WaitingBench", Vector3.new(14, 1.8, 2.6), Vector3.new(-20, F0 + 0.9, 66 + k * 10), C.panel, M.Wood)
+end
+-- COURT OFFICERS
+roomAt("CourtOfficers", F0, 32, -HX, -30, N0, N1, C.marbleGrey, M.Marble, Vector3.new(-59, F0 + 3, 58))
+for i = 0, 9 do
+	block("Locker", Vector3.new(2.6, 7, 2), Vector3.new(-84 + i * 3, F0 + 3.5, N1 - 2.2), Color3.fromRGB(70, 80, 96), M.Metal)
+end
+block("OfficersDesk", Vector3.new(14, 3, 5), Vector3.new(-60, F0 + 1.5, 92), C.panelDark, M.Wood)
+deco("Monitors", Vector3.new(12, 3, 0.6), Vector3.new(-60, F0 + 4.6, 94), C.black, M.Glass)
+
+-- THE BACK BLOCK, ground: sally port hall, holding cells, the secure stair up to court holding
+group("BackGround")
+roomAt("SallyPort", F0, 32, -HX, SX0, -BAND, BAND, C.granite, M.Concrete, Vector3.new(-74, F0 + 3, -24))
+for c = 0, 2 do
+	local z0 = 0 + c * 12 -- cells along z 0..36, bars facing -x
+	wallZAt("CellWall", F0, z0, -HX, -68, 14, nil, C.granite, M.Concrete)
+	for i = 0, 6 do
+		if i < 2 or i > 4 then
+			cylinder("CellBar", 14, 0.4, Vector3.new(-68, F0 + 7, z0 + 1 + i * 1.6), C.black, M.Metal)
+		end
+	end
+	block("CellBench", Vector3.new(2.4, 1.8, 10), Vector3.new(-HX + 2.4, F0 + 0.9, z0 + 6), C.granite, M.Concrete)
+end
+wallZAt("CellWallEnd", F0, 36, -HX, -68, 14, nil, C.granite, M.Concrete)
+-- the secure stair (switchback, 2 x 16 steps) along the stair hall's back wall: x -64..-50
+do
+	local n, rise, run = 16, (F1 - F0) / 32, 2
+	for i = 1, n do
+		local h = rise * i
+		block("SecureStepA", Vector3.new(6, h, run), Vector3.new(-53, F0 + h / 2, -36 + (i - 0.5) * run), C.granite, M.Concrete)
+	end
+	block("SecureLanding", Vector3.new(14, rise * n, 6), Vector3.new(-56, F0 + rise * n / 2, -36 + n * run + 3), C.granite, M.Concrete)
+	for i = 1, n do
+		local h = rise * (n + i)
+		block("SecureStepB", Vector3.new(6, h, run), Vector3.new(-60, F0 + h / 2, -36 + n * run - (i - 0.5) * run), C.granite, M.Concrete)
+	end
+	-- the opening in the upper floor slab above the stair is left by the slab layout below
+	block("SecureRail", Vector3.new(0.6, 3.4, n * run), Vector3.new(-56.5, F0 + 3, -36 + n * run / 2), C.black, M.Metal)
+end
+marker("Room_SecureStair", Vector3.new(-60, F1 + 3, -30))
+
+---------------------------------------------------------------------------
+-- UPPER FLOOR ROOMS
+---------------------------------------------------------------------------
+group("NorthUpper")
+local UH = SH - 32
+-- the corridor wall: the courtroom's public doors, the jury room, the press room
+wallZAt("NorthUpperHall", F1, N0, -HX, HX, UH, { { 50, 12, nil, 18 }, { -26, 6, nil, 14 }, { -64, 6, nil, 14 }, { 74, 6, nil, 14 } })
+wallXAt("NU_Div1", F1, 60, N0, N1, UH, nil)
+wallXAt("NU_Div2", F1, -40, N0, N1, UH, { { 104, 6, nil, 14 } }) -- the jury's door into the courtroom
+-- THE MAIN COURTROOM, Dept. 1 (x -40..60, z 52..116): bench in the west, gallery in the east
+local CX0, CX1, CZ0, CZ1 = -40, 60, N0, N1
+local CZC = (CZ0 + CZ1) / 2 -- 84
+roomAt("Courtroom", F1, UH, CX0, CX1, CZ0, CZ1, C.wood, nil, Vector3.new(56, F1 + 3, CZC))
+for k = 0, 5 do
+	local x = CX0 + 6 + k * 17.6
+	deco("Pilaster", Vector3.new(3, UH - 6, 0.9), Vector3.new(x, F1 + (UH - 6) / 2, CZ1 - 2.4), C.marble)
+	deco("PilasterCap", Vector3.new(4, 2, 1.4), Vector3.new(x, F1 + UH - 6, CZ1 - 2.4), C.marbleWarm)
+	deco("Pilaster", Vector3.new(3, UH - 6, 0.9), Vector3.new(x, F1 + (UH - 6) / 2, CZ0 + 1.4), C.marble)
+end
+deco("CourtWainscotN", Vector3.new(CX1 - CX0, 10, 0.4), Vector3.new((CX0 + CX1) / 2, F1 + 5, CZ1 - 2), C.panel, M.Wood)
+deco("CourtWainscotS", Vector3.new(CX1 - CX0, 10, 0.4), Vector3.new((CX0 + CX1) / 2, F1 + 5, CZ0 + 1), C.panel, M.Wood)
+for i = 0, 4 do
+	deco("CourtBeam", Vector3.new(2.4, 2.4, CZ1 - CZ0), Vector3.new(CX0 + 10 + i * 20, ROOF - 1.4, CZC), C.panelDark, M.Wood)
+end
+-- the bench wall (marble with green panels and the seal)
+deco("BenchWall", Vector3.new(0.6, 34, 40), Vector3.new(CX0 + 1, F1 + 17, CZC), C.marble)
+for _, dz in { -14, 14 } do
+	deco("GreenPanel", Vector3.new(0.3, 20, 8), Vector3.new(CX0 + 1.4, F1 + 14, CZC + dz), C.marbleGreen)
+end
+cylinder("Seal", 0.5, 12, Vector3.new(CX0 + 1.6, F1 + 24, CZC), C.brass, M.Metal, "x").CanCollide = false
+cylinder("SealInner", 0.6, 8, Vector3.new(CX0 + 1.7, F1 + 24, CZC), C.bronze, M.Metal, "x").CanCollide = false
+deco("InGodWeTrust", Vector3.new(0.3, 2.2, 22), Vector3.new(CX0 + 1.4, F1 + 32, CZC), C.brass, M.Metal)
+for _, dz in { -8, 8 } do
+	cylinder("FlagPole", 16, 0.4, Vector3.new(CX0 + 3.5, F1 + 8, CZC + dz), C.brass, M.Metal)
+	deco("Flag", Vector3.new(0.2, 5, 6), Vector3.new(CX0 + 3.5, F1 + 13, CZC + dz + (if dz > 0 then 3 else -3)), if dz > 0 then Color3.fromRGB(40, 60, 140) else Color3.fromRGB(160, 40, 40), M.Fabric)
+end
+-- the bench: raised dais with steps on the north side for the judge
+block("BenchDais", Vector3.new(12, 4, 28), Vector3.new(CX0 + 8, F1 + 2, CZC), C.panelDark, M.Wood)
+for k = 1, 4 do
+	block("BenchStep", Vector3.new(10, k, 1.5), Vector3.new(CX0 + 8, F1 + k / 2, CZC + 14 + (4 - k) * 1.5 + 0.75), C.panelDark, M.Wood)
+end
+block("BenchFront", Vector3.new(2, 7, 28), Vector3.new(CX0 + 14, F1 + 3.5, CZC), C.panel, M.Wood)
 for k = -3, 3 do
-	deco("BenchPanel", Vector3.new(0.3, 4.6, 3.2), Vector3.new(CX0 + 15.1, F0 + 3.5, k * 4), C.panelDark, M.Wood)
+	deco("BenchPanel", Vector3.new(0.3, 4.6, 3.2), Vector3.new(CX0 + 15.1, F1 + 3.5, CZC + k * 3.8), C.panelDark, M.Wood)
 end
-block("BenchTop", Vector3.new(4, 0.6, 31), Vector3.new(CX0 + 13, F0 + 7.3, 0), C.panelDark, M.Wood)
-chair("JudgeSeat", Vector3.new(CX0 + 8, F0 + 4.6, 0), Vector3.new(1, 0, 0), C.black)
-cylinder("Seal", 0.5, 12, Vector3.new(CX0 + 1.8, F0 + 22, -6), C.brass, M.Metal, "x").CanCollide = false
-cylinder("SealInner", 0.6, 8, Vector3.new(CX0 + 1.9, F0 + 22, -6), C.bronze, M.Metal, "x").CanCollide = false
-for _, z in { -14, 6 } do
-	cylinder("FlagPole", 16, 0.4, Vector3.new(CX0 + 4, F0 + 8, z), C.brass, M.Metal)
-	deco("Flag", Vector3.new(0.2, 5, 6), Vector3.new(CX0 + 4, F0 + 13, z + (if z > 0 then 3 else -3)), if z > 0 then Color3.fromRGB(40, 60, 140) else Color3.fromRGB(160, 40, 40), M.Fabric)
-end
-block("ClerkDesk", Vector3.new(4, 3.4, 10), Vector3.new(CX0 + 18, F0 + 1.7, 16), C.panel, M.Wood)
-chair("CourtClerkSeat", Vector3.new(CX0 + 15, F0 + 1, 16), Vector3.new(1, 0, 0))
-block("WitnessBox", Vector3.new(7, 2, 7), Vector3.new(CX0 + 14, F0 + 1, -22), C.panelDark, M.Wood)
-deco("WitnessRail", Vector3.new(0.5, 4, 7), Vector3.new(CX0 + 17.6, F0 + 4, -22), C.panel, M.Wood)
-block("WitnessStep", Vector3.new(4, 1, 1.6), Vector3.new(CX0 + 13, F0 + 0.5, -17.7), C.panelDark, M.Wood) -- up into the box
-chair("WitnessSeat", Vector3.new(CX0 + 13.5, F0 + 2.4, -22), Vector3.new(1, 0, 0.3))
-block("DefenseTable", Vector3.new(5, 3.2, 14), Vector3.new(CX0 + 31, F0 + 1.6, -12), C.panel, M.Wood)
-chair("DefendantSeat", Vector3.new(CX0 + 35, F0 + 1, -15), Vector3.new(-1, 0, 0))
-chair("DefenseSeat", Vector3.new(CX0 + 35, F0 + 1, -9), Vector3.new(-1, 0, 0))
-block("ProsecutionTable", Vector3.new(5, 3.2, 14), Vector3.new(CX0 + 31, F0 + 1.6, 12), C.panel, M.Wood)
-chair("ProsecutorSeat", Vector3.new(CX0 + 35, F0 + 1, 12), Vector3.new(-1, 0, 0))
-marker("BailiffSpot", Vector3.new(CX0 + 20, F0 + 3, -34))
-block("JuryDais", Vector3.new(26, 1.2, 6), Vector3.new(CX0 + 35, F0 + 0.6, 38), C.panelDark, M.Wood)
-block("JuryDais2", Vector3.new(26, 2.4, 5), Vector3.new(CX0 + 35, F0 + 1.2, 43.5), C.panelDark, M.Wood)
-block("JuryRail", Vector3.new(20, 3.5, 0.6), Vector3.new(CX0 + 38, F0 + 1.75, 34.6), C.panel, M.Wood) -- open at the bench end
+block("BenchTop", Vector3.new(4, 0.6, 29), Vector3.new(CX0 + 13, F1 + 7.3, CZC), C.panelDark, M.Wood)
+chair("JudgeSeat", Vector3.new(CX0 + 8, F1 + 4.6, CZC), Vector3.new(1, 0, 0), C.black)
+-- clerk and witness stand either side of the bench
+block("CourtClerkDesk", Vector3.new(4, 3.4, 10), Vector3.new(CX0 + 18, F1 + 1.7, CZC + 20), C.panel, M.Wood)
+chair("CourtClerkSeat", Vector3.new(CX0 + 15, F1 + 1, CZC + 20), Vector3.new(1, 0, 0))
+block("WitnessBox", Vector3.new(7, 2, 7), Vector3.new(CX0 + 16, F1 + 1, CZC - 20), C.panelDark, M.Wood)
+deco("WitnessRail", Vector3.new(0.5, 4, 7), Vector3.new(CX0 + 19.6, F1 + 4, CZC - 20), C.panel, M.Wood)
+block("WitnessStep", Vector3.new(4, 1, 1.6), Vector3.new(CX0 + 15, F1 + 0.5, CZC - 15.7), C.panelDark, M.Wood)
+chair("WitnessSeat", Vector3.new(CX0 + 15.5, F1 + 2.4, CZC - 20), Vector3.new(1, 0, 0.3))
+-- the jury box along the north wall (the jury enters from its own door in the west wall)
+block("JuryDais", Vector3.new(30, 1.2, 6), Vector3.new(CX0 + 30, F1 + 0.6, CZ1 - 10), C.panelDark, M.Wood)
+block("JuryDais2", Vector3.new(30, 2.4, 5), Vector3.new(CX0 + 30, F1 + 1.2, CZ1 - 4.5), C.panelDark, M.Wood)
+block("JuryRail", Vector3.new(24, 3.5, 0.6), Vector3.new(CX0 + 33, F1 + 1.75, CZ1 - 13.4), C.panel, M.Wood)
 for row = 0, 1 do
 	for i = 1, 6 do
-		chair("JurorSeat" .. (row * 6 + i), Vector3.new(CX0 + 24 + (i - 1) * 4.2, F0 + 1.6 + row * 1.2, 37 + row * 5.5), Vector3.new(0, 0, -1), C.panel)
+		chair("JurorSeat" .. (row * 6 + i), Vector3.new(CX0 + 19 + (i - 1) * 4.6, F1 + 1.6 + row * 1.2, CZ1 - 11 + row * 5.5), Vector3.new(0, 0, -1), C.panel)
 	end
 end
--- the bar with a swing gate in the middle, then the gallery
-block("BarRailS", Vector3.new(0.8, 3.4, 40), Vector3.new(CX0 + 47, F0 + 1.7, -24), C.panel, M.Wood)
-block("BarRailN", Vector3.new(0.8, 3.4, 26), Vector3.new(CX0 + 47, F0 + 1.7, 17), C.panel, M.Wood)
+-- counsel tables, the bar with its gate, the gallery
+block("DefenseTable", Vector3.new(5, 3.2, 14), Vector3.new(CX0 + 34, F1 + 1.6, CZC - 10), C.panel, M.Wood)
+chair("DefendantSeat", Vector3.new(CX0 + 38, F1 + 1, CZC - 13), Vector3.new(-1, 0, 0))
+chair("DefenseSeat", Vector3.new(CX0 + 38, F1 + 1, CZC - 7), Vector3.new(-1, 0, 0))
+block("ProsecutionTable", Vector3.new(5, 3.2, 14), Vector3.new(CX0 + 34, F1 + 1.6, CZC + 10), C.panel, M.Wood)
+chair("ProsecutorSeat", Vector3.new(CX0 + 38, F1 + 1, CZC + 10), Vector3.new(-1, 0, 0))
+marker("BailiffSpot", Vector3.new(CX0 + 22, F1 + 3, CZ0 + 6))
+block("BarRailS", Vector3.new(0.8, 3.4, CZC - 4 - CZ0 - 2), Vector3.new(CX0 + 50, F1 + 1.7, (CZ0 + 2 + CZC - 4) / 2), C.panel, M.Wood)
+block("BarRailN", Vector3.new(0.8, 3.4, CZ1 - 16 - CZC - 4), Vector3.new(CX0 + 50, F1 + 1.7, (CZC + 4 + CZ1 - 16) / 2), C.panel, M.Wood)
 local g = 0
-for row = 0, 5 do
-	local x = CX0 + 53 + row * 4.4
+for row = 0, 7 do
+	local x = CX0 + 56 + row * 5
 	for _, side in { -1, 1 } do
-		local zc = side * 27
-		block("Pew", Vector3.new(2.4, 1.6, 28), Vector3.new(x, F0 + 1.3, zc), C.panel, M.Wood)
-		block("PewBack", Vector3.new(0.5, 3.6, 28), Vector3.new(x + 1.3, F0 + 2.4, zc), C.panel, M.Wood)
-		for k = 0, 5 do
+		local zc = CZC + side * 15
+		block("Pew", Vector3.new(2.4, 1.6, 22), Vector3.new(x, F1 + 1.3, zc), C.panel, M.Wood)
+		block("PewBack", Vector3.new(0.5, 3.6, 22), Vector3.new(x + 1.3, F1 + 2.4, zc), C.panel, M.Wood)
+		for k = 0, 4 do
 			g += 1
-			local s = chair("GallerySeat" .. g, Vector3.new(x, F0 + 2.2, zc - 12 + k * 4.8), Vector3.new(-1, 0, 0), C.panel, true)
+			local s = chair("GallerySeat" .. g, Vector3.new(x, F1 + 2.2, zc - 9 + k * 4.5), Vector3.new(-1, 0, 0), C.panel, true)
 			s.Transparency = 1
 		end
 	end
 end
-for _, x in { CX0 + 14, CX0 + 40, CX0 + 66 } do
-	for _, z in { -24, 24 } do
-		cylinder("PendantRod", 6, 0.2, Vector3.new(x, F0 + CH - 3, z), C.brass, M.Metal).CanCollide = false
-		light(ball("Pendant", 2.4, Vector3.new(x, F0 + CH - 7, z), C.light, M.Neon), 44, 1.2)
-	end
-end
-marker("Room_Courtroom", Vector3.new(CX0 + 60, F0 + 3, 0))
-
----------------------------------------------------------------------------
--- THE SOUTH WING (z -116..-62): Clerk | Records | Restrooms | Courtroom Dept. 2 | Holding
----------------------------------------------------------------------------
-group("SouthWing")
-local SZ0, SZ1 = -HZ, -(RZ + CW) -- -116 .. -62
--- the corridor's outer wall, with a door into every room
-wallZ("SouthHallWall", SZ1, -60, FRONT, IH, { { 72, 8 }, { 40, 6 }, { 15, 5 }, { -4, 8 }, { -36, 8 } })
--- room dividers
-wallX("ClerkDivider", 54, SZ0, SZ1, IH, { { -100, 6 } }) -- clerk staff into records
-wallX("RecordsDivider", 26, SZ0, SZ1, IH, nil)
-wallX("RestroomDivider", 4, SZ0, SZ1, IH, nil)
-wallX("HoldingDivider", -60, SZ0, SZ1, IH, nil)
--- CLERK'S OFFICE (x 54..88): the public counter by the door, desks and filing cabinets behind
-room("ClerksOffice", 54, FRONT, SZ0, SZ1, IH, nil, C.marbleWarm, M.Marble)
-block("ClerkCounter", Vector3.new(26, 4, 3), Vector3.new(73, F0 + 2, -70), C.panel, M.Wood)
-deco("ClerkGrille", Vector3.new(26, 7, 0.3), Vector3.new(73, F0 + 7.5, -70.6), C.brass, M.DiamondPlate).Transparency = 0.45
-deco("ClerkCounterGate", Vector3.new(5, 3.4, 0.4), Vector3.new(57, F0 + 1.7, -70), C.panelDark, M.Wood) -- staff walk through
-marker("ClerkWindow", Vector3.new(71, F0 + 3, -66))
-marker("ClerkSpot", Vector3.new(71, F0 + 3, -75))
-for i = 0, 2 do
-	block("ClerkDesk", Vector3.new(6, 3, 4), Vector3.new(62 + i * 9, F0 + 1.5, -86), C.panelDark, M.Wood)
-	chair("ClerkChair" .. i, Vector3.new(62 + i * 9, F0 + 1, -89), Vector3.new(0, 0, 1))
-	block("FilingCabinet", Vector3.new(3, 6, 2), Vector3.new(62 + i * 9, F0 + 3, SZ0 + 2), C.marbleGrey, M.Metal)
-end
--- RECORDS (x 26..54): rows of shelving
-room("Records", 26, 54, SZ0, SZ1, IH, nil, C.wood)
-for i = 0, 4 do
-	block("RecordShelf", Vector3.new(20, 12, 2), Vector3.new(40, F0 + 6, -78 - i * 7), C.panelDark, M.Wood)
-	for k = 0, 3 do
-		deco("Files", Vector3.new(19, 1.8, 1.8), Vector3.new(40, F0 + 1.8 + k * 3, -78 - i * 7), Color3.fromRGB(200 - k * 20, 180, 140), M.Fabric)
-	end
-end
--- RESTROOMS (x 4..26)
-room("Restrooms", 4, 26, SZ0, SZ1, IH, nil, C.tile, M.SmoothPlastic)
-for i = 0, 3 do
-	block("Stall", Vector3.new(0.4, 8, 7), Vector3.new(6 + i * 5, F0 + 4, -108), C.marbleGrey)
-	block("Sink", Vector3.new(2, 3, 3), Vector3.new(5.6, F0 + 3, -72 - i * 5), C.tile, M.SmoothPlastic)
-end
--- COURTROOM Dept. 2 (x -60..4): a smaller courtroom
-room("CourtroomDept2", -60, 4, SZ0, SZ1, IH, nil, C.wood)
-block("Dept2Bench", Vector3.new(6, 5, 18), Vector3.new(-55, F0 + 2.5, -90), C.panelDark, M.Wood)
-chair("Dept2JudgeSeat", Vector3.new(-57, F0 + 5.2, -90), Vector3.new(1, 0, 0), C.black)
-block("Dept2Table", Vector3.new(4, 3, 10), Vector3.new(-40, F0 + 1.5, -96), C.panel, M.Wood)
-block("Dept2Table", Vector3.new(4, 3, 10), Vector3.new(-40, F0 + 1.5, -82), C.panel, M.Wood)
-for row = 0, 3 do
-	block("Dept2Pew", Vector3.new(2.4, 1.6, 34), Vector3.new(-26 + row * 6, F0 + 1.3, -92), C.panel, M.Wood)
-	block("Dept2PewBack", Vector3.new(0.5, 3.6, 34), Vector3.new(-24.7 + row * 6, F0 + 2.4, -92), C.panel, M.Wood)
-end
-cylinder("Dept2Seal", 0.5, 8, Vector3.new(-59, F0 + 14, -90), C.brass, M.Metal, "x").CanCollide = false
-
----------------------------------------------------------------------------
--- THE NORTH WING (z 62..116): Conference 1 & 2 | Law Library | Witness Waiting | JURY ROOM
----------------------------------------------------------------------------
-group("NorthWing")
-local NZ0, NZ1 = RZ + CW, HZ -- 62 .. 116
-wallZ("NorthHallWall", NZ0, -60, FRONT, IH, { { 77, 6 }, { 55, 6 }, { 27, 8 }, { 0, 6 }, { -31, 7 } })
-wallX("ConfDivider", 66, NZ0, NZ1, IH, nil)
-wallX("LibraryDivider", 44, NZ0, NZ1, IH, nil)
-wallX("WitnessDivider", 10, NZ0, NZ1, IH, nil)
-wallX("JuryDivider", -10, NZ0, NZ1, IH, nil)
-wallX("ChambersDivider", -60, NZ0, NZ1, IH, nil)
--- ATTORNEY CONFERENCE ROOMS
-for i, r in { { 66, FRONT }, { 44, 66 } } do
-	room("AttorneyConference" .. i, r[1], r[2], NZ0, NZ1, IH, nil, C.wood)
-	local cx = (r[1] + r[2]) / 2
-	block("ConfTable", Vector3.new(8, 0.6, 22), Vector3.new(cx, F0 + 3.2, 89), C.panelDark, M.Wood)
-	block("ConfTableBase", Vector3.new(3, 2.9, 12), Vector3.new(cx, F0 + 1.45, 89), C.panelDark, M.Wood)
-	for k = 0, 3 do
-		chair("ConfChair" .. i .. "_" .. k .. "a", Vector3.new(cx - 6, F0 + 1, 80 + k * 6), Vector3.new(1, 0, 0), C.leather)
-		chair("ConfChair" .. i .. "_" .. k .. "b", Vector3.new(cx + 6, F0 + 1, 80 + k * 6), Vector3.new(-1, 0, 0), C.leather)
-	end
-end
--- LAW LIBRARY: tall bookcases, reading tables with green lamps
-room("LawLibrary", 10, 44, NZ0, NZ1, IH, nil, C.wood)
-for i = 0, 3 do
-	block("Bookcase", Vector3.new(26, 18, 2), Vector3.new(27, F0 + 9, 80 + i * 9), C.panelDark, M.Wood)
-	for k = 0, 4 do
-		deco("Books", Vector3.new(25, 2.6, 2.1), Vector3.new(27, F0 + 2 + k * 3.5, 80 + i * 9), if k % 2 == 0 then C.books else C.green, M.Fabric)
-	end
-end
-for _, x in { 16, 38 } do
-	block("ReadingTable", Vector3.new(4, 3, 10), Vector3.new(x, F0 + 1.5, 108), C.panel, M.Wood)
-	ball("BankerLamp", 1.2, Vector3.new(x, F0 + 3.8, 108), C.green, M.Glass).CanCollide = false
-end
--- WITNESS WAITING
-room("WitnessWaiting", -10, 10, NZ0, NZ1, IH, nil, C.wood)
-for k = 0, 3 do
-	block("WaitingBench", Vector3.new(14, 1.8, 2.6), Vector3.new(0, F0 + 0.9, 74 + k * 11), C.panel, M.Wood)
-end
-block("WaterFountain", Vector3.new(2, 4, 1.6), Vector3.new(8, F0 + 2, 112), C.tile, M.SmoothPlastic)
--- THE JURY ROOM (x -60..-10): the long table, twelve chairs, tall windows, the clock, the fan
-room("JuryRoom", -60, -10, NZ0, NZ1, IH, C.jury, C.wood)
-local jcx, jcz = -35, 89
-block("JuryTable", Vector3.new(36, 0.8, 8), Vector3.new(jcx, F0 + 3.4, jcz), C.wood, M.Wood)
-for _, dx in { -16, 16 } do
-	for _, dz in { -3, 3 } do
-		block("TableLeg", Vector3.new(0.6, 3, 0.6), Vector3.new(jcx + dx, F0 + 1.5, jcz + dz), C.panelDark, M.Wood)
-	end
-end
-local j = 0
-for side = -1, 1, 2 do
-	for i = 0, 4 do
-		j += 1
-		chair("JuryRoomSeat" .. j, Vector3.new(jcx - 14 + i * 7, F0 + 1.6, jcz + side * 6.5), Vector3.new(0, 0, -side), C.wood)
-	end
-end
-chair("JuryRoomSeat11", Vector3.new(jcx - 21, F0 + 1.6, jcz), Vector3.new(1, 0, 0), C.wood) -- the foreman's end
-chair("JuryRoomSeat12", Vector3.new(jcx + 21, F0 + 1.6, jcz), Vector3.new(-1, 0, 0), C.wood)
-marker("JuryRoomSpot", Vector3.new(jcx, F0 + 3, NZ0 + 5))
-cylinder("WallClock", 0.4, 3, Vector3.new(-10.9, F0 + 18, jcz), Color3.fromRGB(245, 240, 225), M.SmoothPlastic, "x").CanCollide = false
-deco("FanStand", Vector3.new(0.4, 5, 0.4), Vector3.new(-56, F0 + 2.5, 110), C.black, M.Metal)
-cylinder("FanCage", 1.2, 3.4, Vector3.new(-55.7, F0 + 5.6, 110), C.black, M.Metal, "x").CanCollide = false
-block("WaterCooler", Vector3.new(1.6, 4.5, 1.6), Vector3.new(-13, F0 + 2.25, NZ0 + 4), Color3.fromRGB(220, 225, 230), M.SmoothPlastic)
-deco("WashroomDoor", Vector3.new(0.4, 9, 4.5), Vector3.new(-10.9, F0 + 4.5, 106), C.panel, M.Wood)
-deco("CoatRack", Vector3.new(0.4, 7, 0.4), Vector3.new(-57, F0 + 3.5, NZ0 + 4), C.panelDark, M.Wood)
-
----------------------------------------------------------------------------
--- THE BACK (x -88..-60): Holding | Court Officers | Robing | Judge's Chambers
----------------------------------------------------------------------------
-group("BackRooms")
-local BX0, BX1 = -HX, -60
--- the back corridor's outer wall (x -60), a door into each back room
-wallX("BackHallWall", BX1, SZ1, NZ0, IH, { { -40, 6 }, { 0, 6 }, { 40, 6 } })
--- back rooms split along z
-wallZ("HoldingNorthWall", -20, BX0, BX1, IH, nil)
-wallZ("OfficersNorthWall", 20, BX0, BX1, IH, nil)
--- the corners of the side wings (x -88..-60) belong to the back rooms
-wallZ("HoldingSouthEnd", SZ1, BX0, BX1, IH, { { -74, 8 } }) -- holding opens into its own sally port hall
-wallZ("ChambersNorthEnd", NZ0, BX0, BX1, IH, { { -74, 6 } })
--- COURT HOLDING (z -116..-20): the sally port hall (z -116..-62), then the cells
-room("CourtHolding", BX0, BX1, -116, -20, IH, nil, C.granite, M.Concrete)
-for c = 0, 1 do
-	local z0 = -58 + c * 19
-	for i = 0, 8 do
-		if i < 3 or i > 5 then -- the open cell door in the middle
-			cylinder("CellBar", 12, 0.4, Vector3.new(-66, F0 + 6, z0 + 1 + i * 1.6), C.black, M.Metal)
+-- THE JURY ROOM (x -88..-40): the long table, twelve chairs, tall windows, the clock, the fan
+roomAt("JuryRoom", F1, UH, -HX, CX0, N0, N1, C.wood, nil, Vector3.new(-64, F1 + 3, 58))
+do
+	local jcx, jcz = -64, 86
+	block("JuryTable", Vector3.new(34, 0.8, 8), Vector3.new(jcx, F1 + 3.4, jcz), C.wood, M.Wood)
+	for _, dx in { -15, 15 } do
+		for _, dz in { -3, 3 } do
+			block("TableLeg", Vector3.new(0.6, 3, 0.6), Vector3.new(jcx + dx, F1 + 1.5, jcz + dz), C.panelDark, M.Wood)
 		end
 	end
-	wallZ("CellWall", z0 + 17, BX0, -66, 14, nil, C.granite, M.Concrete)
-	block("CellBench", Vector3.new(2.4, 1.8, 12), Vector3.new(BX0 + 3, F0 + 0.9, z0 + 8), C.granite, M.Concrete)
+	local j = 0
+	for side = -1, 1, 2 do
+		for i = 0, 4 do
+			j += 1
+			chair("JuryRoomSeat" .. j, Vector3.new(jcx - 13 + i * 6.5, F1 + 1.6, jcz + side * 6.5), Vector3.new(0, 0, -side), C.wood)
+		end
+	end
+	chair("JuryRoomSeat11", Vector3.new(jcx - 20, F1 + 1.6, jcz), Vector3.new(1, 0, 0), C.wood)
+	chair("JuryRoomSeat12", Vector3.new(jcx + 20, F1 + 1.6, jcz), Vector3.new(-1, 0, 0), C.wood)
+	marker("JuryRoomSpot", Vector3.new(jcx, F1 + 3, N0 + 6))
+	cylinder("WallClock", 0.4, 3, Vector3.new(-HX + 1.6, F1 + 18, jcz), Color3.fromRGB(245, 240, 225), M.SmoothPlastic, "x").CanCollide = false
+	deco("FanStand", Vector3.new(0.4, 5, 0.4), Vector3.new(-84, F1 + 2.5, N1 - 4), C.black, M.Metal)
+	cylinder("FanCage", 1.2, 3.4, Vector3.new(-83.7, F1 + 5.6, N1 - 4), C.black, M.Metal, "x").CanCollide = false
+	block("WaterCooler", Vector3.new(1.6, 4.5, 1.6), Vector3.new(-44, F1 + 2.25, N0 + 4), Color3.fromRGB(220, 225, 230), M.SmoothPlastic)
+	deco("WashroomDoor", Vector3.new(4.5, 9, 0.4), Vector3.new(-78, F1 + 4.5, N0 + 1), C.panel, M.Wood)
+	deco("CoatRack", Vector3.new(0.4, 7, 0.4), Vector3.new(-86, F1 + 3.5, N0 + 4), C.panelDark, M.Wood)
 end
-marker("HoldingSpot", Vector3.new(-76, F0 + 3, -49))
-marker("Room_SallyPort", Vector3.new(-76, F0 + 3, -90))
--- COURT OFFICERS (z -20..20): lockers, a desk, the monitors
-room("CourtOfficers", BX0, BX1, -20, 20, IH, nil, C.marbleGrey, M.Marble)
-for i = 0, 5 do
-	block("Locker", Vector3.new(2, 7, 2.6), Vector3.new(BX0 + 2, F0 + 3.5, -16 + i * 3), Color3.fromRGB(70, 80, 96), M.Metal)
+-- PRESS ROOM (x 60..88)
+roomAt("PressRoom", F1, UH, 60, HX, N0, N1, C.wood, nil, Vector3.new(74, F1 + 3, 58))
+for row = 0, 2 do
+	block("PressDesk", Vector3.new(4, 3, 20), Vector3.new(68 + row * 7, F1 + 1.5, 90), C.panel, M.Wood)
 end
-block("OfficersDesk", Vector3.new(4, 3, 10), Vector3.new(-72, F0 + 1.5, 8), C.panelDark, M.Wood)
-deco("Monitors", Vector3.new(0.6, 3, 8), Vector3.new(-73.5, F0 + 4.6, 8), C.black, M.Glass)
--- ROBING ROOM (z 20..62)
-room("RobingRoom", BX0, BX1, 20, NZ0, IH, nil, C.wood)
-for i = 0, 3 do
-	deco("RobeHook", Vector3.new(0.6, 0.6, 0.6), Vector3.new(BX0 + 1.6, F0 + 8, 26 + i * 6), C.brass, M.Metal)
-	deco("Robe", Vector3.new(0.6, 6, 2.4), Vector3.new(BX0 + 1.8, F0 + 4.8, 26 + i * 6), C.black, M.Fabric)
-end
-block("RobingBench", Vector3.new(2.6, 1.8, 14), Vector3.new(-66, F0 + 0.9, 40), C.panel, M.Wood)
--- JUDGE'S CHAMBERS (z 62..116): the desk, bookcases, leather chairs, a rug
-room("JudgesChambers", BX0, BX1, NZ0, HZ, IH, nil, C.wood)
-deco("Rug", Vector3.new(18, 0.1, 24), Vector3.new(-74, F0 + 0.15, 92), Color3.fromRGB(110, 28, 34), M.Fabric)
-block("ChambersDesk", Vector3.new(5, 3.2, 10), Vector3.new(-80, F0 + 1.6, 92), C.panelDark, M.Wood)
-chair("ChambersChair", Vector3.new(-84, F0 + 1, 92), Vector3.new(1, 0, 0), C.leather)
-chair("ChambersGuest1", Vector3.new(-74, F0 + 1, 88), Vector3.new(-1, 0, 0), C.leather)
-chair("ChambersGuest2", Vector3.new(-74, F0 + 1, 96), Vector3.new(-1, 0, 0), C.leather)
-block("ChambersBookcase", Vector3.new(2, 16, 26), Vector3.new(BX0 + 1.6, F0 + 8, 92), C.panelDark, M.Wood)
-marker("ChambersSpot", Vector3.new(-70, F0 + 3, 80))
 
--- room markers that would sit inside furniture move to open floor inside the room
-for name, pos in {
-	Room_AttorneyConference1 = Vector3.new(77, F0 + 3, 68), Room_AttorneyConference2 = Vector3.new(55, F0 + 3, 68),
-	Room_CourtroomDept2 = Vector3.new(-36, F0 + 3, -70), Room_JuryRoom = Vector3.new(-35, F0 + 3, 72),
-} do
-	local m = markers:FindFirstChild(name) :: BasePart?
-	if m then m.CFrame = BASE * CFrame.new(pos) end
+group("SouthUpper")
+wallZAt("SouthUpperHall", F1, S1, -HX, HX, UH, { { -68, 6, nil, 14 }, { -39, 6, nil, 14 }, { 30, 10, nil, 16 }, { 64, 6, nil, 14 } })
+wallXAt("SU_Div1", F1, -48, S0, S1, UH, { { -100, 6, nil, 14 } }) -- chambers <-> robing room
+wallXAt("SU_Div2", F1, -30, S0, S1, UH, nil)
+wallXAt("SU_Div3", F1, 40, S0, S1, UH, nil)
+-- THE JUDGE'S CHAMBERS (x -88..-48)
+roomAt("JudgesChambers", F1, UH, -HX, -48, S0, S1, C.wood, nil, Vector3.new(-68, F1 + 3, -58))
+deco("Rug", Vector3.new(20, 0.1, 26), Vector3.new(-70, F1 + 0.18, -88), Color3.fromRGB(110, 28, 34), M.Fabric)
+block("ChambersDesk", Vector3.new(5, 3.2, 12), Vector3.new(-80, F1 + 1.6, -88), C.panelDark, M.Wood)
+chair("ChambersChair", Vector3.new(-84, F1 + 1, -88), Vector3.new(1, 0, 0), C.leather)
+chair("ChambersGuest1", Vector3.new(-72, F1 + 1, -92), Vector3.new(-1, 0, 0), C.leather)
+chair("ChambersGuest2", Vector3.new(-72, F1 + 1, -84), Vector3.new(-1, 0, 0), C.leather)
+block("ChambersBookcase", Vector3.new(30, 18, 2), Vector3.new(-68, F1 + 9, S0 + 2.2), C.panelDark, M.Wood)
+marker("ChambersSpot", Vector3.new(-68, F1 + 3, -60))
+-- ROBING ROOM (x -48..-30)
+roomAt("RobingRoom", F1, UH, -48, -30, S0, S1, C.wood, nil, Vector3.new(-39, F1 + 3, -58))
+for i = 0, 3 do
+	deco("Robe", Vector3.new(2.4, 6, 0.6), Vector3.new(-45 + i * 4, F1 + 4.8, S0 + 1.8), C.black, M.Fabric)
+end
+-- COURTROOM Dept. 2 (x -30..40)
+roomAt("CourtroomDept2", F1, UH, -30, 40, S0, S1, C.wood, nil, Vector3.new(30, F1 + 3, -58))
+block("Dept2Dais", Vector3.new(10, 3, 22), Vector3.new(-24, F1 + 1.5, -88), C.panelDark, M.Wood)
+for k = 1, 3 do
+	block("Dept2Step", Vector3.new(8, k, 1.4), Vector3.new(-24, F1 + k / 2, -77 + (3 - k) * 1.4 + 0.7), C.panelDark, M.Wood)
+end
+block("Dept2BenchFront", Vector3.new(2, 6, 22), Vector3.new(-18.5, F1 + 3, -88), C.panel, M.Wood)
+chair("Dept2JudgeSeat", Vector3.new(-25, F1 + 3.6, -88), Vector3.new(1, 0, 0), C.black)
+cylinder("Dept2Seal", 0.5, 9, Vector3.new(-29, F1 + 18, -88), C.brass, M.Metal, "x").CanCollide = false
+block("Dept2Table", Vector3.new(4, 3, 10), Vector3.new(-6, F1 + 1.5, -96), C.panel, M.Wood)
+block("Dept2Table", Vector3.new(4, 3, 10), Vector3.new(-6, F1 + 1.5, -80), C.panel, M.Wood)
+for row = 0, 4 do
+	block("Dept2Pew", Vector3.new(2.4, 1.6, 40), Vector3.new(8 + row * 6, F1 + 1.3, -88), C.panel, M.Wood)
+	block("Dept2PewBack", Vector3.new(0.5, 3.6, 40), Vector3.new(9.3 + row * 6, F1 + 2.4, -88), C.panel, M.Wood)
+end
+-- WITNESS ROOM (x 40..88)
+roomAt("WitnessRoom", F1, UH, 40, HX, S0, S1, C.wood, nil, Vector3.new(64, F1 + 3, -58))
+block("WitnessTable", Vector3.new(8, 0.6, 20), Vector3.new(64, F1 + 3.2, -88), C.panelDark, M.Wood)
+block("WitnessTableBase", Vector3.new(3, 2.9, 12), Vector3.new(64, F1 + 1.45, -88), C.panelDark, M.Wood)
+
+-- BACK BLOCK, upper: COURT HOLDING beside the courtroom (the secure stair comes up here)
+group("BackUpper")
+roomAt("CourtHolding", F1, UH, -HX, SX0, -BAND, BAND, C.granite, M.Concrete, Vector3.new(-74, F1 + 3, 30))
+wallXAt("UpperCellFront", F1, -70, 0, 36, 14, { { 18, 5, nil, 10 } }, C.black, M.DiamondPlate, 0.6)
+wallZAt("UpperCellSide", F1, 0, -HX, -70, 14, nil, C.granite, M.Concrete)
+block("UpperCellBench", Vector3.new(2.4, 1.8, 16), Vector3.new(-HX + 2.4, F1 + 0.9, 18), C.granite, M.Concrete)
+marker("HoldingSpot", Vector3.new(-80, F1 + 3, 18))
+-- the hole in the slab above the secure stair: rebuild the back block's floor round it
+do
+	local slabPart = nil
+	for _, p in groups.Floors:GetChildren() do
+		if p:IsA("BasePart") and math.abs(p.Size.X - (SX0 + HX)) < 0.1 and math.abs(p.Size.Z - 2 * BAND) < 0.1 then slabPart = p end
+	end
+	if slabPart then slabPart:Destroy() end
+	current = groups.Floors
+	slab(-HX, -64, -BAND, BAND)
+	slab(-50, SX0, -BAND, BAND)
+	slab(-64, -50, -4, BAND)
+	current = groups.BackUpper
+	block("StairWellRail", Vector3.new(14, 3.4, 0.6), Vector3.new(-57, F1 + 1.7, -4), C.black, M.Metal)
+	block("StairWellRail", Vector3.new(0.6, 3.4, 36), Vector3.new(-50.3, F1 + 1.7, -22), C.black, M.Metal)
 end
 
 model:SetAttribute("Facility", "Courthouse")
@@ -858,47 +1209,32 @@ model.PrimaryPart = groups.Entry:FindFirstChild("Podium") :: BasePart
 model.Parent = workspace
 
 ---------------------------------------------------------------------------
--- CHECK: every room must be walkable from the street (and the cells from the sally port)
+-- CHECK: walk to every room from the street (the cells from the sally port)
 ---------------------------------------------------------------------------
 local PathfindingService = game:GetService("PathfindingService")
-local function reach(fromName: string, toPart: BasePart): string
-	local from = markers:FindFirstChild(fromName) :: BasePart
+local report, fails = {}, 0
+local function reach(label: string, a: Vector3, b: Vector3)
 	local path = PathfindingService:CreatePath({ AgentRadius = 1.5, AgentHeight = 5, AgentCanJump = false, WaypointSpacing = 6 })
-	local ok = pcall(function()
-		path:ComputeAsync(from.Position, toPart.Position)
-	end)
-	return if ok and path.Status == Enum.PathStatus.Success then "ok" else ("FAIL (%s)"):format(if ok then path.Status.Name else "error")
+	local ok = pcall(function() path:ComputeAsync(a, b) end)
+	local good = ok and path.Status == Enum.PathStatus.Success
+	if not good then fails += 1 end
+	table.insert(report, label .. ": " .. (if good then "ok" else "FAIL"))
 end
-local report = {}
-local fails = 0
+local function at(n: string): Vector3
+	return (markers:FindFirstChild(n) :: BasePart).Position + Vector3.new(0, if markers[n]:IsA("Seat") then 2 else 0, 0)
+end
+local street = at("VehicleDropoff")
 for _, m in markers:GetChildren() do
-	if m:IsA("BasePart") and (m.Name:sub(1, 5) == "Room_" or m.Name == "RotundaSpot" or m.Name == "ClerkWindow" or m.Name == "JuryRoomSpot" or m.Name == "ChambersSpot" or m.Name == "BailiffSpot") then
-		local r = reach("VehicleDropoff", m)
-		if r ~= "ok" then fails += 1 end
-		table.insert(report, m.Name .. ": " .. r)
+	if m:IsA("BasePart") and (m.Name:sub(1, 5) == "Room_" or m.Name == "RotundaSpot" or m.Name == "ClerkWindow" or m.Name == "ChambersSpot" or m.Name == "JuryRoomSpot") then
+		reach("street -> " .. m.Name, street, m.Position)
 	end
 end
-local h = markers:FindFirstChild("HoldingSpot") :: BasePart
-local r = reach("PrisonerDropoff", h)
-if r ~= "ok" then fails += 1 end
-table.insert(report, "PrisonerDropoff -> HoldingSpot: " .. r)
-do
-	local function reachP(label: string, a: Vector3, b: Vector3)
-		local path = PathfindingService:CreatePath({ AgentRadius = 1.5, AgentHeight = 5, AgentCanJump = false })
-		local ok = pcall(function() path:ComputeAsync(a, b) end)
-		local good = ok and path.Status == Enum.PathStatus.Success
-		if not good then fails += 1 end
-		table.insert(report, label .. ": " .. (if good then "ok" else "FAIL"))
-	end
-	local rs = (markers:FindFirstChild("RotundaSpot") :: BasePart).CFrame
-	local function at(n: string): Vector3 return (markers:FindFirstChild(n) :: BasePart).Position + Vector3.new(0, 2, 0) end
-	reachP("~ rotunda -> south balcony", rs.Position, (rs * CFrame.new(10, 20.5, -44)).Position)
-	reachP("~ rotunda -> north balcony", rs.Position, (rs * CFrame.new(10, 20.5, 44)).Position)
-	reachP("~ jury room -> jury box", at("JuryRoomSpot"), at("JurorSeat1"))
-	reachP("~ holding -> defendant's chair", at("HoldingSpot"), at("DefendantSeat"))
-	reachP("~ chambers -> judge's chair", at("ChambersSpot"), at("JudgeSeat"))
-	reachP("~ gallery -> witness stand", at("Room_Courtroom"), at("WitnessSeat"))
-end
+reach("~ sally port -> holding (up the secure stair)", at("PrisonerDropoff"), at("HoldingSpot"))
+reach("~ holding -> defendant's chair", at("HoldingSpot"), at("DefendantSeat"))
+reach("~ chambers -> judge's chair", at("ChambersSpot"), at("JudgeSeat"))
+reach("~ jury room -> jury box", at("JuryRoomSpot"), at("JurorSeat1"))
+reach("~ gallery -> witness stand", at("Room_Courtroom"), at("WitnessSeat"))
+reach("~ rotunda -> gallery (via the grand staircase)", at("RotundaSpot"), (markers.RotundaSpot.CFrame * CFrame.new(-10, F1 - F0, 30)).Position)
 table.sort(report)
 print(("[Courthouse] built: %d parts, %d walkability failures"):format(#model:GetDescendants(), fails))
 return ("%d parts, %d failures\n%s"):format(#model:GetDescendants(), fails, table.concat(report, "\n"))
