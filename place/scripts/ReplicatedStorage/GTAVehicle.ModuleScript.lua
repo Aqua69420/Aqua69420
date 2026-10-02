@@ -178,8 +178,13 @@ function M.step(st: any, dt: number, input: any): any
 	-- steering: GTA IV turns in slowly, centres quicker, and locks less at speed
 	local speedFrac = math.clamp(math.abs(fwdSpeed) / maxV, 0, 1)
 	local lockRad = math.rad(h.steeringLock) * (1 - 0.6 * speedFrac)
+	-- GTA IV on PC keyboard: A/D are on/off, so the wheel is ramped - about 0.5 s from
+	-- straight to full lock, about 0.3 s back to centre when you let go, and flicking
+	-- A -> D swings through centre at the faster return rate before winding up again
 	local target = math.clamp(input.steer or 0, -1, 1) * lockRad
-	local rate = (if math.abs(target) < math.abs(st.steer) then 4.5 else 2.6) * dt
+	local fullLock = math.max(math.rad(h.steeringLock), 0.1)
+	local returning = math.abs(target) < math.abs(st.steer) or (target * st.steer < 0)
+	local rate = fullLock / (if returning then 0.3 else 0.5) * dt
 	st.steer += math.clamp(target - st.steer, -rate, rate)
 
 	-- throttle / brake / reverse (S brakes while rolling forward, then reverses)
