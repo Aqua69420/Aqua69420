@@ -104,7 +104,13 @@ function M.new(car: Model, seat: BasePart, h: any, metersToStuds: number): any
 	for _, name in WHEEL_NAMES do
 		local w = essentials and essentials:FindFirstChild(name)
 		if w and w:IsA("BasePart") then
-			local lp = seat.CFrame:PointToObjectSpace(w.Position)
+			-- measured bug fix: the server stamps each wheel's place on the car when it
+			-- builds it; a driver measuring the moment they sit in a fresh car got it wrong
+			local stamped = w:GetAttribute("GTAOffset")
+			local lp = if typeof(stamped) == "Vector3" then stamped else seat.CFrame:PointToObjectSpace(w.Position)
+			if typeof(stamped) ~= "Vector3" and game:GetService("RunService"):IsServer() then
+				w:SetAttribute("GTAOffset", lp)
+			end
 			table.insert(wheels, { part = w, offset = lp, radius = math.max(math.min(w.Size.X, w.Size.Y, w.Size.Z) / 2, 0.5),
 				lastComp = nil, contact = false, spin = 0 })
 			sumZ += lp.Z
@@ -166,9 +172,12 @@ function M.step(st: any, dt: number, input: any): any
 	local mass = seat.AssemblyMass
 	local cf = seat.CFrame
 	local up, fwd = cf.UpVector, cf.LookVector
+	-- measured bug fix: a VectorForce the driver's client changes isn't honoured in the
+	-- client's physics (the car weighed ~7x too much and sank) - push with an impulse instead
 	if st.anti then
-		st.anti.Force = Vector3.new(0, mass * (workspace.Gravity - G), 0)
+		st.anti.Force = Vector3.zero
 	end
+	seat:ApplyImpulse(Vector3.new(0, mass * (workspace.Gravity - G) * math.clamp(dt, 1 / 240, 1 / 20), 0))
 	local vel = seat.AssemblyLinearVelocity
 	local fwdSpeed = vel:Dot(fwd)
 	local speed = vel.Magnitude

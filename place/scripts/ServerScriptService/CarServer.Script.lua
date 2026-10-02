@@ -563,6 +563,9 @@ function GTA.setup(car, seat)
 		if d:IsA("BasePart") and (d.Name == "LF" or d.Name == "RF" or d.Name == "LB" or d.Name == "RB" or string.sub(d.Name, 1, 8) == "Knuckle_") then
 			d.CanCollide = false
 			d.Massless = true
+			-- measured bug fix: hinged wheels are their own assemblies, where Massless is
+			-- ignored - at full Roblox gravity they overloaded the springs ~2.5x
+			d.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0.3, 0, 1, 1)
 		end
 	end
 	local att = seat:FindFirstChild("GTAAntiGravityAttachment") or Instance.new("Attachment")
