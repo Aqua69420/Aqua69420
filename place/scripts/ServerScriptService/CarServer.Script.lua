@@ -615,6 +615,41 @@ function GTA.buildGhost(car, seat, h)
 			d.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0, 0, 100, 1)
 		end
 	end
+	-- 2b. the facade hangs on its own pivot (GTAFacadeRoot, a Motor6D on the seat) so the
+	-- body can sway visually in corners / under braking while the chassis stays flat
+	do
+		local root = Instance.new("Part")
+		root.Name = "GTAFacadeRoot"
+		root.Size = Vector3.new(0.2, 0.2, 0.2)
+		root.Transparency = 1
+		root.CanCollide, root.CanQuery, root.CanTouch, root.Massless = false, false, false, true
+		root.CFrame = scf
+		root.Parent = car
+		local motor = Instance.new("Motor6D")
+		motor.Name = "GTAFacadeMotor"
+		motor.Part0 = seat
+		motor.Part1 = root
+		motor.C0 = CFrame.identity
+		motor.C1 = CFrame.identity
+		motor.Parent = root
+		local isWheel = {}
+		for _, w in wheels do
+			isWheel[w] = true
+		end
+		local moved = 0
+		for _, wc in car:GetDescendants() do
+			if wc:IsA("WeldConstraint") then
+				if wc.Part0 == seat and wc.Part1 and not isWheel[wc.Part1] then
+					wc.Part0 = root
+					moved += 1
+				elseif wc.Part1 == seat and wc.Part0 and not isWheel[wc.Part0] then
+					wc.Part1 = root
+					moved += 1
+				end
+			end
+		end
+		print(("[GTAHandling] facade on its sway pivot (%d part welds)"):format(moved))
+	end
 	-- 3. the ghost chassis
 	if #wheels >= 3 then
 		local clearance = 0.55 -- studs between the road and the hull at rest

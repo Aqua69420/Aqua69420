@@ -27,7 +27,9 @@ M.TopSpeedScale = 1.2 -- real top speed vs handling.dat Tv (IV runs ~20% past it
 M.AccelScale = 1.3
 M.AccelByLine = {} :: { [string]: number } -- per handling line, e.g. INFERNUS = 1.1
 M.RideHeight = 0.3 -- studs the body rides higher than the model was built
-M.BodyRoll = 1 -- 1 = GTA IV's lean / nose dive / squat from its suspension values, 0 = none
+M.BodyRoll = 0 -- PHYSICAL lean lever. Keep 0: levers below the car amplified every tyre force ~7x into roll / pitch and made the cars klang and flip
+M.SwayDegPerG = 4 -- VISUAL body lean (the facade, not the chassis): degrees per g of cornering
+M.DiveDegPerG = 2.5 -- VISUAL nose dive / squat: degrees per g of braking / acceleration
 -- a normal GTA IV car's proportions (metres): every frame leans and turns as if its wheels
 -- were this far apart, whatever the Roblox model's size (replace per car once the real
 -- IV model dimensions are in)
@@ -40,6 +42,8 @@ function M.configure(data: any)
 		M.TopSpeedScale = tonumber(data.TopSpeedScale) or M.TopSpeedScale
 		M.AccelScale = tonumber(data.AccelScale) or M.AccelScale
 		M.BodyRoll = tonumber(data.BodyRoll) or M.BodyRoll
+		M.SwayDegPerG = tonumber(data.SwayDegPerG) or M.SwayDegPerG
+		M.DiveDegPerG = tonumber(data.DiveDegPerG) or M.DiveDegPerG
 		if type(data.AccelByLine) == "table" then
 			M.AccelByLine = {}
 			for k, v in data.AccelByLine do
@@ -215,7 +219,8 @@ function M.new(car: Model, seat: BasePart, h: any, metersToStuds: number): any
 
 	return {
 		car = car, seat = seat, h = h, S = metersToStuds, wheels = wheels, fronts = math.max(1, fronts), rears = math.max(1, rears),
-		trackRatio = trackRatio, wbRatio = wbRatio,
+		trackRatio = trackRatio, wbRatio = wbRatio, lastVel = seat.AssemblyLinearVelocity, roll = 0, pitch = 0,
+		facadeMotor = (function() local r = car:FindFirstChild("GTAFacadeRoot"); return r and r:FindFirstChild("GTAFacadeMotor") end)(),
 		spins = spins, steers = steers, params = params, steer = 0, gear = 1, rpm = 0, yawScale = yawScale,
 		anti = seat:FindFirstChild("GTAAntiGravity"), steerDirection = seat:GetAttribute("SteerDirection") or 1,
 	}
@@ -253,6 +258,9 @@ end
 -- model's size: lean goes with 1/track^2 (sideways forces) and dive / squat with
 -- 1/wheelbase^2 (forward forces), so the lever is scaled by (frame / reference)^2.
 local function tyrePoint(st: any, contact: Vector3, up: Vector3, G: number, Gw: number, ratio: number): Vector3
+	if M.BodyRoll <= 0 then
+		return contact
+	end
 	local hCOM = math.max(0, (st.seat.AssemblyCenterOfMass - contact):Dot(up))
 	local lever = hCOM * (Gw / G) * ratio * ratio * M.BodyRoll -- below the centre of mass
 	return contact + up * (hCOM - lever)
@@ -366,7 +374,9 @@ function M.step(st: any, dt: number, input: any): any
 		local share = mass * Gw / nW
 		local bias = (if w.front then h.suspBiasFront else 1 - h.suspBiasFront) * 2
 		local k = h.suspForce * mass * Gw * bias
-		local compVel = ((comp - (w.lastComp or comp)) * travel) / dt
+		-- compression speed from the body's actual up/down motion at this wheel (the old
+		-- frame-to-frame difference lagged a frame and fed the klang)
+		local compVel = -seat:GetVelocityAtPosition(attach):Dot(up)
 		w.lastComp = comp
 		local kPerStud = k / travel
 		local crit = 2 * math.sqrt(kPerStud * (mass / nW))
@@ -506,6 +516,22 @@ function M.step(st: any, dt: number, input: any): any
 	for _, hinge in st.steers do
 		hinge.TargetAngle = -math.deg(st.steer) * st.steerDirection
 	end
+	-- VISUAL sway: the facade leans out in corners and dips / squats under braking and
+	-- acceleration, from the car's real acceleration. The chassis underneath stays stable.
+	if st.facadeMotor then
+		local acc = (seat.AssemblyLinearVelocity - st.lastVel) / dt
+		local right = cf.RightVector
+		local latG = math.clamp(acc:Dot(right) / G, -1.6, 1.6)
+		local longG = math.clamp(acc:Dot(fwd) / G, -1.6, 1.6)
+		local targetRoll = if contacts > 0 then math.rad(latG * M.SwayDegPerG) else 0
+		local targetPitch = if contacts > 0 then math.rad(-longG * M.DiveDegPerG) else 0
+		local a = math.clamp(dt * 6, 0, 1) -- the body settles into the lean, it doesn't snap
+		st.roll += (targetRoll - st.roll) * a
+		st.pitch += (targetPitch - st.pitch) * a
+		local pivot = st.facadePivot or 1.5
+		st.facadeMotor.C0 = CFrame.new(0, -pivot, 0) * CFrame.Angles(st.pitch, 0, st.roll) * CFrame.new(0, pivot, 0)
+	end
+	st.lastVel = seat.AssemblyLinearVelocity
 	return { speed = fwdSpeed, kmh = math.abs(fwdSpeed) / S * 3.6, gear = st.gear, rpm = st.rpm, contacts = contacts }
 end
 
