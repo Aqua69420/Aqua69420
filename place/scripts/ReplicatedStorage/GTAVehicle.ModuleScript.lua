@@ -268,6 +268,10 @@ function M.step(st: any, dt: number, input: any): any
 	local driveTotal = mass * accel * drive
 	local brakeTotal = mass * h.brakeForce * 3.6 * G * brake
 
+	-- the springs push at most one normal frame's worth at once; a hitch's extra is paid over
+	-- the next frames (one big up-front kick for a 100 ms frame launched the car)
+	local springDt = math.min(dt + (st.springDebt or 0), 1 / 60)
+	st.springDebt = math.min(dt + (st.springDebt or 0) - springDt, 0.2)
 	local nW = #st.wheels
 	local upper, lower = h.suspUpper * S, h.suspLower * S
 	local travel = math.max(upper - lower, 0.1)
@@ -346,7 +350,7 @@ function M.step(st: any, dt: number, input: any): any
 			w.slipping = true
 			w.spin = 0
 			local at = hit.Position + up * (w.radius * 0.5)
-			push(st, (up * Nspring + wf * fl + wr * fr) * dt, at, up)
+			push(st, up * Nspring * springDt + (wf * fl + wr * fr) * dt, at, up)
 			continue
 		end
 		-- longitudinal: engine (by drive bias), brakes (by brake bias), rolling
@@ -372,7 +376,7 @@ function M.step(st: any, dt: number, input: any): any
 		w.spin = vf / w.radius + (if w.slipping and drive ~= 0 and fLong * drive > 0 then drive * 25 else 0)
 		-- forces act a little above the contact patch (GTA IV's body roll, without tipping every corner)
 		local at = hit.Position + up * (w.radius * 0.5)
-		push(st, (up * Nspring + wf * fLong + wr * fLat) * dt, at, up)
+		push(st, up * Nspring * springDt + (wf * fLong + wr * fLat) * dt, at, up)
 	end
 
 	-- HOP LOG (temporary): the body suddenly rising - which wheel / what it hit
